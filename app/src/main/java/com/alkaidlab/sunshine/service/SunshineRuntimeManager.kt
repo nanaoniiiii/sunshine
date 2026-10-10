@@ -135,6 +135,8 @@ class SunshineRuntimeManager private constructor() {
             streamStartTime = System.currentTimeMillis()
         }
 
+        com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(width, height)
+
         val session = RuntimeSession(
             clientName = cName,
             clientIp = cIp,
@@ -197,11 +199,23 @@ class SunshineRuntimeManager private constructor() {
         SunshineLogManager.log("STREAM", "Native stream stopped for a client. Remaining active clients: $remaining")
 
         if (remaining > 0) {
-            // One client disconnected, but other clients remain connected
-            if (activeSessions.isNotEmpty()) {
-                val removed = activeSessions.removeAt(activeSessions.size - 1)
-                removed.surface?.let { surf ->
+            // Identify which session disconnected by finding invalid or unregistered surfaces
+            val deadSession = activeSessions.find { session ->
+                val surf = session.surface
+                surf == null || !surf.isValid
+            } ?: activeSessions.find { session ->
+                session.surface?.let { surf -> !frameDispatcher.hasSurface(surf) } ?: true
+            } ?: if (activeSessions.isNotEmpty()) activeSessions.last() else null
+
+            if (deadSession != null) {
+                activeSessions.remove(deadSession)
+                deadSession.surface?.let { surf ->
                     frameDispatcher.removeSurface(surf)
+                }
+                SunshineLogManager.log("STREAM", "Removed disconnected session (${deadSession.clientName}). Remaining sessions: ${activeSessions.size}")
+                if (activeSessions.isNotEmpty()) {
+                    val remainingActive = activeSessions.last()
+                    com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remainingActive.width, remainingActive.height)
                 }
             }
             _activeSessionsFlow.value = activeSessions.toList()

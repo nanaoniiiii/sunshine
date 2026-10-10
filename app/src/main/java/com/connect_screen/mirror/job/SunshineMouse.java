@@ -93,15 +93,74 @@ public class SunshineMouse {
         updateDisplayDimensions();
     }
 
+    private static volatile int activeClientWidth = 0;
+    private static volatile int activeClientHeight = 0;
+
+    public static void setActiveClientDimensions(int width, int height) {
+        if (width > 0 && height > 0) {
+            activeClientWidth = width;
+            activeClientHeight = height;
+            SunshineLogManager.log("MOUSE", "Updated active client dimensions: " + width + "x" + height);
+        }
+    }
+
     public static synchronized void reset() {
         virtualDisplayWidth = 0;
         virtualDisplayHeight = 0;
+        activeClientWidth = 0;
+        activeClientHeight = 0;
         pointers.clear();
         bufferedMove.clear();
         currentMousePoint = null;
         isLeftButtonDown = false;
         downTime = 0;
         SunshineLogManager.log("MOUSE", "Reset mapper state");
+    }
+
+    /**
+     * Converts normalized coordinates [0.0, 1.0] from a Moonlight client screen
+     * into un-letterboxed normalized coordinates [0.0, 1.0] matching the VirtualDisplay.
+     * When a client's aspect ratio differs from VirtualDisplay, SunshineFrameDispatcher
+     * centers the VirtualDisplay within the client stream with black bars (letterboxing/pillarboxing).
+     * This method inverts that transformation so touches and mouse clicks land on the exact
+     * pixel of the VirtualDisplay.
+     */
+    public static Point unletterboxClientCoords(float rawNormX, float rawNormY, float clientW, float clientH) {
+        float vdW = (virtualDisplayWidth > 0) ? virtualDisplayWidth : 1920f;
+        float vdH = (virtualDisplayHeight > 0) ? virtualDisplayHeight : 1080f;
+
+        if (clientW <= 0f || clientH <= 0f) {
+            clientW = vdW;
+            clientH = vdH;
+        }
+
+        float clientAspect = clientW / clientH;
+        float vdAspect = vdW / vdH;
+
+        float normVdX = rawNormX;
+        float normVdY = rawNormY;
+
+        if (Math.abs(clientAspect - vdAspect) > 0.01f) {
+            if (clientAspect > vdAspect) {
+                // Client screen is wider than VirtualDisplay (pillarboxing: black bars on left/right)
+                float vpW = clientH * vdAspect;
+                float vpX = (clientW - vpW) / 2.0f;
+                float normVpX = vpX / clientW;
+                float normVpW = vpW / clientW;
+                normVdX = (rawNormX - normVpX) / normVpW;
+            } else {
+                // Client screen is taller/narrower than VirtualDisplay (letterboxing: black bars on top/bottom)
+                float vpH = clientW / vdAspect;
+                float vpY = (clientH - vpH) / 2.0f;
+                float normVpY = vpY / clientH;
+                float normVpH = vpH / clientH;
+                normVdY = (rawNormY - normVpY) / normVpH;
+            }
+            normVdX = Math.max(0.0f, Math.min(1.0f, normVdX));
+            normVdY = Math.max(0.0f, Math.min(1.0f, normVdY));
+        }
+
+        return new Point(normVdX, normVdY);
     }
 
     /**
@@ -177,7 +236,10 @@ public class SunshineMouse {
      */
     public static void handleTouchPacket(int action, int flags, int pointerId, float x, float y, float pressure, float contactArea, float reserved) {
         int pointerIndex = pointerId % 10;
-        Point pt = translate(x, y);
+        float clientW = (activeClientWidth > 0) ? activeClientWidth : virtualDisplayWidth;
+        float clientH = (activeClientHeight > 0) ? activeClientHeight : virtualDisplayHeight;
+        Point unbox = unletterboxClientCoords(x, y, clientW, clientH);
+        Point pt = translate(unbox.x, unbox.y);
 
         SunshineLogManager.log("TOUCH", "Touch: act=" + action + " ptr=" + pointerIndex + " -> (" + (int)pt.x + "," + (int)pt.y + ")");
 
@@ -210,19 +272,16 @@ public class SunshineMouse {
      * touch events, preventing phantom touches and sticky selection.
      */
     public static void handleAbsMouseMovePacket(float x, float y, float width, float height) {
-        float normX;
-        float normY;
         if (width > 0.0f && height > 0.0f) {
-            normX = x / width;
-            normY = y / height;
-        } else if (virtualDisplayWidth > 0 && virtualDisplayHeight > 0) {
-            normX = x / virtualDisplayWidth;
-            normY = y / virtualDisplayHeight;
-        } else {
-            normX = x;
-            normY = y;
+            activeClientWidth = (int) width;
+            activeClientHeight = (int) height;
         }
-        Point pt = translate(normX, normY);
+        float clientW = (width > 0.0f) ? width : ((activeClientWidth > 0) ? activeClientWidth : virtualDisplayWidth);
+        float clientH = (height > 0.0f) ? height : ((activeClientHeight > 0) ? activeClientHeight : virtualDisplayHeight);
+        float rawNormX = (clientW > 0.0f) ? (x / clientW) : x;
+        float rawNormY = (clientH > 0.0f) ? (y / clientH) : y;
+        Point unbox = unletterboxClientCoords(rawNormX, rawNormY, clientW, clientH);
+        Point pt = translate(unbox.x, unbox.y);
         currentMousePoint = pt;
 
         if (isLeftButtonDown) {

@@ -94,6 +94,23 @@ class SunshineFrameDispatcher {
             }
     }
 
+    private var lastFrameTimeMs: Long = 0L
+    private var hasDrawnAnyTexture: Boolean = false
+
+    private val framePumpRunnable = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+            val handler = glHandler ?: return
+            val now = System.currentTimeMillis()
+            // If we have rendered at least one frame from SurfaceTexture, and no new frame arrived in 50ms,
+            // and we have active targets, repeat the frame to keep AMediaCodec and Moonlight streams active
+            if (hasDrawnAnyTexture && clientTargets.isNotEmpty() && (now - lastFrameTimeMs > 50)) {
+                pumpFrame()
+            }
+            handler.postDelayed(this, 33)
+        }
+    }
+
     fun start(width: Int, height: Int): Surface {
         sourceWidth = if (width > 0) width else 1920
         sourceHeight = if (height > 0) height else 1080
@@ -117,6 +134,9 @@ class SunshineFrameDispatcher {
                 initGl()
                 initSurfaceTexture(width, height)
                 isRunning = true
+                hasDrawnAnyTexture = false
+                lastFrameTimeMs = System.currentTimeMillis()
+                handler.postDelayed(framePumpRunnable, 33)
                 SunshineLogManager.log("DISPATCHER", "SunshineFrameDispatcher initialized (${width}x$height)")
             } catch (t: Throwable) {
                 initError = t
@@ -134,11 +154,28 @@ class SunshineFrameDispatcher {
     fun addSurface(surface: Surface, width: Int, height: Int) {
         val handler = glHandler ?: return
         handler.post {
-            if (clientTargets.none { it.surface == surface }) {
-                clientTargets.add(ClientTarget(surface, null, width, height))
+            var target = clientTargets.find { it.surface == surface }
+            if (target == null) {
+                target = ClientTarget(surface, null, width, height)
+                clientTargets.add(target)
                 SunshineLogManager.log("DISPATCHER", "Added client stream surface (${width}x$height). Total active clients: ${clientTargets.size}")
             }
+            // If a frame is already available in OpenGL, immediately render it to the newly attached surface.
+            // This feeds AMediaCodec its first input buffer in <1ms without waiting for an Android screen update,
+            // instantly unhanging Moonlight from 'Starting Desktop' / '正在启动 Desktop'.
+            if (hasDrawnAnyTexture) {
+                renderSingleTarget(target, System.nanoTime())
+                dummySurface?.let { dummy ->
+                    val dpy = eglDisplay ?: return@let
+                    val ctx = eglContext ?: return@let
+                    EGL14.eglMakeCurrent(dpy, dummy, dummy, ctx)
+                }
+            }
         }
+    }
+
+    fun hasSurface(surface: Surface): Boolean {
+        return clientTargets.any { it.surface == surface }
     }
 
     fun removeSurface(surface: Surface) {
@@ -182,6 +219,7 @@ class SunshineFrameDispatcher {
         isRunning = false
         val thread = glThread ?: return
         val handler = glHandler
+        handler?.removeCallbacks(framePumpRunnable)
         handler?.post {
             for (target in clientTargets) {
                 destroyTargetEgl(target)
@@ -325,97 +363,103 @@ class SunshineFrameDispatcher {
         }, handler)
     }
 
+    private fun renderSingleTarget(target: ClientTarget, timestamp: Long): Boolean {
+        val dpy = eglDisplay ?: return false
+        val ctx = eglContext ?: return false
+        val cfg = eglConfig ?: return false
+
+        if (!target.surface.isValid) {
+            return false
+        }
+
+        if (target.eglSurface == null || target.eglSurface == EGL14.EGL_NO_SURFACE) {
+            val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
+            target.eglSurface = EGL14.eglCreateWindowSurface(dpy, cfg, target.surface, surfaceAttribs, 0)
+            if (target.eglSurface == EGL14.EGL_NO_SURFACE) {
+                return false
+            }
+        }
+
+        val eglSurf = target.eglSurface ?: return false
+        if (!EGL14.eglMakeCurrent(dpy, eglSurf, eglSurf, ctx)) {
+            return false
+        }
+
+        return try {
+            val targetW = target.width
+            val targetH = target.height
+            val vdW = sourceWidth
+            val vdH = sourceHeight
+
+            var vpX = 0
+            var vpY = 0
+            var vpW = targetW
+            var vpH = targetH
+
+            if (vdW > 0 && vdH > 0 && targetW > 0 && targetH > 0) {
+                val targetAspect = targetW.toFloat() / targetH.toFloat()
+                val sourceAspect = vdW.toFloat() / vdH.toFloat()
+                if (Math.abs(targetAspect - sourceAspect) > 0.01f) {
+                    if (targetAspect > sourceAspect) {
+                        vpW = (targetH * sourceAspect).toInt()
+                        vpX = (targetW - vpW) / 2
+                    } else {
+                        vpH = (targetW / sourceAspect).toInt()
+                        vpY = (targetH - vpH) / 2
+                    }
+                    GLES20.glClearColor(0f, 0f, 0f, 1f)
+                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                }
+            }
+
+            GLES20.glViewport(vpX, vpY, vpW, vpH)
+            GLES20.glUseProgram(programId)
+
+            GLES20.glUniformMatrix4fv(uTextureMatrixHandle, 1, false, texMatrix, 0)
+
+            GLES20.glEnableVertexAttribArray(aPositionHandle)
+            GLES20.glVertexAttribPointer(aPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+
+            GLES20.glEnableVertexAttribArray(aTexCoordHandle)
+            GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
+            GLES20.glUniform1i(uSamplerHandle, 0)
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+            GLES20.glDisableVertexAttribArray(aPositionHandle)
+            GLES20.glDisableVertexAttribArray(aTexCoordHandle)
+
+            EGLExt.eglPresentationTimeANDROID(dpy, eglSurf, timestamp)
+            val swapOk = EGL14.eglSwapBuffers(dpy, eglSurf)
+            swapOk
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun handleFrameAvailable() {
         val st = surfaceTexture ?: return
         val dpy = eglDisplay ?: return
         val ctx = eglContext ?: return
-        val cfg = eglConfig ?: return
 
         try {
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
-        } catch (e: Exception) {
+            hasDrawnAnyTexture = true
+            lastFrameTimeMs = System.currentTimeMillis()
+        } catch (_: Exception) {
             return
         }
 
-        val timestamp = st.timestamp
+        val timestamp = if (st.timestamp != 0L) st.timestamp else System.nanoTime()
 
         // Render to all active client surfaces
         val toRemove = mutableListOf<ClientTarget>()
         for (target in clientTargets) {
-            if (!target.surface.isValid) {
-                toRemove.add(target)
-                continue
-            }
-
-            if (target.eglSurface == null || target.eglSurface == EGL14.EGL_NO_SURFACE) {
-                val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
-                target.eglSurface = EGL14.eglCreateWindowSurface(dpy, cfg, target.surface, surfaceAttribs, 0)
-                if (target.eglSurface == EGL14.EGL_NO_SURFACE) {
-                    toRemove.add(target)
-                    continue
-                }
-            }
-
-            val eglSurf = target.eglSurface ?: continue
-            if (!EGL14.eglMakeCurrent(dpy, eglSurf, eglSurf, ctx)) {
-                toRemove.add(target)
-                continue
-            }
-
-            try {
-                val targetW = target.width
-                val targetH = target.height
-                val vdW = sourceWidth
-                val vdH = sourceHeight
-
-                var vpX = 0
-                var vpY = 0
-                var vpW = targetW
-                var vpH = targetH
-
-                if (vdW > 0 && vdH > 0 && targetW > 0 && targetH > 0) {
-                    val targetAspect = targetW.toFloat() / targetH.toFloat()
-                    val sourceAspect = vdW.toFloat() / vdH.toFloat()
-                    if (Math.abs(targetAspect - sourceAspect) > 0.01f) {
-                        if (targetAspect > sourceAspect) {
-                            vpW = (targetH * sourceAspect).toInt()
-                            vpX = (targetW - vpW) / 2
-                        } else {
-                            vpH = (targetW / sourceAspect).toInt()
-                            vpY = (targetH - vpH) / 2
-                        }
-                        GLES20.glClearColor(0f, 0f, 0f, 1f)
-                        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                    }
-                }
-
-                GLES20.glViewport(vpX, vpY, vpW, vpH)
-                GLES20.glUseProgram(programId)
-
-                GLES20.glUniformMatrix4fv(uTextureMatrixHandle, 1, false, texMatrix, 0)
-
-                GLES20.glEnableVertexAttribArray(aPositionHandle)
-                GLES20.glVertexAttribPointer(aPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-
-                GLES20.glEnableVertexAttribArray(aTexCoordHandle)
-                GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
-
-                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-                GLES20.glUniform1i(uSamplerHandle, 0)
-
-                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
-                GLES20.glDisableVertexAttribArray(aPositionHandle)
-                GLES20.glDisableVertexAttribArray(aTexCoordHandle)
-
-                EGLExt.eglPresentationTimeANDROID(dpy, eglSurf, timestamp)
-                val swapOk = EGL14.eglSwapBuffers(dpy, eglSurf)
-                if (!swapOk) {
-                    toRemove.add(target)
-                }
-            } catch (t: Throwable) {
+            if (!renderSingleTarget(target, timestamp)) {
                 toRemove.add(target)
             }
         }
@@ -426,6 +470,29 @@ class SunshineFrameDispatcher {
         }
 
         // Return to dummy surface
+        dummySurface?.let {
+            EGL14.eglMakeCurrent(dpy, it, it, ctx)
+        }
+    }
+
+    private fun pumpFrame() {
+        val dpy = eglDisplay ?: return
+        val ctx = eglContext ?: return
+        lastFrameTimeMs = System.currentTimeMillis()
+        val timestamp = System.nanoTime()
+
+        val toRemove = mutableListOf<ClientTarget>()
+        for (target in clientTargets) {
+            if (!renderSingleTarget(target, timestamp)) {
+                toRemove.add(target)
+            }
+        }
+
+        for (dead in toRemove) {
+            destroyTargetEgl(dead)
+            clientTargets.remove(dead)
+        }
+
         dummySurface?.let {
             EGL14.eglMakeCurrent(dpy, it, it, ctx)
         }
