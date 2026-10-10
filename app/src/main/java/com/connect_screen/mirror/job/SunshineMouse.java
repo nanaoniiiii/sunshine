@@ -130,8 +130,7 @@ public class SunshineMouse {
         float vdH = (virtualDisplayHeight > 0) ? virtualDisplayHeight : 1080f;
 
         if (clientW <= 0f || clientH <= 0f) {
-            clientW = vdW;
-            clientH = vdH;
+            return new Point(rawNormX, rawNormY);
         }
 
         float clientAspect = clientW / clientH;
@@ -272,12 +271,12 @@ public class SunshineMouse {
      * touch events, preventing phantom touches and sticky selection.
      */
     public static void handleAbsMouseMovePacket(float x, float y, float width, float height) {
+        float clientW = (width > 0.0f) ? width : ((activeClientWidth > 0) ? activeClientWidth : virtualDisplayWidth);
+        float clientH = (height > 0.0f) ? height : ((activeClientHeight > 0) ? activeClientHeight : virtualDisplayHeight);
         if (width > 0.0f && height > 0.0f) {
             activeClientWidth = (int) width;
             activeClientHeight = (int) height;
         }
-        float clientW = (width > 0.0f) ? width : ((activeClientWidth > 0) ? activeClientWidth : virtualDisplayWidth);
-        float clientH = (height > 0.0f) ? height : ((activeClientHeight > 0) ? activeClientHeight : virtualDisplayHeight);
         float rawNormX = (clientW > 0.0f) ? (x / clientW) : x;
         float rawNormY = (clientH > 0.0f) ? (y / clientH) : y;
         Point unbox = unletterboxClientCoords(rawNormX, rawNormY, clientW, clientH);

@@ -6,7 +6,7 @@ import com.google.gson.annotations.SerializedName
 data class ConfigResponse(
     val status: String = "true",
     val platform: String = "android",
-    val version: String = "v2026.823.92132",
+    val version: String = "v2026.823.92133",
     @SerializedName("display_devices") val displayDevices: List<DisplayDeviceNode> = emptyList(),
     val adapters: List<AdapterNode> = emptyList(),
     val port: String = "47989",

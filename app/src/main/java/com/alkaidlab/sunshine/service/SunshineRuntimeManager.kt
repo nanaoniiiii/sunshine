@@ -85,6 +85,21 @@ class SunshineRuntimeManager private constructor() {
         this.context = appContext.applicationContext
         com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
         initShizukuInput()
+        frameDispatcher.setOnSurfaceEvictedListener { evictedSurface ->
+            Handler(Looper.getMainLooper()).post {
+                val evictedSession = activeSessions.find { it.surface == evictedSurface }
+                if (evictedSession != null) {
+                    activeSessions.remove(evictedSession)
+                    _activeSessionsFlow.value = activeSessions.toList()
+                    _perfFlow.value = getPerfSnapshot()
+                    SunshineLogManager.log("STREAM", "Evicted inactive session (${evictedSession.clientName}). Remaining: ${activeSessions.size}")
+                    if (activeSessions.isNotEmpty()) {
+                        val rem = activeSessions.last()
+                        com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(rem.width, rem.height)
+                    }
+                }
+            }
+        }
     }
 
     fun setMediaProjection(projection: MediaProjection?) {
@@ -202,10 +217,8 @@ class SunshineRuntimeManager private constructor() {
             // Identify which session disconnected by finding invalid or unregistered surfaces
             val deadSession = activeSessions.find { session ->
                 val surf = session.surface
-                surf == null || !surf.isValid
-            } ?: activeSessions.find { session ->
-                session.surface?.let { surf -> !frameDispatcher.hasSurface(surf) } ?: true
-            } ?: if (activeSessions.isNotEmpty()) activeSessions.last() else null
+                surf == null || !surf.isValid || !frameDispatcher.hasSurface(surf)
+            }
 
             if (deadSession != null) {
                 activeSessions.remove(deadSession)
@@ -217,9 +230,30 @@ class SunshineRuntimeManager private constructor() {
                     val remainingActive = activeSessions.last()
                     com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remainingActive.width, remainingActive.height)
                 }
+            } else {
+                SunshineLogManager.log("STREAM", "Disconnecting session pending EGL eviction by dispatcher ($remaining active remain)")
             }
             _activeSessionsFlow.value = activeSessions.toList()
             _perfFlow.value = getPerfSnapshot()
+
+            frameDispatcher.pruneDeadSurfaces()
+
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (activeSessionCount.get() > 0 && activeSessions.size > activeSessionCount.get()) {
+                    val stale = activeSessions.find { session ->
+                        val surf = session.surface
+                        surf == null || !surf.isValid || !frameDispatcher.hasSurface(surf)
+                    }
+                    if (stale != null) {
+                        activeSessions.remove(stale)
+                        stale.surface?.let { frameDispatcher.removeSurface(it) }
+                        _activeSessionsFlow.value = activeSessions.toList()
+                        _perfFlow.value = getPerfSnapshot()
+                        SunshineLogManager.log("STREAM", "Pruned stale session on delayed check (${stale.clientName})")
+                    }
+                }
+            }, 80)
+
             SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
             return
         }

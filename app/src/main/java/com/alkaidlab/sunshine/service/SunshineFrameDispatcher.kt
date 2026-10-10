@@ -174,6 +174,12 @@ class SunshineFrameDispatcher {
         }
     }
 
+    private var onSurfaceEvictedListener: ((Surface) -> Unit)? = null
+
+    fun setOnSurfaceEvictedListener(listener: ((Surface) -> Unit)?) {
+        onSurfaceEvictedListener = listener
+    }
+
     fun hasSurface(surface: Surface): Boolean {
         return clientTargets.any { it.surface == surface }
     }
@@ -198,6 +204,9 @@ class SunshineFrameDispatcher {
                 destroyTargetEgl(dead)
                 clientTargets.remove(dead)
                 SunshineLogManager.log("DISPATCHER", "Pruned invalid surface. Remaining: ${clientTargets.size}")
+                try {
+                    onSurfaceEvictedListener?.invoke(dead.surface)
+                } catch (_: Exception) {}
             }
         }
     }
@@ -434,6 +443,10 @@ class SunshineFrameDispatcher {
 
             EGLExt.eglPresentationTimeANDROID(dpy, eglSurf, timestamp)
             val swapOk = EGL14.eglSwapBuffers(dpy, eglSurf)
+            if (!swapOk) {
+                val err = EGL14.eglGetError()
+                SunshineLogManager.log("DISPATCHER_WARN", "eglSwapBuffers failed (EGL error 0x${Integer.toHexString(err)})")
+            }
             swapOk
         } catch (_: Throwable) {
             false
@@ -467,6 +480,10 @@ class SunshineFrameDispatcher {
         for (dead in toRemove) {
             destroyTargetEgl(dead)
             clientTargets.remove(dead)
+            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface. Remaining: ${clientTargets.size}")
+            try {
+                onSurfaceEvictedListener?.invoke(dead.surface)
+            } catch (_: Exception) {}
         }
 
         // Return to dummy surface
@@ -491,6 +508,10 @@ class SunshineFrameDispatcher {
         for (dead in toRemove) {
             destroyTargetEgl(dead)
             clientTargets.remove(dead)
+            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface. Remaining: ${clientTargets.size}")
+            try {
+                onSurfaceEvictedListener?.invoke(dead.surface)
+            } catch (_: Exception) {}
         }
 
         dummySurface?.let {
