@@ -46,6 +46,7 @@ class SunshineRuntimeManager private constructor() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var audioRecord: AudioRecord? = null
+    private val frameDispatcher = SunshineFrameDispatcher()
 
     // Streaming State
     private val _isStreaming = MutableStateFlow(false)
@@ -136,32 +137,34 @@ class SunshineRuntimeManager private constructor() {
         activeSessions.add(session)
         _isStreaming.value = true
 
-        // Create or reuse VirtualDisplay on main thread
+        // Create VirtualDisplay feeding frameDispatcher on main thread
         Handler(Looper.getMainLooper()).post {
             val mp = mediaProjection
             if (mp != null) {
-                if (virtualDisplay != null && currentStreamSurface == surface) {
-                    SunshineLogManager.log("VD", "VirtualDisplay already active for surface, reusing shared hardware display for client #$sessionIndex")
-                } else {
+                if (!frameDispatcher.isRunning || virtualDisplay == null) {
                     try {
-                        virtualDisplay?.release()
-                        currentStreamSurface = surface
+                        val inputSurface = frameDispatcher.start(width, height)
                         val densityDpi = context?.resources?.displayMetrics?.densityDpi ?: 300
+                        virtualDisplay?.release()
                         virtualDisplay = mp.createVirtualDisplay(
                             "SunshineVirtualDisplay",
                             width,
                             height,
                             densityDpi,
                             android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                            surface,
+                            inputSurface,
                             null,
                             null
                         )
-                        SunshineLogManager.log("VD", "VirtualDisplay created successfully (${width}x$height @ ${densityDpi}dpi)")
+                        SunshineLogManager.log("VD", "VirtualDisplay created feeding SunshineFrameDispatcher (${width}x$height @ ${densityDpi}dpi)")
                     } catch (e: Exception) {
-                        SunshineLogManager.log("VD_ERR", "Error creating VirtualDisplay: ${e.message}")
+                        SunshineLogManager.log("VD_ERR", "Error initializing VirtualDisplay/Dispatcher: ${e.message}")
                     }
                 }
+
+                // Register client surface into frame dispatcher
+                frameDispatcher.addSurface(surface, width, height)
+                SunshineLogManager.log("VD", "Client #$sessionIndex surface registered into frame dispatcher")
             } else {
                 SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
             }
@@ -183,6 +186,7 @@ class SunshineRuntimeManager private constructor() {
             if (activeSessions.isNotEmpty()) {
                 activeSessions.removeAt(activeSessions.size - 1)
             }
+            frameDispatcher.pruneDeadSurfaces()
             SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
             return
         }
@@ -195,6 +199,7 @@ class SunshineRuntimeManager private constructor() {
 
         Handler(Looper.getMainLooper()).post {
             try {
+                frameDispatcher.stop()
                 virtualDisplay?.release()
                 virtualDisplay = null
                 currentStreamSurface = null
@@ -368,6 +373,7 @@ class SunshineRuntimeManager private constructor() {
         streamStartTime = 0L
         currentStreamSurface = null
         try {
+            frameDispatcher.stop()
             virtualDisplay?.release()
             virtualDisplay = null
             audioRecord?.stop()

@@ -15,8 +15,8 @@ android {
         applicationId = "com.alkaidlab.sunshine"
         minSdk = 29
         targetSdk = 34
-        versionCode = 20260824
-        versionName = "v2026.823.92128"
+        versionCode = 20260825
+        versionName = "v2026.823.92129"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
