@@ -1,0 +1,337 @@
+package com.alkaidlab.sunshine.service
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import com.alkaidlab.sunshine.R
+import com.alkaidlab.sunshine.api.SunshineApiServer
+import com.alkaidlab.sunshine.ui.MainActivity
+import com.connect_screen.mirror.job.SunshineServer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import javax.jmdns.JmDNS
+import javax.jmdns.ServiceInfo
+import java.io.File
+import java.io.FileOutputStream
+import java.net.InetAddress
+import java.net.NetworkInterface
+
+class SunshineService : Service() {
+
+    companion object {
+        const val ACTION_START = "com.alkaidlab.sunshine.ACTION_START"
+        const val ACTION_STOP = "com.alkaidlab.sunshine.ACTION_STOP"
+        const val EXTRA_RESULT_DATA = "extra_result_data"
+
+        private const val CHANNEL_ID = "sunshine_service_channel"
+        private const val NOTIFICATION_ID = 1001
+
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
+        @Volatile
+        var currentIp: String = "127.0.0.1"
+            private set
+
+        @Volatile
+        var currentIpv6: String? = null
+            private set
+
+        @Volatile
+        var cachedResultData: Intent? = null
+
+        fun start(context: Context, resultData: Intent? = null) {
+            if (resultData != null) {
+                cachedResultData = resultData
+            }
+            val intent = Intent(context, SunshineService::class.java).apply {
+                action = ACTION_START
+                if (cachedResultData != null) {
+                    putExtra(EXTRA_RESULT_DATA, cachedResultData)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, SunshineService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
+        }
+
+        fun restart(context: Context) {
+            SunshineRuntimeManager.getInstance().triggerAutoRecovery()
+        }
+    }
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var apiServer: SunshineApiServer? = null
+    private var jmDnsList = mutableListOf<JmDNS>()
+    private var nativeThread: Thread? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+        SunshineRuntimeManager.getInstance().initialize(this)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_START -> {
+                startForeground(NOTIFICATION_ID, buildNotification("正在初始化推流服务..."))
+                val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) ?: cachedResultData
+                if (resultData != null) {
+                    cachedResultData = resultData
+                    try {
+                        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                        val projection = mpm.getMediaProjection(-1, resultData)
+                        projection.registerCallback(object : MediaProjection.Callback() {
+                            override fun onStop() {
+                                SunshineLogManager.log("MEDIA_PROJ", "MediaProjection stopped by system")
+                                SunshineRuntimeManager.getInstance().onStreamStopped()
+                            }
+                        }, null)
+                        SunshineRuntimeManager.getInstance().setMediaProjection(projection)
+                    } catch (e: Exception) {
+                        SunshineLogManager.log("MEDIA_PROJ_ERR", "Error setting MediaProjection: ${e.message}")
+                    }
+                }
+
+                if (!isRunning) {
+                    initAndStartServers()
+                } else {
+                    updateNotification("服务运行中: $currentIp${if (currentIpv6 != null) " (IPv6)" else ""}")
+                }
+            }
+        }
+        return START_STICKY
+    }
+
+    private fun initAndStartServers() {
+        isRunning = true
+        currentIp = getWifiIpAddress()
+        currentIpv6 = getWifiIpv6Address()
+        updateNotification("服务运行中: $currentIp${if (currentIpv6 != null) " (IPv6)" else ""}")
+        SunshineLogManager.log("NETWORK", "Detected LAN IPv4: $currentIp, IPv6: ${currentIpv6 ?: "None"}")
+
+        serviceScope.launch {
+            try {
+                // 1. Copy CA certificates from assets to filesDir
+                val certFile = copyAssetToFile("cacert.pem", "cacert.pem")
+                val keyFile = copyAssetToFile("cakey.pem", "cakey.pem")
+                val stateFile = File(filesDir, "sunshine_state.json")
+
+                // 2. Start Embedded REST API Server on port 47990
+                apiServer?.stop()
+                apiServer = SunshineApiServer(this@SunshineService, 47990).apply {
+                    start()
+                }
+                SunshineLogManager.log("HTTP_SERVER", "REST API server listening on http://0.0.0.0:47990")
+
+                // 3. Configure Native Sunshine Engine
+                val serverName = "Sunshine-${Build.MANUFACTURER}-${Build.MODEL}"
+                SunshineServer.setSunshineName(serverName)
+                SunshineServer.setCertPath(certFile.absolutePath)
+                SunshineServer.setPkeyPath(keyFile.absolutePath)
+                SunshineServer.setFileStatePath(stateFile.absolutePath)
+                SunshineServer.enableH265()
+
+                // 4. Register mDNS advertisement for Moonlight discovery
+                registerMdns(serverName, currentIp, currentIpv6)
+
+                // 5. Start Native Sunshine Server in background thread
+                nativeThread = Thread {
+                    try {
+                        SunshineLogManager.log("NATIVE", "Starting native SunshineServer...")
+                        SunshineServer.start()
+                    } catch (e: Throwable) {
+                        SunshineLogManager.log("NATIVE_ERR", "Native SunshineServer exited: ${e.message}")
+                    }
+                }.apply {
+                    isDaemon = true
+                    start()
+                }
+
+            } catch (e: Exception) {
+                SunshineLogManager.log("INIT_ERR", "Error initializing SunshineService: ${e.message}")
+            }
+        }
+    }
+
+    private fun registerMdns(serverName: String, ip4: String, ip6: String?) {
+        try {
+            val inetAddress = InetAddress.getByName(ip4)
+            val jmdns = JmDNS.create(inetAddress)
+            val serviceInfo = ServiceInfo.create(
+                "_nvstream._tcp.local.",
+                serverName,
+                47989,
+                "Foundation-Sunshine on Android"
+            )
+            jmdns.registerService(serviceInfo)
+            jmDnsList.add(jmdns)
+            SunshineLogManager.log("MDNS", "Registered mDNS service _nvstream._tcp.local. on IPv4 $ip4:47989 as $serverName")
+        } catch (e: Exception) {
+            SunshineLogManager.log("MDNS_ERR", "IPv4 mDNS registration failed on $ip4: ${e.message}")
+        }
+
+        if (ip6 != null) {
+            try {
+                val inet6 = InetAddress.getByName(ip6)
+                val jmdns6 = JmDNS.create(inet6)
+                val serviceInfo6 = ServiceInfo.create(
+                    "_nvstream._tcp.local.",
+                    "$serverName-IPv6",
+                    47989,
+                    "Foundation-Sunshine on Android (IPv6)"
+                )
+                jmdns6.registerService(serviceInfo6)
+                jmDnsList.add(jmdns6)
+                SunshineLogManager.log("MDNS", "Registered mDNS service on IPv6 $ip6:47989 as $serverName-IPv6")
+            } catch (e: Exception) {
+                SunshineLogManager.log("MDNS_INFO", "IPv6 mDNS note: ${e.message}")
+            }
+        }
+    }
+
+    private fun copyAssetToFile(assetName: String, fileName: String): File {
+        val dest = File(filesDir, fileName)
+        if (!dest.exists()) {
+            assets.open(assetName).use { input ->
+                FileOutputStream(dest).use { output ->
+                    input.copyTo(output)
+                }
+            }
+        }
+        return dest
+    }
+
+    private fun getWifiIpAddress(): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces().toList()
+            val wlan = interfaces.find { it.name.contains("wlan", ignoreCase = true) }
+            val prioritized = if (wlan != null) listOf(wlan) + interfaces.filter { it != wlan } else interfaces
+            for (iface in prioritized) {
+                if (iface.isUp && !iface.isLoopback) {
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            return addr.hostAddress ?: "127.0.0.1"
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "127.0.0.1"
+    }
+
+    private fun getWifiIpv6Address(): String? {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces().toList()
+            val wlan = interfaces.find { it.name.contains("wlan", ignoreCase = true) }
+            val prioritized = if (wlan != null) listOf(wlan) + interfaces.filter { it != wlan } else interfaces
+            for (iface in prioritized) {
+                if (iface.isUp && !iface.isLoopback) {
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (addr is java.net.Inet6Address &&
+                            !addr.isLoopbackAddress &&
+                            !addr.isLinkLocalAddress &&
+                            !addr.isSiteLocalAddress &&
+                            !addr.isMulticastAddress) {
+                            val host = addr.hostAddress ?: continue
+                            return host.split("%")[0]
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Sunshine Streaming Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows the active Sunshine streaming server status"
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(statusText: String): Notification {
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Sunshine 串流服务")
+            .setContentText(statusText)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .build()
+    }
+
+    private fun updateNotification(statusText: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(NOTIFICATION_ID, buildNotification(statusText))
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isRunning = false
+        SunshineRuntimeManager.getInstance().releaseAll()
+
+        try {
+            jmDnsList.forEach { it.close() }
+            jmDnsList.clear()
+        } catch (_: Exception) {}
+
+        try {
+            apiServer?.stop()
+        } catch (_: Exception) {}
+
+        try {
+            SunshineLogManager.log("NATIVE", "Calling SunshineServer.exitServer() in onDestroy...")
+            SunshineServer.exitServer()
+        } catch (_: Exception) {}
+
+        serviceScope.cancel()
+        SunshineLogManager.log("SERVICE", "SunshineService destroyed")
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+}

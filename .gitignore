@@ -1,0 +1,20 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+
+# Root debug/test artifacts and local files
+/client.crt
+/client.key
+/new_state.json
+/*.log
+/*.txt
+/*.png
+/*.xml
+/META-INF/

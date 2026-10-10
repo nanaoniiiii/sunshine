@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.SunshineAndroid" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0D1117</item>
+        <item name="android:navigationBarColor">#0D1117</item>
+    </style>
+</resources>
