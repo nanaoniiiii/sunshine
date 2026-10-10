@@ -40,15 +40,10 @@ public class SunshineMouse {
     private static volatile boolean isLeftButtonDown = false;
     private static volatile long downTime = 0;
 
-    private static float defaultDisplayWidth = 1600f;  // Longer dimension of phone (e.g. 1600 on S20+)
-    private static float defaultDisplayHeight = 720f;  // Shorter dimension of phone (e.g. 720 on S20+)
-    private static float screenWidth = 1280f;          // Moonlight stream width
-    private static float screenHeight = 720f;          // Moonlight stream height
-
-    private static float landscapeMirrorWidth = 1280f;
-    private static float landscapeMirrorHeight = 720f;
-    private static float portraitMirrorWidth = 720f;
-    private static float portraitMirrorHeight = 720f;
+    private static volatile float defaultDisplayWidth = 1600f;  // Live or default width
+    private static volatile float defaultDisplayHeight = 720f;  // Live or default height
+    private static volatile int virtualDisplayWidth = 0;        // Locked VirtualDisplay width
+    private static volatile int virtualDisplayHeight = 0;       // Locked VirtualDisplay height
 
     public static void setContext(Context context) {
         if (context != null) {
@@ -68,8 +63,8 @@ public class SunshineMouse {
                     android.graphics.Point size = new android.graphics.Point();
                     display.getRealSize(size);
                     if (size.x > 0 && size.y > 0) {
-                        defaultDisplayWidth = Math.max(size.x, size.y);
-                        defaultDisplayHeight = Math.min(size.x, size.y);
+                        defaultDisplayWidth = size.x;
+                        defaultDisplayHeight = size.y;
                         Log.i(TAG, "Queried real physical display: " + (int)defaultDisplayWidth + "x" + (int)defaultDisplayHeight);
                     }
                 }
@@ -79,105 +74,99 @@ public class SunshineMouse {
         }
     }
 
-    public static void initialize(int width, int height) {
+    public static synchronized void initialize(int width, int height) {
         pointers.clear();
         bufferedMove.clear();
         currentMousePoint = null;
         isLeftButtonDown = false;
         downTime = 0;
 
-        if (width > 0) screenWidth = width;
-        if (height > 0) screenHeight = height;
+        // Establish VirtualDisplay mapping dimensions on first connection
+        if (virtualDisplayWidth <= 0 || virtualDisplayHeight <= 0) {
+            virtualDisplayWidth = (width > 0) ? width : 1920;
+            virtualDisplayHeight = (height > 0) ? height : 1080;
+            SunshineLogManager.log("MOUSE", "Initialized mapper VirtualDisplay: " + virtualDisplayWidth + "x" + virtualDisplayHeight);
+        } else {
+            SunshineLogManager.log("MOUSE", "Active VirtualDisplay preserved: " + virtualDisplayWidth + "x" + virtualDisplayHeight + " (new client " + width + "x" + height + ")");
+        }
 
         updateDisplayDimensions();
+    }
 
-        float displayAspect = defaultDisplayWidth / defaultDisplayHeight; // e.g. 1600 / 720 = 2.222
-
-        // Landscape mirror dimensions
-        landscapeMirrorHeight = screenHeight;
-        float lmw = screenHeight * displayAspect;
-        landscapeMirrorWidth = lmw;
-        if (lmw > screenWidth) {
-            landscapeMirrorWidth = screenWidth;
-            landscapeMirrorHeight = screenWidth / displayAspect;
-        }
-
-        // Portrait mirror dimensions
-        portraitMirrorHeight = screenHeight;
-        float pmw = screenHeight / displayAspect;
-        portraitMirrorWidth = pmw;
-        if (pmw > screenWidth) {
-            portraitMirrorWidth = screenWidth;
-            portraitMirrorHeight = screenWidth * displayAspect;
-        }
-
-        SunshineLogManager.log("MOUSE", "Initialized mapper - physical: " + (int)defaultDisplayWidth + "x" + (int)defaultDisplayHeight +
-                ", stream: " + (int)screenWidth + "x" + (int)screenHeight +
-                ", landMirror: " + (int)landscapeMirrorWidth + "x" + (int)landscapeMirrorHeight +
-                ", portMirror: " + (int)portraitMirrorWidth + "x" + (int)portraitMirrorHeight);
+    public static synchronized void reset() {
+        virtualDisplayWidth = 0;
+        virtualDisplayHeight = 0;
+        pointers.clear();
+        bufferedMove.clear();
+        currentMousePoint = null;
+        isLeftButtonDown = false;
+        downTime = 0;
+        SunshineLogManager.log("MOUSE", "Reset mapper state");
     }
 
     /**
      * Translates normalized coordinates [0.0, 1.0] from Moonlight into exact
      * physical screen pixel coordinates on the Android device.
+     * Uses dynamic physical screen dimensions and the fixed VirtualDisplay aspect ratio
+     * to eliminate drift and edge skew across all connected devices.
      */
     public static Point translate(float normX, float normY) {
         Context ctx = appContext;
-        boolean isLandscape = true;
+        float dispW = defaultDisplayWidth;
+        float dispH = defaultDisplayHeight;
+
         if (ctx != null) {
             try {
-                isLandscape = (ctx.getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE);
+                DisplayManager dm = (DisplayManager) ctx.getSystemService(Context.DISPLAY_SERVICE);
+                if (dm != null) {
+                    Display display = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                    if (display != null) {
+                        android.graphics.Point size = new android.graphics.Point();
+                        display.getRealSize(size);
+                        if (size.x > 0 && size.y > 0) {
+                            dispW = size.x;
+                            dispH = size.y;
+                        }
+                    }
+                }
             } catch (Throwable ignored) {}
         }
 
-        float streamX = normX * screenWidth;
-        float streamY = normY * screenHeight;
+        float vdW = (virtualDisplayWidth > 0) ? virtualDisplayWidth : 1920f;
+        float vdH = (virtualDisplayHeight > 0) ? virtualDisplayHeight : 1080f;
 
-        if (isLandscape) {
-            return translateLandscape(streamX, streamY);
+        float dispAspect = dispW / dispH;
+        float vdAspect = vdW / vdH;
+
+        float renderedNormW;
+        float renderedNormH;
+        float offsetNormX;
+        float offsetNormY;
+
+        if (dispAspect >= vdAspect) {
+            // Screen is wider than or equal to VirtualDisplay (e.g. landscape 20:9 phone in 16:9 VD)
+            // Screen fits horizontally, centered vertically with black bars on top/bottom
+            renderedNormW = 1.0f;
+            renderedNormH = vdAspect / dispAspect;
+            offsetNormX = 0.0f;
+            offsetNormY = (1.0f - renderedNormH) / 2.0f;
         } else {
-            return translatePortrait(streamX, streamY);
+            // Screen is narrower/taller than VirtualDisplay (e.g. portrait 9:20 phone in 16:9 VD)
+            // Screen fits vertically, centered horizontally with black bars on left/right
+            renderedNormW = dispAspect / vdAspect;
+            renderedNormH = 1.0f;
+            offsetNormX = (1.0f - renderedNormW) / 2.0f;
+            offsetNormY = 0.0f;
         }
-    }
 
-    private static Point translateLandscape(float x, float y) {
-        float fW = screenWidth;
-        float lmW = landscapeMirrorWidth;
-        float fH = screenHeight;
-        float lmH = landscapeMirrorHeight;
+        float clampedNormX = Math.max(0.0f, Math.min(renderedNormW, normX - offsetNormX));
+        float clampedNormY = Math.max(0.0f, Math.min(renderedNormH, normY - offsetNormY));
 
-        float offsetX = (fW - lmW) / 2.0f;
-        float offsetY = (fH - lmH) / 2.0f;
+        float targetX = (renderedNormW > 0.0f) ? (clampedNormX / renderedNormW) * dispW : 0.0f;
+        float targetY = (renderedNormH > 0.0f) ? (clampedNormY / renderedNormH) * dispH : 0.0f;
 
-        float clampedX = Math.max(0.0f, Math.min(lmW, x - offsetX));
-        float clampedY = Math.max(0.0f, Math.min(lmH, y - offsetY));
-
-        float targetX = (lmW > 0.0f) ? (clampedX / lmW) * defaultDisplayWidth : 0.0f;
-        float targetY = (lmH > 0.0f) ? (clampedY / lmH) * defaultDisplayHeight : 0.0f;
-
-        targetX = Math.max(0.0f, Math.min(defaultDisplayWidth - 1.0f, targetX));
-        targetY = Math.max(0.0f, Math.min(defaultDisplayHeight - 1.0f, targetY));
-
-        return new Point(targetX, targetY);
-    }
-
-    private static Point translatePortrait(float x, float y) {
-        float fW = screenWidth;
-        float pmW = portraitMirrorWidth;
-        float fH = screenHeight;
-        float pmH = portraitMirrorHeight;
-
-        float offsetX = (fW - pmW) / 2.0f;
-        float offsetY = (fH - pmH) / 2.0f;
-
-        float clampedX = Math.max(0.0f, Math.min(pmW, x - offsetX));
-        float clampedY = Math.max(0.0f, Math.min(pmH, y - offsetY));
-
-        float targetX = (pmW > 0.0f) ? (clampedX / pmW) * defaultDisplayHeight : 0.0f;
-        float targetY = (pmH > 0.0f) ? (clampedY / pmH) * defaultDisplayWidth : 0.0f;
-
-        targetX = Math.max(0.0f, Math.min(defaultDisplayHeight - 1.0f, targetX));
-        targetY = Math.max(0.0f, Math.min(defaultDisplayWidth - 1.0f, targetY));
+        targetX = Math.max(0.0f, Math.min(dispW - 1.0f, targetX));
+        targetY = Math.max(0.0f, Math.min(dispH - 1.0f, targetY));
 
         return new Point(targetX, targetY);
     }
@@ -221,8 +210,18 @@ public class SunshineMouse {
      * touch events, preventing phantom touches and sticky selection.
      */
     public static void handleAbsMouseMovePacket(float x, float y, float width, float height) {
-        float normX = (width > 0.0f) ? (x / width) : x;
-        float normY = (height > 0.0f) ? (y / height) : y;
+        float normX;
+        float normY;
+        if (width > 0.0f && height > 0.0f) {
+            normX = x / width;
+            normY = y / height;
+        } else if (virtualDisplayWidth > 0 && virtualDisplayHeight > 0) {
+            normX = x / virtualDisplayWidth;
+            normY = y / virtualDisplayHeight;
+        } else {
+            normX = x;
+            normY = y;
+        }
         Point pt = translate(normX, normY);
         currentMousePoint = pt;
 

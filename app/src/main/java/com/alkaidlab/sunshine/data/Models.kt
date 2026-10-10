@@ -1,5 +1,6 @@
 package com.alkaidlab.sunshine.data
 
+import android.view.Surface
 import com.google.gson.annotations.SerializedName
 
 data class ConfigResponse(
@@ -85,7 +86,8 @@ data class RuntimeSession(
     val fps: Int,
     val bitrate: Int,
     val codec: String,
-    @SerializedName("start_time") val startTime: Long
+    @SerializedName("start_time") val startTime: Long,
+    @Transient val surface: Surface? = null
 )
 
 data class RuntimeSessionsResponse(

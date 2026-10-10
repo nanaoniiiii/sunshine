@@ -75,7 +75,7 @@ fun DashboardScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = config?.version ?: "v2026.823.92130 (Android)",
+                    text = config?.version ?: "v2026.823.92131 (Android)",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace

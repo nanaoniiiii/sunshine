@@ -143,7 +143,8 @@ class SunshineRuntimeManager private constructor() {
             fps = fps,
             bitrate = lastBitrate,
             codec = lastCodec,
-            startTime = System.currentTimeMillis()
+            startTime = System.currentTimeMillis(),
+            surface = surface
         )
         activeSessions.add(session)
         _activeSessionsFlow.value = activeSessions.toList()
@@ -192,8 +193,24 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStopped() {
-        SunshineLogManager.log("STREAM", "Native stream stopped by Sunshine engine.")
+        val remaining = activeSessionCount.decrementAndGet()
+        SunshineLogManager.log("STREAM", "Native stream stopped for a client. Remaining active clients: $remaining")
 
+        if (remaining > 0) {
+            // One client disconnected, but other clients remain connected
+            if (activeSessions.isNotEmpty()) {
+                val removed = activeSessions.removeAt(activeSessions.size - 1)
+                removed.surface?.let { surf ->
+                    frameDispatcher.removeSurface(surf)
+                }
+            }
+            _activeSessionsFlow.value = activeSessions.toList()
+            _perfFlow.value = getPerfSnapshot()
+            SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
+            return
+        }
+
+        // All clients disconnected (remaining <= 0)
         activeSessionCount.set(0)
         _isStreaming.value = false
         activeSessions.clear()
@@ -209,6 +226,7 @@ class SunshineRuntimeManager private constructor() {
                 virtualDisplay = null
                 currentStreamSurface = null
                 stopAudioCapture()
+                com.connect_screen.mirror.job.SunshineMouse.reset()
             } catch (e: Exception) {
                 SunshineLogManager.log("STREAM_ERR", "Error tearing down stream: ${e.message}")
             }

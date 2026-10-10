@@ -55,6 +55,14 @@ class SunshineFrameDispatcher {
     var isRunning: Boolean = false
         private set
 
+    @Volatile
+    var sourceWidth: Int = 1920
+        private set
+
+    @Volatile
+    var sourceHeight: Int = 1080
+        private set
+
     init {
         val vertexCoords = floatArrayOf(
             -1.0f, -1.0f,
@@ -87,6 +95,9 @@ class SunshineFrameDispatcher {
     }
 
     fun start(width: Int, height: Int): Surface {
+        sourceWidth = if (width > 0) width else 1920
+        sourceHeight = if (height > 0) height else 1080
+
         if (isRunning && inputSurface != null) {
             return inputSurface!!
         }
@@ -352,29 +363,59 @@ class SunshineFrameDispatcher {
                 continue
             }
 
-            GLES20.glViewport(0, 0, target.width, target.height)
-            GLES20.glUseProgram(programId)
+            try {
+                val targetW = target.width
+                val targetH = target.height
+                val vdW = sourceWidth
+                val vdH = sourceHeight
 
-            GLES20.glUniformMatrix4fv(uTextureMatrixHandle, 1, false, texMatrix, 0)
+                var vpX = 0
+                var vpY = 0
+                var vpW = targetW
+                var vpH = targetH
 
-            GLES20.glEnableVertexAttribArray(aPositionHandle)
-            GLES20.glVertexAttribPointer(aPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
+                if (vdW > 0 && vdH > 0 && targetW > 0 && targetH > 0) {
+                    val targetAspect = targetW.toFloat() / targetH.toFloat()
+                    val sourceAspect = vdW.toFloat() / vdH.toFloat()
+                    if (Math.abs(targetAspect - sourceAspect) > 0.01f) {
+                        if (targetAspect > sourceAspect) {
+                            vpW = (targetH * sourceAspect).toInt()
+                            vpX = (targetW - vpW) / 2
+                        } else {
+                            vpH = (targetW / sourceAspect).toInt()
+                            vpY = (targetH - vpH) / 2
+                        }
+                        GLES20.glClearColor(0f, 0f, 0f, 1f)
+                        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                    }
+                }
 
-            GLES20.glEnableVertexAttribArray(aTexCoordHandle)
-            GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+                GLES20.glViewport(vpX, vpY, vpW, vpH)
+                GLES20.glUseProgram(programId)
 
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-            GLES20.glUniform1i(uSamplerHandle, 0)
+                GLES20.glUniformMatrix4fv(uTextureMatrixHandle, 1, false, texMatrix, 0)
 
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+                GLES20.glEnableVertexAttribArray(aPositionHandle)
+                GLES20.glVertexAttribPointer(aPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
 
-            GLES20.glDisableVertexAttribArray(aPositionHandle)
-            GLES20.glDisableVertexAttribArray(aTexCoordHandle)
+                GLES20.glEnableVertexAttribArray(aTexCoordHandle)
+                GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
 
-            EGLExt.eglPresentationTimeANDROID(dpy, eglSurf, timestamp)
-            val swapOk = EGL14.eglSwapBuffers(dpy, eglSurf)
-            if (!swapOk) {
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
+                GLES20.glUniform1i(uSamplerHandle, 0)
+
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
+                GLES20.glDisableVertexAttribArray(aPositionHandle)
+                GLES20.glDisableVertexAttribArray(aTexCoordHandle)
+
+                EGLExt.eglPresentationTimeANDROID(dpy, eglSurf, timestamp)
+                val swapOk = EGL14.eglSwapBuffers(dpy, eglSurf)
+                if (!swapOk) {
+                    toRemove.add(target)
+                }
+            } catch (t: Throwable) {
                 toRemove.add(target)
             }
         }
