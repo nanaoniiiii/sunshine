@@ -49,11 +49,9 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     private val _clients = MutableStateFlow<List<ClientItem>>(emptyList())
     val clients: StateFlow<List<ClientItem>> = _clients.asStateFlow()
 
-    private val _runtimeSessions = MutableStateFlow<List<RuntimeSession>>(emptyList())
-    val runtimeSessions: StateFlow<List<RuntimeSession>> = _runtimeSessions.asStateFlow()
+    val runtimeSessions: StateFlow<List<RuntimeSession>> = runtime.activeSessionsFlow
 
-    private val _perf = MutableStateFlow(PerfResponse())
-    val perf: StateFlow<PerfResponse> = _perf.asStateFlow()
+    val perf: StateFlow<PerfResponse> = runtime.perfFlow
 
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
@@ -158,15 +156,12 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     }
 
     private suspend fun fetchRuntimeData() {
+        // Active sessions and performance metrics are bound reactively in real time
+        // via runtime.activeSessionsFlow and runtime.perfFlow.
+        // We also query the REST API endpoint to keep remote clients synchronized:
         try {
-            val sessionResp = api.getRuntimeSessions()
-            if (sessionResp.isSuccessful) {
-                _runtimeSessions.value = sessionResp.body()?.sessions ?: emptyList()
-            }
-            val perfResp = api.getPerfCurrent()
-            if (perfResp.isSuccessful) {
-                _perf.value = perfResp.body() ?: PerfResponse()
-            }
+            api.getRuntimeSessions()
+            api.getPerfCurrent()
         } catch (_: Exception) {}
     }
 

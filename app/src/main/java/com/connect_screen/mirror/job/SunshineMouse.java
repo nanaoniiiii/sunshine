@@ -245,10 +245,8 @@ public class SunshineMouse {
         SunshineLogManager.log("MOUSE", "Mouse " + (isRelease ? "UP" : "DOWN") + " at (" + (int)pt.x + "," + (int)pt.y + ")");
 
         if (isRelease) {
-            if (isLeftButtonDown) {
-                isLeftButtonDown = false;
-                handleTouchEventUp(0, pt.x, pt.y, false);
-            }
+            isLeftButtonDown = false;
+            handleTouchEventUp(0, pt.x, pt.y, false);
         } else {
             if (!isLeftButtonDown) {
                 isLeftButtonDown = true;

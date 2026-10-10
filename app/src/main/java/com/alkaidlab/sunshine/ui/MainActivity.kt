@@ -73,9 +73,14 @@ class MainActivity : ComponentActivity() {
         generalPermissionsLauncher.launch(permissions.toTypedArray())
 
         ensureAppOpsPermissions()
-        SunshineService.start(this)
+        val autoData = intent?.getParcelableExtra<Intent>(SunshineService.EXTRA_RESULT_DATA)
+        if (autoData != null) {
+            SunshineService.start(this, autoData)
+        } else {
+            SunshineService.start(this)
+        }
 
-        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
+        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null && autoData == null) {
             requestMediaProjection()
         } else if (intent?.getBooleanExtra("auto_restart", false) == true) {
             moveTaskToBack(true)
@@ -96,7 +101,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
+        val autoData = intent?.getParcelableExtra<Intent>(SunshineService.EXTRA_RESULT_DATA)
+        if (autoData != null) {
+            SunshineService.start(this, autoData)
+        }
+        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null && autoData == null) {
             requestMediaProjection()
         } else if (intent?.getBooleanExtra("auto_restart", false) == true) {
             moveTaskToBack(true)

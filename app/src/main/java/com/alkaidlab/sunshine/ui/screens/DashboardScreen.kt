@@ -75,7 +75,7 @@ fun DashboardScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = config?.version ?: "v2026.823.92129 (Android)",
+                    text = config?.version ?: "v2026.823.92130 (Android)",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace
@@ -365,6 +365,9 @@ fun DashboardScreen(
                             ) {
                                 Text("画面规格: ${session.width}x${session.height} @ ${session.fps}fps", color = TextSecondary, fontSize = 12.sp)
                                 Text("码率: ${session.bitrate / 1000} Mbps", color = AccentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                            if (session.clientIp != "127.0.0.1") {
+                                Text("连接节点: ${session.clientIp}", color = TextMuted, fontSize = 11.sp)
                             }
                         }
                     }

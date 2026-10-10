@@ -136,7 +136,7 @@ class SunshineApiServer(
         val response = ConfigResponse(
             status = "true",
             platform = "android",
-            version = "v2026.823.92129",
+            version = "v2026.823.92130",
             displayDevices = devices,
             adapters = adapters,
             port = confMap["port"] ?: "47989",

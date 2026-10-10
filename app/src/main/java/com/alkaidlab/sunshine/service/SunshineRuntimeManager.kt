@@ -55,10 +55,19 @@ class SunshineRuntimeManager private constructor() {
     private val _pinRequested = MutableStateFlow<String?>(null)
     val pinRequested: StateFlow<String?> = _pinRequested.asStateFlow()
 
+    private val _activeSessionsFlow = MutableStateFlow<List<RuntimeSession>>(emptyList())
+    val activeSessionsFlow: StateFlow<List<RuntimeSession>> = _activeSessionsFlow.asStateFlow()
+
+    private val _perfFlow = MutableStateFlow(PerfResponse())
+    val perfFlow: StateFlow<PerfResponse> = _perfFlow.asStateFlow()
+
     private val activeSessions = CopyOnWriteArrayList<RuntimeSession>()
     private val activeSessionCount = java.util.concurrent.atomic.AtomicInteger(0)
     private var currentStreamSurface: Surface? = null
     private var streamStartTime: Long = 0
+
+    @Volatile
+    private var lastDiscoveredClient: String? = null
 
     // Telemetry
     private var lastFps: Double = 0.0
@@ -113,7 +122,9 @@ class SunshineRuntimeManager private constructor() {
 
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface, shouldSendAudio: Boolean) {
         val sessionIndex = activeSessionCount.incrementAndGet()
-        SunshineLogManager.log("STREAM", "Stream started (client #$sessionIndex): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
+        val cName = lastDiscoveredClient ?: "Moonlight Client #$sessionIndex"
+        val cIp = lastDiscoveredClient ?: "127.0.0.1"
+        SunshineLogManager.log("STREAM", "Stream started ($cName): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
 
         lastWidth = width
         lastHeight = height
@@ -125,8 +136,8 @@ class SunshineRuntimeManager private constructor() {
         }
 
         val session = RuntimeSession(
-            clientName = "Moonlight Client #$sessionIndex",
-            clientIp = "127.0.0.1",
+            clientName = cName,
+            clientIp = cIp,
             width = width,
             height = height,
             fps = fps,
@@ -135,7 +146,9 @@ class SunshineRuntimeManager private constructor() {
             startTime = System.currentTimeMillis()
         )
         activeSessions.add(session)
+        _activeSessionsFlow.value = activeSessions.toList()
         _isStreaming.value = true
+        _perfFlow.value = getPerfSnapshot()
 
         // Create VirtualDisplay feeding frameDispatcher on main thread
         Handler(Looper.getMainLooper()).post {
@@ -164,7 +177,7 @@ class SunshineRuntimeManager private constructor() {
 
                 // Register client surface into frame dispatcher
                 frameDispatcher.addSurface(surface, width, height)
-                SunshineLogManager.log("VD", "Client #$sessionIndex surface registered into frame dispatcher")
+                SunshineLogManager.log("VD", "Client ($cName) surface registered into frame dispatcher")
             } else {
                 SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
             }
@@ -179,26 +192,18 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStopped() {
-        val remaining = activeSessionCount.decrementAndGet()
-        SunshineLogManager.log("STREAM", "Stream stopped for a client. Remaining active clients: $remaining")
+        SunshineLogManager.log("STREAM", "Native stream stopped by Sunshine engine.")
 
-        if (remaining > 0) {
-            if (activeSessions.isNotEmpty()) {
-                activeSessions.removeAt(activeSessions.size - 1)
-            }
-            frameDispatcher.pruneDeadSurfaces()
-            SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
-            return
-        }
-
-        // All clients disconnected
         activeSessionCount.set(0)
         _isStreaming.value = false
         activeSessions.clear()
+        _activeSessionsFlow.value = emptyList()
+        _perfFlow.value = PerfResponse(active = false)
         streamStartTime = 0L
 
         Handler(Looper.getMainLooper()).post {
             try {
+                frameDispatcher.clearSurfaces()
                 frameDispatcher.stop()
                 virtualDisplay?.release()
                 virtualDisplay = null
@@ -240,6 +245,9 @@ class SunshineRuntimeManager private constructor() {
             if (launchIntent != null) {
                 launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 launchIntent.putExtra("auto_restart", true)
+                SunshineService.cachedResultData?.let {
+                    launchIntent.putExtra(SunshineService.EXTRA_RESULT_DATA, it)
+                }
                 val pendingIntent = PendingIntent.getActivity(
                     ctx,
                     12345,
@@ -274,6 +282,17 @@ class SunshineRuntimeManager private constructor() {
 
     fun onClientDiscovered(client: String) {
         SunshineLogManager.log("DISCOVERY", "Discovered client: $client")
+        lastDiscoveredClient = client
+        if (activeSessions.isNotEmpty()) {
+            val updated = activeSessions.map { s ->
+                if (s.clientName.startsWith("Moonlight Client") || s.clientIp == "127.0.0.1") {
+                    s.copy(clientName = client, clientIp = client)
+                } else s
+            }
+            activeSessions.clear()
+            activeSessions.addAll(updated)
+            _activeSessionsFlow.value = activeSessions.toList()
+        }
     }
 
     fun setServerUuid(uuid: String) {

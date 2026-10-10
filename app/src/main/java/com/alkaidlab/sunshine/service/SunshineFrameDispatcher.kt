@@ -154,6 +154,17 @@ class SunshineFrameDispatcher {
         }
     }
 
+    fun clearSurfaces() {
+        val handler = glHandler ?: return
+        handler.post {
+            for (target in clientTargets) {
+                destroyTargetEgl(target)
+            }
+            clientTargets.clear()
+            SunshineLogManager.log("DISPATCHER", "Cleared all client stream surfaces")
+        }
+    }
+
     fun getActiveTargetCount(): Int = clientTargets.size
 
     fun stop() {
@@ -383,7 +394,9 @@ class SunshineFrameDispatcher {
         val dpy = eglDisplay ?: return
         val eglSurf = target.eglSurface
         if (eglSurf != null && eglSurf != EGL14.EGL_NO_SURFACE) {
-            EGL14.eglDestroySurface(dpy, eglSurf)
+            try {
+                EGL14.eglDestroySurface(dpy, eglSurf)
+            } catch (_: Throwable) {}
             target.eglSurface = null
         }
     }
