@@ -421,7 +421,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun handleMouseButton(button: Int, isDown: Boolean) {
-        com.connect_screen.mirror.job.SunshineMouse.handleLeftMouseButton(isDown)
+        com.connect_screen.mirror.job.SunshineMouse.handleLeftMouseButton(!isDown)
     }
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {

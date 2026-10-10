@@ -36,8 +36,9 @@ public class SunshineMouse {
     private static Context appContext = null;
     private static final Map<Integer, Point> pointers = new ConcurrentHashMap<>();
     private static final Set<Integer> bufferedMove = Collections.synchronizedSet(new HashSet<>());
-    private static Point singleMousePoint = null;
-    private static long downTime = 0;
+    private static volatile Point currentMousePoint = null;
+    private static volatile boolean isLeftButtonDown = false;
+    private static volatile long downTime = 0;
 
     private static float defaultDisplayWidth = 1600f;  // Longer dimension of phone (e.g. 1600 on S20+)
     private static float defaultDisplayHeight = 720f;  // Shorter dimension of phone (e.g. 720 on S20+)
@@ -81,7 +82,8 @@ public class SunshineMouse {
     public static void initialize(int width, int height) {
         pointers.clear();
         bufferedMove.clear();
-        singleMousePoint = null;
+        currentMousePoint = null;
+        isLeftButtonDown = false;
         downTime = 0;
 
         if (width > 0) screenWidth = width;
@@ -214,18 +216,18 @@ public class SunshineMouse {
 
     /**
      * Called by Native libsunshine when client sends mouse position packet.
+     * Only generates ACTION_MOVE if the left mouse button is actively pressed down (dragging).
+     * When the button is not pressed, it merely updates the cursor position without injecting
+     * touch events, preventing phantom touches and sticky selection.
      */
     public static void handleAbsMouseMovePacket(float x, float y, float width, float height) {
         float normX = (width > 0.0f) ? (x / width) : x;
         float normY = (height > 0.0f) ? (y / height) : y;
         Point pt = translate(normX, normY);
+        currentMousePoint = pt;
 
-        if (singleMousePoint != null) {
-            singleMousePoint = pt;
+        if (isLeftButtonDown) {
             handleTouchEventMove(0, pt.x, pt.y);
-        } else {
-            singleMousePoint = pt;
-            injectHoverMove(pt.x, pt.y);
         }
     }
 
@@ -234,27 +236,29 @@ public class SunshineMouse {
      * isRelease: true = RELEASE (UP), false = PRESS (DOWN)
      */
     public static void handleLeftMouseButton(boolean isRelease) {
-        Point pt = singleMousePoint;
+        Point pt = currentMousePoint;
         if (pt == null) {
             pt = translate(0.5f, 0.5f);
-            singleMousePoint = pt;
+            currentMousePoint = pt;
         }
 
         SunshineLogManager.log("MOUSE", "Mouse " + (isRelease ? "UP" : "DOWN") + " at (" + (int)pt.x + "," + (int)pt.y + ")");
 
         if (isRelease) {
-            handleTouchEventUp(0, pt.x, pt.y, false);
-            singleMousePoint = null;
+            if (isLeftButtonDown) {
+                isLeftButtonDown = false;
+                handleTouchEventUp(0, pt.x, pt.y, false);
+            }
         } else {
-            handleTouchEventDown(0, pt.x, pt.y);
+            if (!isLeftButtonDown) {
+                isLeftButtonDown = true;
+                handleTouchEventDown(0, pt.x, pt.y);
+            }
         }
     }
 
     private static synchronized void handleTouchEventDown(int pointerId, float x, float y) {
-        if (!bufferedMove.isEmpty()) {
-            bufferedMove.clear();
-            triggerTouchEventMove();
-        }
+        bufferedMove.clear();
 
         long now = SystemClock.uptimeMillis();
         boolean isFirst = pointers.isEmpty();
@@ -275,35 +279,40 @@ public class SunshineMouse {
             actionCode = (index << MotionEvent.ACTION_POINTER_INDEX_SHIFT) | MotionEvent.ACTION_POINTER_DOWN;
         }
 
-        MotionEvent event = obtainMotionEvent(downTime, now, actionCode, idList, -1);
+        MotionEvent event = obtainMotionEvent(downTime, now, actionCode, idList);
         inject(event, "TOUCH_DOWN (ptr=" + pointerId + ", total=" + idList.size() + ")");
     }
 
     private static synchronized void handleTouchEventMove(int pointerId, float x, float y) {
         Point p = pointers.get(pointerId);
         if (p == null) {
-            p = new Point(x, y);
-            pointers.put(pointerId, p);
-        } else {
-            p.x = x;
-            p.y = y;
+            // Pointer is not active/down - ignore move to prevent orphan events
+            return;
         }
+        p.x = x;
+        p.y = y;
 
-        if (bufferedMove.contains(pointerId) || bufferedMove.size() == pointers.size()) {
-            bufferedMove.clear();
+        if (pointers.size() <= 1) {
+            // Single pointer (mouse drag or single finger): trigger immediately for ultra-low latency
             triggerTouchEventMove();
         } else {
-            bufferedMove.add(pointerId);
+            if (bufferedMove.contains(pointerId) || bufferedMove.size() == pointers.size()) {
+                bufferedMove.clear();
+                triggerTouchEventMove();
+            } else {
+                bufferedMove.add(pointerId);
+            }
         }
     }
 
     private static synchronized void triggerTouchEventMove() {
         if (pointers.isEmpty()) return;
         long now = SystemClock.uptimeMillis();
+        if (now < downTime) now = downTime;
         List<Integer> idList = new ArrayList<>(pointers.keySet());
         Collections.sort(idList);
 
-        MotionEvent event = obtainMotionEvent(downTime, now, MotionEvent.ACTION_MOVE, idList, -1);
+        MotionEvent event = obtainMotionEvent(downTime, now, MotionEvent.ACTION_MOVE, idList);
         inject(event, "TOUCH_MOVE (total=" + idList.size() + ")");
     }
 
@@ -311,10 +320,7 @@ public class SunshineMouse {
         Point p = pointers.get(pointerId);
         if (p == null) return;
 
-        if (!bufferedMove.isEmpty()) {
-            bufferedMove.clear();
-            triggerTouchEventMove();
-        }
+        bufferedMove.clear();
 
         p.x = x;
         p.y = y;
@@ -334,29 +340,33 @@ public class SunshineMouse {
         }
 
         long now = SystemClock.uptimeMillis();
-        MotionEvent event = obtainMotionEvent(downTime, now, actionCode, idList, pointerId);
+        if (now < downTime) now = downTime;
+        MotionEvent event = obtainMotionEvent(downTime, now, actionCode, idList);
         inject(event, "TOUCH_UP (ptr=" + pointerId + ", remaining=" + (idList.size() - 1) + ")");
 
         pointers.remove(pointerId);
         if (pointers.isEmpty()) {
             downTime = 0;
+            bufferedMove.clear();
         }
     }
 
     private static synchronized void handleTouchEventCancelAll() {
         if (pointers.isEmpty()) return;
         long now = SystemClock.uptimeMillis();
+        if (now < downTime) now = downTime;
         List<Integer> idList = new ArrayList<>(pointers.keySet());
         Collections.sort(idList);
 
-        MotionEvent event = obtainMotionEvent(downTime, now, MotionEvent.ACTION_CANCEL, idList, -1);
+        MotionEvent event = obtainMotionEvent(downTime, now, MotionEvent.ACTION_CANCEL, idList);
         inject(event, "TOUCH_CANCEL_ALL");
         pointers.clear();
         bufferedMove.clear();
+        isLeftButtonDown = false;
         downTime = 0;
     }
 
-    private static MotionEvent obtainMotionEvent(long downTime, long eventTime, int action, List<Integer> idList, int upPointerId) {
+    private static MotionEvent obtainMotionEvent(long downTime, long eventTime, int action, List<Integer> idList) {
         int count = idList.size();
         MotionEvent.PointerProperties[] props = new MotionEvent.PointerProperties[count];
         MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[count];
@@ -372,7 +382,7 @@ public class SunshineMouse {
             coords[i] = new MotionEvent.PointerCoords();
             coords[i].x = (p != null) ? p.x : 0f;
             coords[i].y = (p != null) ? p.y : 0f;
-            coords[i].pressure = (id == upPointerId) ? 0.0f : 1.0f;
+            coords[i].pressure = 1.0f;
             coords[i].size = 1.0f;
         }
 
@@ -380,14 +390,6 @@ public class SunshineMouse {
                 downTime, eventTime, action, count, props, coords, 0, 0,
                 1.0f, 1.0f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0
         );
-    }
-
-    private static void injectHoverMove(float x, float y) {
-        long now = SystemClock.uptimeMillis();
-        MotionEvent event = MotionEvent.obtain(
-                now, now, MotionEvent.ACTION_HOVER_MOVE, x, y, 0
-        );
-        inject(event, "HOVER_MOVE");
     }
 
     private static void inject(MotionEvent event, String tag) {
