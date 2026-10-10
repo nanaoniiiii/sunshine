@@ -33,6 +33,12 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     private val _serviceIp = MutableStateFlow("127.0.0.1")
     val serviceIp: StateFlow<String> = _serviceIp.asStateFlow()
 
+    private val _serviceVpnIp = MutableStateFlow<String?>(null)
+    val serviceVpnIp: StateFlow<String?> = _serviceVpnIp.asStateFlow()
+
+    private val _serviceIpv6 = MutableStateFlow<String?>(null)
+    val serviceIpv6: StateFlow<String?> = _serviceIpv6.asStateFlow()
+
     // Real Data Models
     private val _config = MutableStateFlow<ConfigResponse?>(null)
     val config: StateFlow<ConfigResponse?> = _config.asStateFlow()
@@ -92,8 +98,11 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
         val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
         _isBatteryOptimizedIgnored.value = pm?.isIgnoringBatteryOptimizations(app.packageName) ?: false
 
+        val net = SunshineService.refreshNetworkAddresses()
         _isServiceRunning.value = SunshineService.isRunning
-        _serviceIp.value = SunshineService.currentIp
+        _serviceIp.value = net.lanIp
+        _serviceVpnIp.value = net.vpnIp
+        _serviceIpv6.value = net.ipv6
     }
 
     private fun startPolling() {
@@ -101,6 +110,9 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
             while (isActive) {
                 checkSystemPermissions()
                 if (_isServiceRunning.value) {
+                    if (_config.value == null) {
+                        fetchConfig()
+                    }
                     fetchRuntimeData()
                 }
                 delay(2000)

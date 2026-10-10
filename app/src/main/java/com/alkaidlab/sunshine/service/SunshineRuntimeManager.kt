@@ -55,6 +55,7 @@ class SunshineRuntimeManager private constructor() {
     val pinRequested: StateFlow<String?> = _pinRequested.asStateFlow()
 
     private val activeSessions = CopyOnWriteArrayList<RuntimeSession>()
+    private val activeSessionCount = java.util.concurrent.atomic.AtomicInteger(0)
     private var currentStreamSurface: Surface? = null
     private var streamStartTime: Long = 0
 
@@ -110,49 +111,56 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface, shouldSendAudio: Boolean) {
-        SunshineLogManager.log("STREAM", "Stream started: ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
-        currentStreamSurface = surface
+        val sessionIndex = activeSessionCount.incrementAndGet()
+        SunshineLogManager.log("STREAM", "Stream started (client #$sessionIndex): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
+
         lastWidth = width
         lastHeight = height
         lastFps = fps.toDouble()
         lastBitrate = 10000
         lastCodec = "H.264"
-        streamStartTime = System.currentTimeMillis()
+        if (streamStartTime == 0L) {
+            streamStartTime = System.currentTimeMillis()
+        }
 
-        activeSessions.clear()
         val session = RuntimeSession(
-            clientName = "Moonlight Client",
+            clientName = "Moonlight Client #$sessionIndex",
             clientIp = "127.0.0.1",
             width = width,
             height = height,
             fps = fps,
             bitrate = lastBitrate,
             codec = lastCodec,
-            startTime = streamStartTime
+            startTime = System.currentTimeMillis()
         )
         activeSessions.add(session)
         _isStreaming.value = true
 
-        // Create VirtualDisplay on main thread
+        // Create or reuse VirtualDisplay on main thread
         Handler(Looper.getMainLooper()).post {
             val mp = mediaProjection
             if (mp != null) {
-                try {
-                    virtualDisplay?.release()
-                    val densityDpi = context?.resources?.displayMetrics?.densityDpi ?: 300
-                    virtualDisplay = mp.createVirtualDisplay(
-                        "SunshineVirtualDisplay",
-                        width,
-                        height,
-                        densityDpi,
-                        android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                        surface,
-                        null,
-                        null
-                    )
-                    SunshineLogManager.log("VD", "VirtualDisplay created successfully (${width}x$height @ ${densityDpi}dpi)")
-                } catch (e: Exception) {
-                    SunshineLogManager.log("VD_ERR", "Error creating VirtualDisplay: ${e.message}")
+                if (virtualDisplay != null && currentStreamSurface == surface) {
+                    SunshineLogManager.log("VD", "VirtualDisplay already active for surface, reusing shared hardware display for client #$sessionIndex")
+                } else {
+                    try {
+                        virtualDisplay?.release()
+                        currentStreamSurface = surface
+                        val densityDpi = context?.resources?.displayMetrics?.densityDpi ?: 300
+                        virtualDisplay = mp.createVirtualDisplay(
+                            "SunshineVirtualDisplay",
+                            width,
+                            height,
+                            densityDpi,
+                            android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                            surface,
+                            null,
+                            null
+                        )
+                        SunshineLogManager.log("VD", "VirtualDisplay created successfully (${width}x$height @ ${densityDpi}dpi)")
+                    } catch (e: Exception) {
+                        SunshineLogManager.log("VD_ERR", "Error creating VirtualDisplay: ${e.message}")
+                    }
                 }
             } else {
                 SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
@@ -168,14 +176,28 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStopped() {
-        SunshineLogManager.log("STREAM", "Stream stopped")
+        val remaining = activeSessionCount.decrementAndGet()
+        SunshineLogManager.log("STREAM", "Stream stopped for a client. Remaining active clients: $remaining")
+
+        if (remaining > 0) {
+            if (activeSessions.isNotEmpty()) {
+                activeSessions.removeAt(activeSessions.size - 1)
+            }
+            SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
+            return
+        }
+
+        // All clients disconnected
+        activeSessionCount.set(0)
         _isStreaming.value = false
         activeSessions.clear()
+        streamStartTime = 0L
 
         Handler(Looper.getMainLooper()).post {
             try {
                 virtualDisplay?.release()
                 virtualDisplay = null
+                currentStreamSurface = null
                 stopAudioCapture()
             } catch (e: Exception) {
                 SunshineLogManager.log("STREAM_ERR", "Error tearing down stream: ${e.message}")
@@ -340,6 +362,11 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun releaseAll() {
+        activeSessionCount.set(0)
+        _isStreaming.value = false
+        activeSessions.clear()
+        streamStartTime = 0L
+        currentStreamSurface = null
         try {
             virtualDisplay?.release()
             virtualDisplay = null

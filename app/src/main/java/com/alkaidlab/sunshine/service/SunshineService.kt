@@ -48,8 +48,81 @@ class SunshineService : Service() {
             private set
 
         @Volatile
+        var currentVpnIp: String? = null
+            private set
+
+        @Volatile
         var currentIpv6: String? = null
             private set
+
+        data class NetworkSnapshot(
+            val lanIp: String,
+            val vpnIp: String?,
+            val ipv6: String?
+        )
+
+        fun refreshNetworkAddresses(): NetworkSnapshot {
+            var detectedLan: String? = null
+            var detectedVpn: String? = null
+            var detectedIpv6: String? = null
+
+            try {
+                val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
+
+                for (iface in interfaces) {
+                    if (!iface.isUp || iface.isLoopback) continue
+                    val name = iface.name.lowercase()
+                    val isVpnIface = name.startsWith("tun") || name.startsWith("tailscale") ||
+                            name.startsWith("wg") || name.startsWith("utun") || name.startsWith("ppp")
+
+                    val addrs = iface.inetAddresses
+                    while (addrs.hasMoreElements()) {
+                        val addr = addrs.nextElement()
+                        if (addr.isLoopbackAddress) continue
+
+                        if (addr is java.net.Inet4Address) {
+                            val ip = addr.hostAddress ?: continue
+                            val isCgnat = isTailscaleCgnat(ip)
+                            if (isVpnIface || isCgnat) {
+                                if (detectedVpn == null) detectedVpn = ip
+                            } else {
+                                if (name.contains("wlan")) {
+                                    detectedLan = ip
+                                } else if (detectedLan == null) {
+                                    detectedLan = ip
+                                }
+                            }
+                        } else if (addr is java.net.Inet6Address) {
+                            if (!addr.isLinkLocalAddress && !addr.isSiteLocalAddress && !addr.isMulticastAddress) {
+                                val host = (addr.hostAddress ?: "").split("%")[0]
+                                if (host.isNotBlank()) {
+                                    if (detectedIpv6 == null || host.startsWith("2") || host.startsWith("3")) {
+                                        detectedIpv6 = host
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                SunshineLogManager.log("NET_ERR", "Error detecting network: ${e.message}")
+            }
+
+            val finalLan = detectedLan ?: "127.0.0.1"
+            currentIp = finalLan
+            currentVpnIp = detectedVpn
+            currentIpv6 = detectedIpv6
+            return NetworkSnapshot(finalLan, detectedVpn, detectedIpv6)
+        }
+
+        private fun isTailscaleCgnat(ip: String): Boolean {
+            val parts = ip.split(".")
+            if (parts.size == 4 && parts[0] == "100") {
+                val second = parts[1].toIntOrNull() ?: return false
+                return second in 64..127
+            }
+            return false
+        }
 
         @Volatile
         var cachedResultData: Intent? = null
@@ -123,19 +196,26 @@ class SunshineService : Service() {
                 if (!isRunning) {
                     initAndStartServers()
                 } else {
-                    updateNotification("服务运行中: $currentIp${if (currentIpv6 != null) " (IPv6)" else ""}")
+                    val net = refreshNetworkAddresses()
+                    updateNotification(buildStatusString(net))
                 }
             }
         }
         return START_STICKY
     }
 
+    private fun buildStatusString(net: NetworkSnapshot): String {
+        val sb = StringBuilder("服务运行中: ").append(net.lanIp)
+        if (net.vpnIp != null) sb.append(" | VPN: ").append(net.vpnIp)
+        if (net.ipv6 != null) sb.append(" | IPv6")
+        return sb.toString()
+    }
+
     private fun initAndStartServers() {
         isRunning = true
-        currentIp = getWifiIpAddress()
-        currentIpv6 = getWifiIpv6Address()
-        updateNotification("服务运行中: $currentIp${if (currentIpv6 != null) " (IPv6)" else ""}")
-        SunshineLogManager.log("NETWORK", "Detected LAN IPv4: $currentIp, IPv6: ${currentIpv6 ?: "None"}")
+        val net = refreshNetworkAddresses()
+        updateNotification(buildStatusString(net))
+        SunshineLogManager.log("NETWORK", "Detected LAN IPv4: ${net.lanIp}, VPN: ${net.vpnIp ?: "None"}, IPv6: ${net.ipv6 ?: "None"}")
 
         serviceScope.launch {
             try {
@@ -160,7 +240,7 @@ class SunshineService : Service() {
                 SunshineServer.enableH265()
 
                 // 4. Register mDNS advertisement for Moonlight discovery
-                registerMdns(serverName, currentIp, currentIpv6)
+                registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6)
 
                 // 5. Start Native Sunshine Server in background thread
                 nativeThread = Thread {
@@ -181,7 +261,7 @@ class SunshineService : Service() {
         }
     }
 
-    private fun registerMdns(serverName: String, ip4: String, ip6: String?) {
+    private fun registerMdns(serverName: String, ip4: String, vpnIp: String?, ip6: String?) {
         try {
             val inetAddress = InetAddress.getByName(ip4)
             val jmdns = JmDNS.create(inetAddress)
@@ -196,6 +276,24 @@ class SunshineService : Service() {
             SunshineLogManager.log("MDNS", "Registered mDNS service _nvstream._tcp.local. on IPv4 $ip4:47989 as $serverName")
         } catch (e: Exception) {
             SunshineLogManager.log("MDNS_ERR", "IPv4 mDNS registration failed on $ip4: ${e.message}")
+        }
+
+        if (vpnIp != null && vpnIp != ip4) {
+            try {
+                val inetVpn = InetAddress.getByName(vpnIp)
+                val jmdnsVpn = JmDNS.create(inetVpn)
+                val serviceInfoVpn = ServiceInfo.create(
+                    "_nvstream._tcp.local.",
+                    "$serverName-VPN",
+                    47989,
+                    "Foundation-Sunshine on Android (VPN)"
+                )
+                jmdnsVpn.registerService(serviceInfoVpn)
+                jmDnsList.add(jmdnsVpn)
+                SunshineLogManager.log("MDNS", "Registered mDNS service on VPN $vpnIp:47989 as $serverName-VPN")
+            } catch (e: Exception) {
+                SunshineLogManager.log("MDNS_INFO", "VPN mDNS note: ${e.message}")
+            }
         }
 
         if (ip6 != null) {
