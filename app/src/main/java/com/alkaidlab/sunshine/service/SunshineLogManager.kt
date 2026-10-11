@@ -14,6 +14,7 @@ object SunshineLogManager {
     fun log(tag: String, message: String) {
         val time = dateFormat.format(Date())
         val entry = "[$time][$tag] $message"
+        android.util.Log.d("SunshineLog", "[$tag] $message")
         buffer.add(entry)
         if (buffer.size > MAX_LOGS) {
             buffer.removeAt(0)

@@ -24,7 +24,8 @@ class SunshineFrameDispatcher {
         val surface: Surface,
         var eglSurface: EGLSurface? = null,
         val width: Int,
-        val height: Int
+        val height: Int,
+        var failureCount: Int = 0
     )
 
     private var glThread: HandlerThread? = null
@@ -189,11 +190,52 @@ class SunshineFrameDispatcher {
         handler.post {
             val target = clientTargets.find { it.surface == surface }
             if (target != null) {
-                destroyTargetEgl(target)
                 clientTargets.remove(target)
+                destroyTargetEgl(target)
                 SunshineLogManager.log("DISPATCHER", "Removed client stream surface. Remaining active clients: ${clientTargets.size}")
             }
         }
+    }
+
+    /**
+     * Synchronously unbinds and destroys the target's EGLSurface on the GL thread
+     * before returning to native code (which will immediately call AMediaCodec_stop).
+     * This prevents EGL_BAD_SURFACE / BufferQueue abandonment races that could
+     * otherwise disrupt remaining connected clients.
+     */
+    fun removeSurfaceSync(surface: Surface) {
+        // Remove from CopyOnWriteArrayList immediately so no further frame loop iterates over it
+        val target = clientTargets.find { it.surface == surface }
+        if (target != null) {
+            clientTargets.remove(target)
+        }
+        val handler = glHandler ?: return
+        if (Thread.currentThread() == glThread) {
+            if (target != null) {
+                destroyTargetEgl(target)
+            }
+            return
+        }
+        val latch = CountDownLatch(1)
+        handler.post {
+            try {
+                if (target != null) {
+                    destroyTargetEgl(target)
+                } else {
+                    val lateTarget = clientTargets.find { it.surface == surface }
+                    if (lateTarget != null) {
+                        clientTargets.remove(lateTarget)
+                        destroyTargetEgl(lateTarget)
+                    }
+                }
+                SunshineLogManager.log("DISPATCHER", "Synchronously removed client stream surface. Remaining active clients: ${clientTargets.size}")
+            } finally {
+                latch.countDown()
+            }
+        }
+        try {
+            latch.await(250, TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {}
     }
 
     fun pruneDeadSurfaces() {
@@ -201,8 +243,8 @@ class SunshineFrameDispatcher {
         handler.post {
             val deadList = clientTargets.filter { !it.surface.isValid }
             for (dead in deadList) {
-                destroyTargetEgl(dead)
                 clientTargets.remove(dead)
+                destroyTargetEgl(dead)
                 SunshineLogManager.log("DISPATCHER", "Pruned invalid surface. Remaining: ${clientTargets.size}")
                 try {
                     onSurfaceEvictedListener?.invoke(dead.surface)
@@ -372,6 +414,15 @@ class SunshineFrameDispatcher {
         }, handler)
     }
 
+    private fun restoreDummySurface() {
+        val dpy = eglDisplay ?: return
+        val ctx = eglContext ?: return
+        val dummy = dummySurface ?: return
+        if (dpy != EGL14.EGL_NO_DISPLAY && ctx != EGL14.EGL_NO_CONTEXT && dummy != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(dpy, dummy, dummy, ctx)
+        }
+    }
+
     private fun renderSingleTarget(target: ClientTarget, timestamp: Long): Boolean {
         val dpy = eglDisplay ?: return false
         val ctx = eglContext ?: return false
@@ -383,14 +434,23 @@ class SunshineFrameDispatcher {
 
         if (target.eglSurface == null || target.eglSurface == EGL14.EGL_NO_SURFACE) {
             val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
-            target.eglSurface = EGL14.eglCreateWindowSurface(dpy, cfg, target.surface, surfaceAttribs, 0)
-            if (target.eglSurface == EGL14.EGL_NO_SURFACE) {
+            target.eglSurface = try {
+                EGL14.eglCreateWindowSurface(dpy, cfg, target.surface, surfaceAttribs, 0)
+            } catch (_: Throwable) {
+                EGL14.EGL_NO_SURFACE
+            }
+            if (target.eglSurface == null || target.eglSurface == EGL14.EGL_NO_SURFACE) {
+                EGL14.eglGetError()
+                restoreDummySurface()
                 return false
             }
         }
 
         val eglSurf = target.eglSurface ?: return false
         if (!EGL14.eglMakeCurrent(dpy, eglSurf, eglSurf, ctx)) {
+            val err = EGL14.eglGetError()
+            SunshineLogManager.log("DISPATCHER_WARN", "eglMakeCurrent failed (EGL error 0x${Integer.toHexString(err)})")
+            destroyTargetEgl(target)
             return false
         }
 
@@ -446,19 +506,22 @@ class SunshineFrameDispatcher {
             if (!swapOk) {
                 val err = EGL14.eglGetError()
                 SunshineLogManager.log("DISPATCHER_WARN", "eglSwapBuffers failed (EGL error 0x${Integer.toHexString(err)})")
+                destroyTargetEgl(target)
+            } else {
+                target.failureCount = 0
             }
             swapOk
         } catch (_: Throwable) {
+            destroyTargetEgl(target)
             false
         }
     }
 
     private fun handleFrameAvailable() {
         val st = surfaceTexture ?: return
-        val dpy = eglDisplay ?: return
-        val ctx = eglContext ?: return
 
         try {
+            restoreDummySurface()
             st.updateTexImage()
             st.getTransformMatrix(texMatrix)
             hasDrawnAnyTexture = true
@@ -473,54 +536,57 @@ class SunshineFrameDispatcher {
         val toRemove = mutableListOf<ClientTarget>()
         for (target in clientTargets) {
             if (!renderSingleTarget(target, timestamp)) {
-                toRemove.add(target)
+                target.failureCount++
+                if (!target.surface.isValid || target.failureCount >= 30) {
+                    toRemove.add(target)
+                }
             }
         }
 
         for (dead in toRemove) {
-            destroyTargetEgl(dead)
             clientTargets.remove(dead)
-            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface. Remaining: ${clientTargets.size}")
+            destroyTargetEgl(dead)
+            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface (failures=${dead.failureCount}, valid=${dead.surface.isValid}). Remaining: ${clientTargets.size}")
             try {
                 onSurfaceEvictedListener?.invoke(dead.surface)
             } catch (_: Exception) {}
         }
 
         // Return to dummy surface
-        dummySurface?.let {
-            EGL14.eglMakeCurrent(dpy, it, it, ctx)
-        }
+        restoreDummySurface()
     }
 
     private fun pumpFrame() {
-        val dpy = eglDisplay ?: return
-        val ctx = eglContext ?: return
         lastFrameTimeMs = System.currentTimeMillis()
         val timestamp = System.nanoTime()
 
         val toRemove = mutableListOf<ClientTarget>()
         for (target in clientTargets) {
             if (!renderSingleTarget(target, timestamp)) {
-                toRemove.add(target)
+                target.failureCount++
+                if (!target.surface.isValid || target.failureCount >= 30) {
+                    toRemove.add(target)
+                }
             }
         }
 
         for (dead in toRemove) {
-            destroyTargetEgl(dead)
             clientTargets.remove(dead)
-            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface. Remaining: ${clientTargets.size}")
+            destroyTargetEgl(dead)
+            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface (failures=${dead.failureCount}, valid=${dead.surface.isValid}). Remaining: ${clientTargets.size}")
             try {
                 onSurfaceEvictedListener?.invoke(dead.surface)
             } catch (_: Exception) {}
         }
 
-        dummySurface?.let {
-            EGL14.eglMakeCurrent(dpy, it, it, ctx)
-        }
+        restoreDummySurface()
     }
 
     private fun destroyTargetEgl(target: ClientTarget) {
         val dpy = eglDisplay ?: return
+        // Always rebind context to dummySurface BEFORE destroying any EGLSurface
+        // so the destroyed surface is never left bound as the current surface.
+        restoreDummySurface()
         val eglSurf = target.eglSurface
         if (eglSurf != null && eglSurf != EGL14.EGL_NO_SURFACE) {
             try {

@@ -136,10 +136,11 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface, shouldSendAudio: Boolean) {
+        val callerThreadId = android.os.Process.myTid().toLong()
         val sessionIndex = activeSessionCount.incrementAndGet()
         val cName = lastDiscoveredClient ?: "Moonlight Client #$sessionIndex"
         val cIp = lastDiscoveredClient ?: "127.0.0.1"
-        SunshineLogManager.log("STREAM", "Stream started ($cName): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
+        SunshineLogManager.log("STREAM", "Stream started ($cName, tid=$callerThreadId): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
 
         lastWidth = width
         lastHeight = height
@@ -161,7 +162,8 @@ class SunshineRuntimeManager private constructor() {
             bitrate = lastBitrate,
             codec = lastCodec,
             startTime = System.currentTimeMillis(),
-            surface = surface
+            surface = surface,
+            videoThreadId = callerThreadId
         )
         activeSessions.add(session)
         _activeSessionsFlow.value = activeSessions.toList()
@@ -210,49 +212,35 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun onStreamStopped() {
+        val callerThreadId = android.os.Process.myTid().toLong()
         val remaining = activeSessionCount.decrementAndGet()
-        SunshineLogManager.log("STREAM", "Native stream stopped for a client. Remaining active clients: $remaining")
+        SunshineLogManager.log("STREAM", "Native stream stopped for client (tid=$callerThreadId). Remaining active clients: $remaining")
 
-        if (remaining > 0) {
-            // Identify which session disconnected by finding invalid or unregistered surfaces
-            val deadSession = activeSessions.find { session ->
+        // Identify the exact disconnecting session by its dedicated native videoThread ID
+        val deadSession = activeSessions.find { it.videoThreadId == callerThreadId }
+            ?: activeSessions.find { session ->
                 val surf = session.surface
                 surf == null || !surf.isValid || !frameDispatcher.hasSurface(surf)
             }
 
-            if (deadSession != null) {
-                activeSessions.remove(deadSession)
-                deadSession.surface?.let { surf ->
-                    frameDispatcher.removeSurface(surf)
-                }
-                SunshineLogManager.log("STREAM", "Removed disconnected session (${deadSession.clientName}). Remaining sessions: ${activeSessions.size}")
-                if (activeSessions.isNotEmpty()) {
-                    val remainingActive = activeSessions.last()
-                    com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remainingActive.width, remainingActive.height)
-                }
-            } else {
-                SunshineLogManager.log("STREAM", "Disconnecting session pending EGL eviction by dispatcher ($remaining active remain)")
+        if (deadSession != null) {
+            activeSessions.remove(deadSession)
+            // Synchronously unbind & destroy the EGLSurface BEFORE returning to C++ (which immediately calls AMediaCodec_stop)
+            deadSession.surface?.let { surf ->
+                frameDispatcher.removeSurfaceSync(surf)
+            }
+            SunshineLogManager.log("STREAM", "Removed disconnected session (${deadSession.clientName}, tid=$callerThreadId). Remaining sessions: ${activeSessions.size}")
+        }
+
+        if (remaining > 0) {
+            if (activeSessions.isNotEmpty()) {
+                val remainingActive = activeSessions.last()
+                com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remainingActive.width, remainingActive.height)
             }
             _activeSessionsFlow.value = activeSessions.toList()
             _perfFlow.value = getPerfSnapshot()
 
             frameDispatcher.pruneDeadSurfaces()
-
-            Handler(Looper.getMainLooper()).postDelayed({
-                if (activeSessionCount.get() > 0 && activeSessions.size > activeSessionCount.get()) {
-                    val stale = activeSessions.find { session ->
-                        val surf = session.surface
-                        surf == null || !surf.isValid || !frameDispatcher.hasSurface(surf)
-                    }
-                    if (stale != null) {
-                        activeSessions.remove(stale)
-                        stale.surface?.let { frameDispatcher.removeSurface(it) }
-                        _activeSessionsFlow.value = activeSessions.toList()
-                        _perfFlow.value = getPerfSnapshot()
-                        SunshineLogManager.log("STREAM", "Pruned stale session on delayed check (${stale.clientName})")
-                    }
-                }
-            }, 80)
 
             SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
             return

@@ -6,7 +6,7 @@ import com.google.gson.annotations.SerializedName
 data class ConfigResponse(
     val status: String = "true",
     val platform: String = "android",
-    val version: String = "v2026.823.92133",
+    val version: String = "v2026.823.92134",
     @SerializedName("display_devices") val displayDevices: List<DisplayDeviceNode> = emptyList(),
     val adapters: List<AdapterNode> = emptyList(),
     val port: String = "47989",
@@ -87,7 +87,8 @@ data class RuntimeSession(
     val bitrate: Int,
     val codec: String,
     @SerializedName("start_time") val startTime: Long,
-    @Transient val surface: Surface? = null
+    @Transient val surface: Surface? = null,
+    @Transient val videoThreadId: Long = 0L
 )
 
 data class RuntimeSessionsResponse(
