@@ -231,13 +231,16 @@ class SunshineService : Service() {
                 }
                 SunshineLogManager.log("HTTP_SERVER", "REST API server listening on http://0.0.0.0:47990")
 
-                // 3. Configure Native Sunshine Engine
+                // 3. Configure Native Sunshine Engine from sunshine.conf
+                SunshineRuntimeManager.getInstance().reloadConfig(this@SunshineService)
                 val serverName = "Sunshine-${Build.MANUFACTURER}-${Build.MODEL}"
                 SunshineServer.setSunshineName(serverName)
                 SunshineServer.setCertPath(certFile.absolutePath)
                 SunshineServer.setPkeyPath(keyFile.absolutePath)
                 SunshineServer.setFileStatePath(stateFile.absolutePath)
-                SunshineServer.enableH265()
+                if (SunshineRuntimeManager.getInstance().hevcEnabled) {
+                    SunshineServer.enableH265()
+                }
 
                 // 4. Register mDNS advertisement for Moonlight discovery
                 registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6)

@@ -75,7 +75,7 @@ fun DashboardScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = config?.version ?: "v2026.823.92133 (Android)",
+                    text = config?.version ?: "v2026.823.92135 (Android)",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace
@@ -344,7 +344,13 @@ fun DashboardScreen(
                         )
                     }
                 } else {
+                    val nowMs = System.currentTimeMillis()
                     sessions.forEach { session ->
+                        val elapsedSec = ((nowMs - session.startTime) / 1000L).coerceAtLeast(0L)
+                        val mins = elapsedSec / 60
+                        val secs = elapsedSec % 60
+                        val durationText = String.format("%02d:%02d", mins, secs)
+                        val mbpsText = String.format("%.1f Mbps", session.bitrate / 1000.0)
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -364,10 +370,18 @@ fun DashboardScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("画面规格: ${session.width}x${session.height} @ ${session.fps}fps", color = TextSecondary, fontSize = 12.sp)
-                                Text("码率: ${session.bitrate / 1000} Mbps", color = AccentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("实时码率: $mbpsText", color = AccentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
-                            if (session.clientIp != "127.0.0.1") {
-                                Text("连接节点: ${session.clientIp}", color = TextMuted, fontSize = 11.sp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (session.clientIp != "127.0.0.1") "连接节点: ${session.clientIp}" else "连接节点: 局域网直连",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                                Text("已推流: $durationText", color = TextMuted, fontSize = 11.sp)
                             }
                         }
                     }
@@ -378,9 +392,9 @@ fun DashboardScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            MetricItem("实时帧率", "${perf.fps} FPS")
-                            MetricItem("硬编延迟", "${perf.encodeTimeMs} ms")
-                            MetricItem("传输延迟", "${perf.networkLatencyMs} ms")
+                            MetricItem("实时帧率", String.format("%.1f FPS", perf.fps))
+                            MetricItem("硬编延迟", String.format("%.2f ms", perf.encodeTimeMs))
+                            MetricItem("传输延迟", String.format("%.2f ms", perf.networkLatencyMs))
                         }
                     }
                 }

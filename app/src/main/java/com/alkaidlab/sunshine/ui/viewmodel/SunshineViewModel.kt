@@ -53,8 +53,7 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
 
     val perf: StateFlow<PerfResponse> = runtime.perfFlow
 
-    private val _logs = MutableStateFlow<List<String>>(emptyList())
-    val logs: StateFlow<List<String>> = _logs.asStateFlow()
+    val logs: StateFlow<List<String>> = SunshineLogManager.logsFlow
 
     // Permission and System States
     private val _isMediaProjectionGranted = MutableStateFlow(false)
@@ -105,14 +104,16 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
 
     private fun startPolling() {
         viewModelScope.launch(Dispatchers.IO) {
+            var tick = 0
             while (isActive) {
                 checkSystemPermissions()
                 if (_isServiceRunning.value) {
-                    if (_config.value == null) {
+                    if (_config.value == null || tick % 3 == 0) {
                         fetchConfig()
                     }
-                    fetchRuntimeData()
+                    fetchClients()
                 }
+                tick++
                 delay(2000)
             }
         }
@@ -123,8 +124,6 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
             fetchConfig()
             fetchApps()
             fetchClients()
-            fetchRuntimeData()
-            fetchLogs()
         }
     }
 
@@ -155,29 +154,8 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
         } catch (_: Exception) {}
     }
 
-    private suspend fun fetchRuntimeData() {
-        // Active sessions and performance metrics are bound reactively in real time
-        // via runtime.activeSessionsFlow and runtime.perfFlow.
-        // We also query the REST API endpoint to keep remote clients synchronized:
-        try {
-            api.getRuntimeSessions()
-            api.getPerfCurrent()
-        } catch (_: Exception) {}
-    }
-
     fun fetchLogs() {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val resp = api.getLogs()
-                if (resp.isSuccessful) {
-                    _logs.value = resp.body()?.logs ?: emptyList()
-                } else {
-                    _logs.value = SunshineLogManager.getRecentLogs()
-                }
-            } catch (_: Exception) {
-                _logs.value = SunshineLogManager.getRecentLogs()
-            }
-        }
+        // Logs are now reactively streamed via SunshineLogManager.logsFlow
     }
 
     fun submitPin(pin: String) {
@@ -206,7 +184,7 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
             try {
                 val resp = api.saveConfig(map)
                 if (resp.isSuccessful) {
-                    _statusMessage.value = "配置保存成功"
+                    _statusMessage.value = "配置保存成功并已即时生效"
                     fetchConfig()
                 } else {
                     _statusMessage.value = "保存失败: ${resp.message()}"
@@ -227,6 +205,22 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
                 }
             } catch (e: Exception) {
                 _statusMessage.value = "添加应用失败: ${e.message}"
+            }
+        }
+    }
+
+    fun launchApp(appItem: AppItem) {
+        val cmd = appItem.cmd?.trim() ?: ""
+        if (cmd.isEmpty()) {
+            _statusMessage.value = "已处于全局桌面镜像模式"
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = runtime.launchAppByCommand(cmd)
+            if (ok) {
+                _statusMessage.value = "已启动应用: ${appItem.name}"
+            } else {
+                _statusMessage.value = "无法启动 ${appItem.name}: 未找到对应包名 ($cmd)"
             }
         }
     }

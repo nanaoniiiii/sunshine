@@ -93,7 +93,10 @@ class SunshineApiServer(
         val uri = session.uri
         val method = session.method
 
-        SunshineLogManager.log("API", "${method.name} $uri")
+        // Only log state-mutating requests (POST/DELETE) to avoid flooding the real-time log stream
+        if (method != Method.GET) {
+            SunshineLogManager.log("API", "${method.name} $uri")
+        }
 
         return try {
             when {
@@ -133,19 +136,21 @@ class SunshineApiServer(
         )
 
         val confMap = parseProperties(configFile.readText())
+        val hevcMode = confMap["hevc_mode"] ?: "enabled"
+        val codecTag = if (hevcMode != "disabled") "HEVC/H.265" else "H.264"
         val response = ConfigResponse(
             status = "true",
             platform = "android",
-            version = "v2026.823.92134",
+            version = "v2026.823.92135",
             displayDevices = devices,
             adapters = adapters,
             port = confMap["port"] ?: "47989",
             webPort = confMap["web_port"] ?: "47990",
-            encoder = "AMediaCodec (${Build.HARDWARE})",
+            encoder = "AMediaCodec (${Build.HARDWARE} · $codecTag)",
             channels = confMap["channels"] ?: "2",
             minBitrate = confMap["min_bitrate"] ?: "5000",
             maxBitrate = confMap["max_bitrate"] ?: "50000",
-            hevcMode = confMap["hevc_mode"] ?: "enabled",
+            hevcMode = hevcMode,
             audioSink = confMap["audio_sink"] ?: "media_projection",
             autoRotate = confMap["auto_rotate"] ?: "true",
             autoScale = confMap["auto_scale"] ?: "true",
@@ -167,7 +172,10 @@ class SunshineApiServer(
         current.forEach { (k, v) -> sb.append("$k = $v\n") }
         configFile.writeText(sb.toString())
 
-        SunshineLogManager.log("CONFIG", "Configuration updated and saved to sunshine.conf")
+        // Immediately apply updated config to runtime engine
+        SunshineRuntimeManager.getInstance().reloadConfig(context)
+
+        SunshineLogManager.log("CONFIG", "Configuration updated and applied to runtime engine")
         return jsonResponse(SimpleStatusResponse("true", "Config saved successfully"))
     }
 
@@ -211,12 +219,17 @@ class SunshineApiServer(
         val rootMap = gson.fromJson(text, Map::class.java)
         val root = (rootMap["root"] as? Map<*, *>) ?: emptyMap<String, Any>()
         val rawDevices = (root["named_devices"] as? List<*>) ?: emptyList<Any>()
+        val runtime = SunshineRuntimeManager.getInstance()
+        val activeSessions = runtime.getActiveSessions()
+        val activeCount = activeSessions.size
+        val totalDevices = rawDevices.size
 
-        val clients = rawDevices.mapNotNull { item ->
+        val clients = rawDevices.mapIndexedNotNull { idx, item ->
             if (item is Map<*, *>) {
                 val name = item["name"]?.toString() ?: "Unknown"
                 val uuid = item["uuid"]?.toString() ?: ""
-                ClientItem(name = name, uuid = uuid, active = SunshineRuntimeManager.getInstance().isClientActive(uuid))
+                val isRecentActive = activeCount > 0 && idx >= (totalDevices - activeCount).coerceAtLeast(0)
+                ClientItem(name = name, uuid = uuid, active = runtime.isClientActive(uuid) || isRecentActive)
             } else null
         }
         return jsonResponse(ClientsResponse("true", clients))

@@ -124,10 +124,17 @@ fun AppsScreen(
                             }
                         }
 
-                        // Do not allow deleting default Desktop
-                        if (!appItem.name.equals("Desktop", ignoreCase = true) && !appItem.name.contains("桌面")) {
-                            IconButton(onClick = { viewModel.deleteApp(appItem.name) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "删除", tint = AccentRed, modifier = Modifier.size(18.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (!appItem.cmd.isNullOrEmpty()) {
+                                IconButton(onClick = { viewModel.launchApp(appItem) }) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = "启动", tint = AccentGreen, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            // Do not allow deleting default Desktop
+                            if (!appItem.name.equals("Desktop", ignoreCase = true) && !appItem.name.contains("桌面")) {
+                                IconButton(onClick = { viewModel.deleteApp(appItem.name) }) {
+                                    Icon(Icons.Default.Delete, contentDescription = "删除", tint = AccentRed, modifier = Modifier.size(18.dp))
+                                }
                             }
                         }
                     }

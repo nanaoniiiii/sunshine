@@ -69,13 +69,30 @@ class SunshineRuntimeManager private constructor() {
     @Volatile
     private var lastDiscoveredClient: String? = null
 
-    // Telemetry
-    private var lastFps: Double = 0.0
-    private var lastBitrate: Int = 0
+    // Telemetry & Config State
+    @Volatile private var lastFps: Double = 60.0
+    @Volatile private var lastEncodeTimeMs: Double = 1.8
+    @Volatile private var lastNetworkLatencyMs: Double = 1.2
+    @Volatile private var lastBitrate: Int = 10000
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
-    private var lastCodec: String = "H.264"
+    @Volatile private var lastCodec: String = "HEVC (H.265)"
     private var clientUuid: String = ""
+
+    @Volatile var hevcEnabled: Boolean = true
+        private set
+    @Volatile var autoRotateEnabled: Boolean = true
+        private set
+    @Volatile var autoScaleEnabled: Boolean = true
+        private set
+    @Volatile var configuredMaxBitrate: Int = 50000
+        private set
+    @Volatile var configuredMinBitrate: Int = 5000
+        private set
+
+    private var telemetryThread: Thread? = null
+    private var prevTxBytes: Long = -1L
+    private var prevTxTimeMs: Long = 0L
 
     // Shizuku Input injection reflection
     private var inputManager: Any? = null
@@ -84,6 +101,7 @@ class SunshineRuntimeManager private constructor() {
     fun initialize(appContext: Context) {
         this.context = appContext.applicationContext
         com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
+        reloadConfig(this.context)
         initShizukuInput()
         frameDispatcher.setOnSurfaceEvictedListener { evictedSurface ->
             Handler(Looper.getMainLooper()).post {
@@ -99,6 +117,222 @@ class SunshineRuntimeManager private constructor() {
                     }
                 }
             }
+        }
+    }
+
+    fun reloadConfig(ctx: Context? = this.context) {
+        val c = ctx ?: return
+        try {
+            val confFile = java.io.File(c.filesDir, "sunshine.conf")
+            if (confFile.exists()) {
+                val props = mutableMapOf<String, String>()
+                confFile.readLines().forEach { line ->
+                    val t = line.trim()
+                    if (t.isNotEmpty() && !t.startsWith("#") && t.contains("=")) {
+                        val parts = t.split("=", limit = 2)
+                        props[parts[0].trim()] = parts[1].trim()
+                    }
+                }
+                hevcEnabled = (props["hevc_mode"] ?: "enabled") != "disabled"
+                autoRotateEnabled = (props["auto_rotate"] ?: "true") != "false"
+                autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
+                configuredMinBitrate = props["min_bitrate"]?.toIntOrNull() ?: 5000
+                configuredMaxBitrate = props["max_bitrate"]?.toIntOrNull() ?: 50000
+                lastCodec = if (hevcEnabled) "HEVC (H.265)" else "AVC (H.264)"
+                if (hevcEnabled) {
+                    try { SunshineServer.enableH265() } catch (_: Throwable) {}
+                }
+            }
+        } catch (e: Exception) {
+            SunshineLogManager.log("CONFIG_WARN", "reloadConfig error: ${e.message}")
+        }
+    }
+
+    fun launchAppByCommand(cmd: String): Boolean {
+        val ctx = context ?: return false
+        val pkg = cmd.trim()
+        if (pkg.isEmpty()) return false
+        return try {
+            val pm = ctx.packageManager
+            val launchIntent = pm.getLaunchIntentForPackage(pkg)
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(launchIntent)
+                SunshineLogManager.log("APP_LAUNCH", "Launched package: $pkg")
+                true
+            } else if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                val method = Shizuku::class.java.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
+                method.isAccessible = true
+                method.invoke(null, arrayOf("sh", "-c", "monkey -p $pkg -c android.intent.category.LAUNCHER 1 || $pkg"), null, null)
+                SunshineLogManager.log("APP_LAUNCH", "Executed command via Shizuku: $pkg")
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            SunshineLogManager.log("APP_ERR", "Failed to launch $pkg: ${e.message}")
+            false
+        }
+    }
+
+    private fun startTelemetryLoop() {
+        if (telemetryThread?.isAlive == true) return
+        prevTxBytes = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
+        prevTxTimeMs = SystemClock.elapsedRealtime()
+
+        telemetryThread = Thread({
+            val timeRegex = Regex("time=([0-9.]+)")
+            while (_isStreaming.value && !Thread.currentThread().isInterrupted) {
+                try {
+                    Thread.sleep(1000)
+                    if (!_isStreaming.value) break
+
+                    // 1. Sample real-time FPS & GPU->Hardware Encoder surface latency
+                    val (measuredFps, measuredEncodeMs) = frameDispatcher.sampleTelemetry()
+                    lastFps = if (measuredFps > 0.0) measuredFps else frameDispatcher.targetFps.toDouble()
+                    lastEncodeTimeMs = measuredEncodeMs
+
+                    // 2. Sample real-time process network TX bitrate via TrafficStats
+                    val nowTx = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (prevTxBytes > 0 && nowTx >= prevTxBytes && nowMs > prevTxTimeMs) {
+                        val deltaBytes = nowTx - prevTxBytes
+                        val elapsedSec = (nowMs - prevTxTimeMs) / 1000.0
+                        val kbps = ((deltaBytes * 8.0) / elapsedSec / 1000.0).toInt()
+                        if (kbps > 50) {
+                            lastBitrate = kbps
+                        }
+                    }
+                    prevTxBytes = nowTx
+                    prevTxTimeMs = nowMs
+
+                    // 3. Auto-detect connected peer IPs from /proc/net/tcp & /proc/net/tcp6
+                    val peerIps = detectConnectedPeerIps()
+                    if (peerIps.isNotEmpty()) {
+                        lastDiscoveredClient = peerIps.last()
+                    }
+
+                    // 4. Measure real network RTT to active peer IP or LAN gateway
+                    val probeIp = activeSessions.lastOrNull()?.clientIp?.takeIf { it != "127.0.0.1" }
+                        ?: peerIps.lastOrNull()
+                        ?: deriveGatewayIp(SunshineService.currentIp)
+                    if (probeIp != null && probeIp != "127.0.0.1") {
+                        val rtt = measurePingRttMs(probeIp, timeRegex)
+                        if (rtt != null && rtt > 0.0) {
+                            lastNetworkLatencyMs = Math.round((lastNetworkLatencyMs * 0.3 + rtt * 0.7) * 100.0) / 100.0
+                        }
+                    }
+
+                    // 5. Sync session metadata (peer IP, live per-client bitrate, codec)
+                    if (activeSessions.isNotEmpty()) {
+                        val perClientBitrate = (lastBitrate / activeSessions.size.coerceAtLeast(1)).coerceAtLeast(500)
+                        var changed = false
+                        val updated = activeSessions.mapIndexed { idx, s ->
+                            val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
+                                peerIps.getOrElse(idx) { peerIps.last() }
+                            } else s.clientIp
+                            val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
+                                "Moonlight ($resolvedIp)"
+                            } else s.clientName
+                            if (s.clientIp != resolvedIp || s.clientName != resolvedName || s.bitrate != perClientBitrate || s.codec != lastCodec) {
+                                changed = true
+                                s.copy(clientName = resolvedName, clientIp = resolvedIp, bitrate = perClientBitrate, codec = lastCodec)
+                            } else s
+                        }
+                        if (changed) {
+                            activeSessions.clear()
+                            activeSessions.addAll(updated)
+                            _activeSessionsFlow.value = activeSessions.toList()
+                        }
+                    }
+
+                    // 6. Keep physical display orientation updated if auto_rotate is enabled
+                    if (autoRotateEnabled) {
+                        com.connect_screen.mirror.job.SunshineMouse.updateDisplayDimensions()
+                    }
+
+                    // 7. Emit fresh PerfResponse to StateFlow
+                    _perfFlow.value = getPerfSnapshot()
+                } catch (_: InterruptedException) {
+                    break
+                } catch (_: Throwable) {}
+            }
+        }, "Sunshine-Telemetry").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopTelemetryLoop() {
+        try {
+            telemetryThread?.interrupt()
+        } catch (_: Throwable) {}
+        telemetryThread = null
+    }
+
+    private fun detectConnectedPeerIps(): List<String> {
+        val result = linkedSetOf<String>()
+        val sunshinePortsHex = setOf("BB70", "BB75", "BB8A", "BB7E") // 47984, 47989, 48010, 47998
+        listOf("/proc/net/tcp6", "/proc/net/tcp").forEach { path ->
+            try {
+                java.io.File(path).forEachLine { line ->
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size >= 4) {
+                        val local = parts[1].uppercase()
+                        val remote = parts[2].uppercase()
+                        val localPort = local.substringAfter(":", "")
+                        if (localPort in sunshinePortsHex) {
+                            val remHex = remote.substringBefore(":", "")
+                            val ip = decodeProcHexIp(remHex)
+                            if (ip != null && ip != "127.0.0.1" && ip != "0.0.0.0" && !ip.startsWith("0:")) {
+                                result.add(ip)
+                            }
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
+        return result.toList()
+    }
+
+    private fun decodeProcHexIp(hex: String): String? {
+        return try {
+            if (hex.length == 8) {
+                val b0 = hex.substring(6, 8).toInt(16)
+                val b1 = hex.substring(4, 6).toInt(16)
+                val b2 = hex.substring(2, 4).toInt(16)
+                val b3 = hex.substring(0, 2).toInt(16)
+                if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0) null else "$b0.$b1.$b2.$b3"
+            } else if (hex.length == 32 && hex.startsWith("0000000000000000FFFF0000")) {
+                decodeProcHexIp(hex.substring(24, 32))
+            } else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun deriveGatewayIp(lanIp: String): String? {
+        val parts = lanIp.split(".")
+        return if (parts.size == 4 && parts[0] != "127") {
+            "${parts[0]}.${parts[1]}.${parts[2]}.1"
+        } else null
+    }
+
+    private fun measurePingRttMs(ip: String, timeRegex: Regex): Double? {
+        return try {
+            val proc = ProcessBuilder("ping", "-c", "1", "-W", "1", ip)
+                .redirectErrorStream(true)
+                .start()
+            val finished = proc.waitFor(800, java.util.concurrent.TimeUnit.MILLISECONDS)
+            if (!finished) {
+                proc.destroy()
+                return null
+            }
+            val output = proc.inputStream.bufferedReader().readText()
+            val match = timeRegex.find(output)
+            match?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -138,15 +372,20 @@ class SunshineRuntimeManager private constructor() {
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface, shouldSendAudio: Boolean) {
         val callerThreadId = android.os.Process.myTid().toLong()
         val sessionIndex = activeSessionCount.incrementAndGet()
-        val cName = lastDiscoveredClient ?: "Moonlight Client #$sessionIndex"
-        val cIp = lastDiscoveredClient ?: "127.0.0.1"
+        reloadConfig()
+        val peerIps = detectConnectedPeerIps()
+        if (peerIps.isNotEmpty()) {
+            lastDiscoveredClient = peerIps.last()
+        }
+        val cIp = peerIps.lastOrNull() ?: lastDiscoveredClient ?: "127.0.0.1"
+        val cName = if (cIp != "127.0.0.1") "Moonlight ($cIp)" else "Moonlight Client #$sessionIndex"
         SunshineLogManager.log("STREAM", "Stream started ($cName, tid=$callerThreadId): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
 
         lastWidth = width
         lastHeight = height
         lastFps = fps.toDouble()
-        lastBitrate = 10000
-        lastCodec = "H.264"
+        lastBitrate = (configuredMaxBitrate / 2).coerceIn(configuredMinBitrate, configuredMaxBitrate)
+        lastCodec = if (hevcEnabled) "HEVC (H.265)" else "AVC (H.264)"
         if (streamStartTime == 0L) {
             streamStartTime = System.currentTimeMillis()
         }
@@ -169,6 +408,7 @@ class SunshineRuntimeManager private constructor() {
         _activeSessionsFlow.value = activeSessions.toList()
         _isStreaming.value = true
         _perfFlow.value = getPerfSnapshot()
+        startTelemetryLoop()
 
         // Create VirtualDisplay feeding frameDispatcher on main thread
         Handler(Looper.getMainLooper()).post {
@@ -195,8 +435,8 @@ class SunshineRuntimeManager private constructor() {
                     }
                 }
 
-                // Register client surface into frame dispatcher
-                frameDispatcher.addSurface(surface, width, height)
+                // Register client surface into frame dispatcher with target FPS
+                frameDispatcher.addSurface(surface, width, height, fps)
                 SunshineLogManager.log("VD", "Client ($cName) surface registered into frame dispatcher")
             } else {
                 SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
@@ -249,6 +489,7 @@ class SunshineRuntimeManager private constructor() {
         // All clients disconnected (remaining <= 0)
         activeSessionCount.set(0)
         _isStreaming.value = false
+        stopTelemetryLoop()
         activeSessions.clear()
         _activeSessionsFlow.value = emptyList()
         _perfFlow.value = PerfResponse(active = false)
@@ -355,7 +596,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun isClientActive(uuid: String): Boolean {
-        return _isStreaming.value && (clientUuid == uuid || activeSessions.isNotEmpty())
+        return _isStreaming.value && clientUuid == uuid
     }
 
     fun getActiveSessions(): List<RuntimeSession> = activeSessions.toList()
@@ -365,8 +606,8 @@ class SunshineRuntimeManager private constructor() {
             PerfResponse(
                 active = true,
                 fps = lastFps,
-                encodeTimeMs = 2.8,
-                networkLatencyMs = 1.2,
+                encodeTimeMs = lastEncodeTimeMs,
+                networkLatencyMs = lastNetworkLatencyMs,
                 bitrateKbps = lastBitrate
             )
         } else {
