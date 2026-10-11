@@ -15,6 +15,9 @@ public class SunshineServer {
     public static native void startAudioRecording(Object audioRecord, int packetDuration);
     public static native void submitPin(String pin);
     public static native void cleanup();
+    public static native void configureVideo(int minimum, int maximum, int maxFps);
+    public static native String videoSnapshot();
+    public static native boolean controlVideo(long sessionId, int operation, int value);
 
     static {
         System.loadLibrary("crypto");

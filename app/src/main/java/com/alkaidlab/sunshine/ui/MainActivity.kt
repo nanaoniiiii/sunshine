@@ -43,6 +43,14 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: SunshineViewModel by viewModels()
     private var projectionRequestPending = false
+    private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { code, result ->
+        if (code == 1001) {
+            if (result == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().initShizukuInput()
+            }
+            viewModel.checkSystemPermissions()
+        }
+    }
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -62,6 +70,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionListener)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
@@ -134,9 +143,19 @@ class MainActivity : ComponentActivity() {
             if (Shizuku.pingBinder()) {
                 if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                     Shizuku.requestPermission(1001)
+                } else {
+                    com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().initShizukuInput()
+                    viewModel.checkSystemPermissions()
                 }
+            } else {
+                android.widget.Toast.makeText(this, "Shizuku 服务尚未连接，请先在 Shizuku 中启动服务", android.widget.Toast.LENGTH_LONG).show()
             }
         } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener)
+        super.onDestroy()
     }
 
     private fun requestIgnoreBatteryOptimization() {
