@@ -96,6 +96,7 @@ class SunshineEngineClient(private val context: Context) {
                 scope.launch {
                     try {
                         if (!enabled || generation != epoch) return@launch
+                        remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
@@ -169,6 +170,19 @@ class SunshineEngineClient(private val context: Context) {
             try { remote.startAudio(samplesPerPacket) } catch (_: RemoteException) {}
         }
     }
+
+    fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
+        try { engine?.configureVideo(minimum, maximum, maxFps) } catch (_: RemoteException) {}
+    }
+
+    fun videoSessions(): List<com.alkaidlab.sunshine.data.NativeVideoSession> = try {
+        val json = engine?.videoSnapshot() ?: "[]"
+        com.google.gson.Gson().fromJson(json, Array<com.alkaidlab.sunshine.data.NativeVideoSession>::class.java).toList()
+    } catch (_: Exception) { emptyList() }
+
+    fun controlVideo(sessionId: Long, operation: Int, value: Int = 0): Boolean = try {
+        engine?.controlVideo(sessionId, operation, value) == true
+    } catch (_: RemoteException) { false }
 
     fun stop() {
         closed = true

@@ -10,7 +10,6 @@ import com.alkaidlab.sunshine.service.StreamingSettings
 import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.util.UUID
@@ -118,6 +117,7 @@ class SunshineApiServer(
                 uri == "/api/clients/unpair-all" && method == Method.POST -> handleUnpairAll()
                 uri == "/api/pin" && method == Method.POST -> handleSubmitPin(session)
                 uri == "/api/runtime/sessions" && method == Method.GET -> handleGetRuntimeSessions()
+                uri.startsWith("/api/runtime/sessions/") && method == Method.POST -> handleVideoControl(session)
                 uri == "/api/encoders" && method == Method.GET -> jsonResponse(mapOf("encoders" to com.alkaidlab.sunshine.service.EncoderCapabilities.encoders))
                 uri == "/api/diagnostics" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().diagnostics())
                 uri == "/api/perf/current" && method == Method.GET -> handleGetPerfCurrent()
@@ -175,16 +175,15 @@ class SunshineApiServer(
 
     private fun handleSaveConfig(session: IHTTPSession): Response = synchronized(configLock) {
         val body = parseBody(session)
-        val mapType = object : TypeToken<Map<String, String>>() {}.type
-        val incoming: Map<String, String> = gson.fromJson(body, mapType)
-            ?: return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
-                gson.toJson(SimpleStatusResponse("false", error = "Missing configuration")))
-        StreamingSettings.validate(incoming)?.let { error ->
+        val incoming = try { com.alkaidlab.sunshine.service.ConfigRequest.parse(body) }
+            catch (_: Exception) { return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                gson.toJson(SimpleStatusResponse("false", error = "Configuration must be an object with scalar values"))) }
+        val current = parseProperties(configFile.readText()).toMutableMap()
+        current.putAll(incoming)
+        StreamingSettings.validate(current)?.let { error ->
             return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
                 gson.toJson(SimpleStatusResponse("false", error = error)))
         }
-        val current = parseProperties(configFile.readText()).toMutableMap()
-        current.putAll(incoming)
         // Atomic replace prevents simultaneous readers from observing a truncated configuration.
         val atomic = android.util.AtomicFile(configFile)
         val output = atomic.startWrite()
@@ -196,8 +195,39 @@ class SunshineApiServer(
             throw e
         }
         SunshineRuntimeManager.getInstance().reloadConfig(context)
-        SunshineLogManager.log("CONFIG", "Host streaming settings applied; native startup settings take effect after idle restart")
-        jsonResponse(SimpleStatusResponse("true", "帧率、补帧、音频缓冲与 Wi-Fi 设置已应用；编码模式需空闲重启后生效"))
+        SunshineLogManager.log("CONFIG", "Host settings and native bitrate bounds applied; encoder FPS/codec settings apply to new sessions")
+        jsonResponse(SimpleStatusResponse("true", "码率限制、画面调度与缓冲设置已应用；编码器帧率在下次连接生效，编码模式需空闲重启"))
+    }
+
+    private fun handleVideoControl(session: IHTTPSession): Response {
+        fun error(status: Response.Status, message: String) = newFixedLengthResponse(
+            status, "application/json", gson.toJson(SimpleStatusResponse("false", error = message)))
+        val parts = session.uri.removePrefix("/api/runtime/sessions/").split('/')
+        if (parts.size != 2) return error(Response.Status.NOT_FOUND, "Unknown session action")
+        val id = parts[0].toLongOrNull()?.takeIf { it > 0 }
+            ?: return error(Response.Status.BAD_REQUEST, "Invalid session ID")
+        val runtime = SunshineRuntimeManager.getInstance()
+        val native = runtime.diagnostics().video.find { it.sessionId == id }
+            ?: return error(Response.Status.NOT_FOUND, "Session is no longer active")
+        val operation = when (parts[1]) {
+            "bitrate" -> 1
+            "keyframe" -> 2
+            "disconnect" -> 3
+            else -> return error(Response.Status.NOT_FOUND, "Unknown session action")
+        }
+        var value = 0
+        if (operation == 1) {
+            value = try {
+                val objectValue = com.google.gson.JsonParser.parseString(parseBody(session)).asJsonObject["bitrate_kbps"]
+                val raw = objectValue?.asString.orEmpty()
+                raw.toIntOrNull() ?: return error(Response.Status.BAD_REQUEST, "bitrate_kbps must be an integer")
+            } catch (_: Exception) { return error(Response.Status.BAD_REQUEST, "Invalid bitrate request") }
+            val ceiling = minOf(runtime.configuredMaxBitrate, native.requestedBitrateKbps)
+            val floor = minOf(runtime.configuredMinBitrate, ceiling)
+            if (value !in floor..ceiling) return error(Response.Status.BAD_REQUEST, "bitrate_kbps must be within $floor..$ceiling")
+        }
+        if (!runtime.controlVideo(id, operation, value)) return error(Response.Status.CONFLICT, "Session or configuration changed; refresh and retry")
+        return jsonResponse(SimpleStatusResponse("true", "Request queued; inspect video diagnostics for driver result"))
     }
 
     private fun handleGetApps(): Response {

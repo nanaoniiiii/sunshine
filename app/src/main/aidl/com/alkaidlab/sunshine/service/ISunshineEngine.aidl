@@ -7,4 +7,7 @@ interface ISunshineEngine {
     void shutdown();
     void submitPin(String pin);
     void startAudio(int samplesPerPacket);
+    void configureVideo(int minimum, int maximum, int maxFps);
+    String videoSnapshot();
+    boolean controlVideo(long sessionId, int operation, int value);
 }

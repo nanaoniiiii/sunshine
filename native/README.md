@@ -22,10 +22,17 @@ within that commit. APK signing is separate and uses the existing release key.
   is stopped, and the Surface JNI local reference is released afterwards.
 - Audio capture remains enabled regardless of the client's host-speaker flag:
   Android playback capture still needs to feed remote audio in either mode.
+- Per-session video diagnostics, bounded encoder-output timestamp samples, live
+  bitrate bounds and manual bitrate/keyframe/disconnect commands. MediaCodec
+  operations run on their owning video thread; driver failures are reported.
+- Correct output-buffer offsets, honest codec creation failures, negotiated low
+  frame rates, and UDP batch fallback that retries only the unsent suffix.
 
 The Kotlin host retains its isolated `:engine` process and last-client recovery.
-Desktop-specific display drivers, dynamic bitrate and adaptive FEC are not part
-of this patch. `patches/openssl-download.patch` enforces the archive hash instead
+Desktop-specific display drivers, automatic network bitrate adaptation and
+adaptive FEC are not part of this patch. Manual bitrate control is documented in
+[docs/native-video-controls.md](../docs/native-video-controls.md).
+`patches/openssl-download.patch` enforces the archive hash instead
 of allowing the upstream unchecked download.
 
 ## Build
@@ -44,8 +51,10 @@ unchanged. The driver refuses unexpected source revisions or patches rather than
 resetting a developer's changes. Never uninstall or clear application data to
 work around an APK signature mismatch.
 
-`--tests` also builds two silent console executables per ABI: packet continuity,
+`--tests` also builds three silent console executables per ABI: packet continuity,
 mixed durations, joining-client state and surround mapping; and bounded queue,
-silent-source shutdown and independent-client fanout. Run them through ADB on a
+silent-source shutdown and independent-client fanout; and video bounds, commands,
+buffer ranges, timestamp windows and partial-batch progress. Run them through ADB on a
 device supporting that ABI. They produce no audio. Device streaming regression
-uses Douyin as the sound source; synthetic test tones are not used.
+uses Douyin when audio validation is requested. The v2026.10.12.2 regression is
+video-only, with both endpoints muted and a silent visual diagnostic activity.

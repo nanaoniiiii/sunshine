@@ -15,9 +15,12 @@ data class StreamingSettings(
         )
 
         fun validate(properties: Map<String, String>): String? {
-            for ((key, range) in listOf("max_stream_fps" to 15..240, "audio_buffer_ms" to 20..100)) {
+            for ((key, range) in listOf("max_stream_fps" to 15..240, "audio_buffer_ms" to 20..100,
+                "min_bitrate" to 1000..150000, "max_bitrate" to 1000..150000)) {
                 properties[key]?.let { if (it.toIntOrNull() !in range) return "$key must be within $range" }
             }
+            if ((properties["min_bitrate"]?.toIntOrNull() ?: 5000) >
+                (properties["max_bitrate"]?.toIntOrNull() ?: 50000)) return "min_bitrate must not exceed max_bitrate"
             for (key in listOf("repeat_frames", "wifi_low_latency")) {
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }

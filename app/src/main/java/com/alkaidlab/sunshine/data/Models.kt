@@ -94,7 +94,8 @@ data class RuntimeSession(
     @SerializedName("start_time") val startTime: Long,
     @Transient val surface: Surface? = null,
     @Transient val videoThreadId: Long = 0L,
-    @Transient val audioEnabled: Boolean = false
+    @Transient val audioEnabled: Boolean = false,
+    @SerializedName("session_id") val sessionId: Long? = null
 )
 
 data class RuntimeSessionsResponse(
@@ -145,7 +146,30 @@ data class DiagnosticsResponse(
     val frames: FrameDiagnostics,
     val audio: AudioDiagnostics,
     val perf: PerfResponse,
-    val capabilities: Map<String, String>
+    val capabilities: Map<String, String>,
+    val video: List<NativeVideoSession> = emptyList()
+)
+
+data class NativeVideoSession(
+    @SerializedName("session_id") val sessionId: Long,
+    @SerializedName("thread_id") val threadId: Long,
+    val codec: String,
+    val encoder: String,
+    @SerializedName("requested_fps") val requestedFps: Int,
+    @SerializedName("configured_fps") val configuredFps: Int,
+    @SerializedName("requested_bitrate_kbps") val requestedBitrateKbps: Int,
+    @SerializedName("desired_bitrate_kbps") val desiredBitrateKbps: Int,
+    @SerializedName("applied_bitrate_kbps") val appliedBitrateKbps: Int,
+    @SerializedName("bitrate_status") val bitrateStatus: Int,
+    @SerializedName("idr_status") val idrStatus: Int,
+    @SerializedName("idr_requests") val idrRequests: Long,
+    @SerializedName("encoded_frames") val encodedFrames: Long,
+    @SerializedName("encoded_bytes") val encodedBytes: Long,
+    val keyframes: Long,
+    @SerializedName("invalid_buffers") val invalidBuffers: Long,
+    @SerializedName("encoded_fps") val encodedFps: Double,
+    @SerializedName("encoded_bitrate_kbps") val encodedBitrateKbps: Double,
+    @SerializedName("submit_to_output_p95_ms") val submitToOutputP95Ms: Double?
 )
 
 data class EncoderCapability(

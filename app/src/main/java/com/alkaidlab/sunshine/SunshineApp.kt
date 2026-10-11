@@ -14,6 +14,7 @@ class SunshineApp : Application() {
 
     private val binderDeadListener = Shizuku.OnBinderDeadListener {
         SunshineLogManager.log("SHIZUKU", "Shizuku binder dead")
+        SunshineRuntimeManager.getInstance().onShizukuDisconnected()
     }
 
     override fun onCreate() {

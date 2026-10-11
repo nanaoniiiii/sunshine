@@ -26,4 +26,11 @@ class StreamingSettingsTest {
     @Test fun multilineConfigInjectionIsRejected() {
         assertNotNull(StreamingSettings.validate(mapOf("auto_scale" to "true\nmax_stream_fps = 999")))
     }
+
+    @Test fun bitrateLimitsMustBeOrderedAndNumeric() {
+        assertNotNull(StreamingSettings.validate(mapOf("min_bitrate" to "60000", "max_bitrate" to "50000")))
+        assertNotNull(StreamingSettings.validate(mapOf("max_bitrate" to "NaN")))
+        assertNotNull(StreamingSettings.validate(mapOf("min_bitrate" to "0")))
+        assertNull(StreamingSettings.validate(mapOf("min_bitrate" to "1000", "max_bitrate" to "4000")))
+    }
 }

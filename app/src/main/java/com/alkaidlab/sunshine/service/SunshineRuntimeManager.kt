@@ -131,11 +131,12 @@ class SunshineRuntimeManager private constructor() {
                 hevcEnabled = (props["hevc_mode"] ?: "enabled") != "disabled"
                 autoRotateEnabled = (props["auto_rotate"] ?: "true") != "false"
                 autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
-                configuredMinBitrate = props["min_bitrate"]?.toIntOrNull() ?: 5000
-                configuredMaxBitrate = props["max_bitrate"]?.toIntOrNull() ?: 50000
+                configuredMaxBitrate = (props["max_bitrate"]?.toIntOrNull() ?: 50000).coerceIn(1000, 150000)
+                configuredMinBitrate = (props["min_bitrate"]?.toIntOrNull() ?: 5000).coerceIn(1000, configuredMaxBitrate)
                 val settings = StreamingSettings.from(props)
                 _streamingSettings.value = settings
                 frameDispatcher.configure(settings)
+                engineClient?.configureVideo(configuredMinBitrate, configuredMaxBitrate, settings.maxFps)
                 if (audioBufferMs != settings.audioBufferMs) {
                     audioBuffer = PcmAudioBuffer(maxOf(settings.audioBufferMs * 96, audioPacketFloats))
                     audioBufferMs = settings.audioBufferMs
@@ -222,7 +223,7 @@ class SunshineRuntimeManager private constructor() {
                     }
 
                     if (telemetryEpoch != epoch || Thread.currentThread().isInterrupted) break
-                    // Preserve unavailable per-client bitrate/codec instead of inventing values.
+                    val nativeVideo = engineClient?.videoSessions().orEmpty().associateBy { it.threadId }
                     synchronized(this@SunshineRuntimeManager) {
                         if (activeSessions.isNotEmpty()) {
                             var changed = false
@@ -233,9 +234,14 @@ class SunshineRuntimeManager private constructor() {
                                 val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
                                     "Moonlight ($resolvedIp)"
                                 } else s.clientName
-                                if (s.clientIp != resolvedIp || s.clientName != resolvedName) {
+                                val video = nativeVideo[s.videoThreadId]
+                                if (s.clientIp != resolvedIp || s.clientName != resolvedName ||
+                                    (video != null && (s.sessionId != video.sessionId || s.bitrate != video.appliedBitrateKbps || s.codec != video.codec))) {
                                     changed = true
-                                    s.copy(clientName = resolvedName, clientIp = resolvedIp)
+                                    s.copy(clientName = resolvedName, clientIp = resolvedIp,
+                                        sessionId = video?.sessionId ?: s.sessionId,
+                                        bitrate = video?.appliedBitrateKbps ?: s.bitrate,
+                                        codec = video?.codec ?: s.codec)
                                 } else s
                             }
                             if (changed) {
@@ -524,7 +530,16 @@ class SunshineRuntimeManager private constructor() {
         return _isStreaming.value && clientUuid == uuid
     }
 
-    fun getActiveSessions(): List<RuntimeSession> = activeSessions.toList()
+    fun getActiveSessions(): List<RuntimeSession> {
+        val native = engineClient?.videoSessions().orEmpty().associateBy { it.threadId }
+        return activeSessions.map { host ->
+            native[host.videoThreadId]?.let { host.copy(sessionId = it.sessionId,
+                bitrate = it.appliedBitrateKbps, codec = it.codec) } ?: host
+        }
+    }
+
+    fun controlVideo(sessionId: Long, operation: Int, value: Int = 0): Boolean =
+        engineClient?.controlVideo(sessionId, operation, value) == true
 
     fun getPerfSnapshot(): PerfResponse {
         return if (_isStreaming.value) {
@@ -573,13 +588,14 @@ class SunshineRuntimeManager private constructor() {
                 "network_latency_ms" to "ICMP probe to detected peer; null if unavailable or stale",
                 "packet_loss_percent" to "unavailable: native client-feedback callback required",
                 "bitrate_kbps" to "aggregate UID TX including audio, FEC and API traffic; not per-client bitrate",
-                "session_codec" to "unavailable: native callback does not report negotiated codec",
-                "encoder_latency" to "unavailable: native output timestamps callback required",
-                "dynamic_bitrate" to "unavailable: bundled JNI has no bitrate setter",
+                "session_codec" to "native negotiated codec and MediaCodec component name",
+                "encoder_latency" to "video.submit_to_output_p95_ms: bounded 256 output samples; EGL submission to output, not end-to-end latency",
+                "dynamic_bitrate" to "per-session manual control within negotiated budget and configured bounds; driver result reported, no automatic network adaptation",
                 "adaptive_fec" to "unavailable: bundled JNI has no FEC setter",
                 "audio_buffer" to "bounded stereo PCM; drops oldest on overflow; cleared on idle",
                 "wifi_low_latency" to "requested only while streaming; OS/device decides effectiveness"
-            )
+            ),
+            video = engineClient?.videoSessions().orEmpty()
         )
     }
 
@@ -733,8 +749,16 @@ class SunshineRuntimeManager private constructor() {
     fun getLastHeight(): Int = if (lastHeight > 0) lastHeight else 1600
 
     // Shizuku Input Injection
-    private var isBoundViaShizuku = false
+    @Volatile private var isBoundViaShizuku = false
 
+    @Synchronized
+    fun onShizukuDisconnected() {
+        isBoundViaShizuku = false
+        inputManager = null
+        injectInputMethod = null
+    }
+
+    @Synchronized
     fun initShizukuInput() {
         try {
             val hasShizuku = try {
@@ -753,7 +777,7 @@ class SunshineRuntimeManager private constructor() {
                 injectInputMethod = inputManager?.javaClass?.methods?.find {
                     it.name == "injectInputEvent" && it.parameterTypes.size == 2
                 }
-                isBoundViaShizuku = true
+                isBoundViaShizuku = inputManager != null && injectInputMethod != null
                 SunshineLogManager.log("SHIZUKU", "InputManager bound via Shizuku successfully (wrapped binder)")
                 return
             }
