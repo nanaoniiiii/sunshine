@@ -7,6 +7,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import com.connect_screen.mirror.job.SunshineServer
+import com.connect_screen.mirror.job.SunshineMouse
 
 /** Only this disposable process loads JNI. Capture, API, and UI remain in the host. */
 class SunshineEngineService : Service() {
@@ -14,6 +15,12 @@ class SunshineEngineService : Service() {
     private var started = false
     private var audioStarted = false
     private var restartPending = false
+    override fun onCreate() {
+        super.onCreate()
+        // Native input callbacks run here, so the mapper needs this process's
+        // actual physical display dimensions as well as the host capture size.
+        SunshineMouse.setContext(this)
+    }
     private val binder = object : ISunshineEngine.Stub() {
         override fun start(host: ISunshineEngineHost, name: String, cert: String, key: String,
                            state: String, hevc: Boolean) {

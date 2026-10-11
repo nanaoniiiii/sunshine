@@ -52,6 +52,8 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     val runtimeSessions: StateFlow<List<RuntimeSession>> = runtime.activeSessionsFlow
 
     val perf: StateFlow<PerfResponse> = runtime.perfFlow
+    private val _diagnostics = MutableStateFlow<DiagnosticsResponse?>(null)
+    val diagnostics: StateFlow<DiagnosticsResponse?> = _diagnostics.asStateFlow()
 
     val logs: StateFlow<List<String>> = SunshineLogManager.logsFlow
 
@@ -112,6 +114,9 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
                         fetchConfig()
                     }
                     fetchClients()
+                    if (runtime.isStreaming.value) {
+                        try { _diagnostics.value = api.getDiagnostics().body() } catch (_: Exception) {}
+                    } else _diagnostics.value = null
                 }
                 tick++
                 delay(2000)
@@ -184,10 +189,10 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
             try {
                 val resp = api.saveConfig(map)
                 if (resp.isSuccessful) {
-                    _statusMessage.value = "配置保存成功并已即时生效"
+                    _statusMessage.value = resp.body()?.message ?: "配置保存成功"
                     fetchConfig()
                 } else {
-                    _statusMessage.value = "保存失败: ${resp.message()}"
+                    _statusMessage.value = "保存失败: ${resp.errorBody()?.string() ?: resp.message()}"
                 }
             } catch (e: Exception) {
                 _statusMessage.value = "保存异常: ${e.message}"

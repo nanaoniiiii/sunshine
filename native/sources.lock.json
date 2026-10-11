@@ -1,0 +1,23 @@
+{
+  "upstream": "https://github.com/kumu-ze/connect-screen.com.git",
+  "commit": "7552cc395d5d017def154a2a8cbac114803ac6a9",
+  "ndk_version": "27.2.12479018",
+  "android_api": 29,
+  "submodules": {
+    "Simple-Web-Server": "546895a93a29062bb178367b46c7afb72da9881e",
+    "libwordexp": "c3da198b6c697065eab39dcb6da1e87802d53f52",
+    "moonlight-common-c": "6250fa29ee87873716045e3b64f1f229374324e8",
+    "moonlight-common-c/enet": "78cc9b4b03bdd4f95c277391cac6e0951407072b",
+    "nanors": "19f07b513e924e471cadd141943c1ec4adc8d0e0",
+    "openssl-cmake": "7e0c2c423e85e83d7bbb97d770b5eea467b1cc9b"
+  },
+  "boost": {
+    "version": "1.86.0",
+    "sha256": "2c5ec5edcdff47ff55e27ed9560b0a0b94b07bd07ed9928b476150e16b0efc57"
+  },
+  "openssl": {
+    "version": "3.5.4",
+    "arm64-v8a": "e09a1e88cf2999dbb3b1f026a689d9326d28e64109079430e954ae65b7e6f232",
+    "armeabi-v7a": "d06b54b232039ce6144754189d621e0a5e7d974315919e0a36d0f80fb4da26b7"
+  }
+}

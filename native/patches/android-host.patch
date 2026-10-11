@@ -1,0 +1,913 @@
+diff --git a/app-mirror/src/main/cpp/CMakeLists.txt b/app-mirror/src/main/cpp/CMakeLists.txt
+index e741966..7e46dc6 100644
+--- a/app-mirror/src/main/cpp/CMakeLists.txt
++++ b/app-mirror/src/main/cpp/CMakeLists.txt
+@@ -51,4 +51,19 @@ target_link_libraries(
+         crypto
+         simple-web-server
+         ${Boost_LIBRARIES}
+-) 
+\ No newline at end of file
++)
++# Overlay is checked into the Android host repository; upstream is pinned by build.py.
++target_include_directories(sunshine PRIVATE "${SUNSHINE_ANDROID_OVERLAY}")
++target_compile_features(sunshine PRIVATE cxx_std_17)
++
++option(SUNSHINE_ANDROID_TESTS "Build on-device native audio regression tests" OFF)
++if(SUNSHINE_ANDROID_TESTS)
++    add_executable(sunshine_audio_test "${SUNSHINE_ANDROID_OVERLAY}/tests/native_audio_test.cpp")
++    target_include_directories(sunshine_audio_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${SUNSHINE_ANDROID_OVERLAY}" ${Boost_INCLUDE_DIRS})
++    target_link_libraries(sunshine_audio_test PRIVATE ${Boost_LIBRARIES})
++    target_compile_features(sunshine_audio_test PRIVATE cxx_std_17)
++    target_compile_options(sunshine_audio_test PRIVATE -UNDEBUG)
++    add_executable(sunshine_packetizer_test "${SUNSHINE_ANDROID_OVERLAY}/tests/audio_packetizer_test.cpp")
++    target_compile_features(sunshine_packetizer_test PRIVATE cxx_std_17)
++    target_compile_options(sunshine_packetizer_test PRIVATE -UNDEBUG)
++endif()
+diff --git a/app-mirror/src/main/cpp/audio.cpp b/app-mirror/src/main/cpp/audio.cpp
+index 25ffb78..7d2b37b 100644
+--- a/app-mirror/src/main/cpp/audio.cpp
++++ b/app-mirror/src/main/cpp/audio.cpp
+@@ -103,6 +103,11 @@ namespace audio {
+                 nullptr
+         )};
+ 
++        if (!opus) {
++            BOOST_LOG(error) << "Unable to initialize this client's Opus encoder";
++            samples->stop();
++            return;
++        }
+         opus_multistream_encoder_ctl(opus.get(), OPUS_SET_BITRATE(stream.bitrate));
+         opus_multistream_encoder_ctl(opus.get(), OPUS_SET_VBR(0));
+ 
+@@ -114,10 +119,11 @@ namespace audio {
+         while (auto sample = samples->pop()) {
+             buffer_t packet {1400};
+ 
++            if (sample->size() != static_cast<std::size_t>(frame_size * stream.channelCount)) continue;
+             int bytes = opus_multistream_encode_float(opus.get(), sample->data(), frame_size, std::begin(packet), packet.size());
+             if (bytes < 0) {
+                 BOOST_LOG(error) << "Couldn't encode audio: "sv << opus_strerror(bytes);
+-                packets->stop();
++                samples->stop(); // A failed encoder must not stop every client's packet queue.
+ 
+                 return;
+             }
+@@ -318,4 +324,4 @@ namespace audio {
+         stream.coupledStreams = params.coupledStreams;
+         stream.mapping = params.mapping;
+     }
+-}  // namespace audio
+\ No newline at end of file
++}  // namespace audio
+diff --git a/app-mirror/src/main/cpp/dependencies/Boost_Sunshine.cmake b/app-mirror/src/main/cpp/dependencies/Boost_Sunshine.cmake
+index 4f93965..b9e1cfd 100644
+--- a/app-mirror/src/main/cpp/dependencies/Boost_Sunshine.cmake
++++ b/app-mirror/src/main/cpp/dependencies/Boost_Sunshine.cmake
+@@ -41,7 +41,7 @@ if(NOT Boost_FOUND)
+     set(BOOST_URL
+             "https://github.com/boostorg/boost/releases/download/boost-1.86.0/boost-1.86.0-cmake.tar.xz")
+     set(BOOST_HASH
+-            "MD5=D02759931CEDC02ADED80402906C5EB6")
++            "SHA256=2c5ec5edcdff47ff55e27ed9560b0a0b94b07bd07ed9928b476150e16b0efc57")
+ 
+     if(CMAKE_VERSION VERSION_LESS "3.24.0")
+         FetchContent_Declare(
+diff --git a/app-mirror/src/main/cpp/sunshine.cpp b/app-mirror/src/main/cpp/sunshine.cpp
+index 529c31e..0d75af3 100644
+--- a/app-mirror/src/main/cpp/sunshine.cpp
++++ b/app-mirror/src/main/cpp/sunshine.cpp
+@@ -1,5 +1,9 @@
+ #include <jni.h>
+ #include <string>
++#include <atomic>
++#include <mutex>
++#include <algorithm>
++#include "audio_packetizer.h"
+ #include "logging.h"
+ #include "config.h"
+ #include "nvhttp.h"
+@@ -8,7 +12,7 @@
+ #include "stream.h"
+ #include "rtsp.h"
+ #include "audio.h"
+-#include "moonlight-common-c/src/input.h"
++#include "moonlight-common-c/src/Input.h"
+ #include "video_colorspace.h"
+ 
+ #include <media/NdkMediaCodec.h>
+@@ -23,9 +27,34 @@ extern "C" {
+ 
+ static std::unique_ptr<logging::deinit_t> deinit;
+ static JavaVM* jvm = nullptr;
++
++// Helpers must not detach the video thread or invalidate its Surface local reference.
++struct ScopedJniAttachment {
++    JavaVM* vm;
++    JNIEnv* env = nullptr;
++    bool owned = false;
++    explicit ScopedJniAttachment(JavaVM* machine) : vm(machine) {
++        if (!vm) return;
++        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_EDETACHED) {
++            owned = vm->AttachCurrentThread(&env, nullptr) == JNI_OK;
++            if (!owned) env = nullptr;
++        }
++    }
++    ~ScopedJniAttachment() { if (owned) vm->DetachCurrentThread(); }
++};
++
+ static jclass sunshineServerClass = nullptr;
+ static jclass sunshineMouseClass = nullptr;
+-static audio::sample_queue_t samples = nullptr;
++struct AudioSubscriber {
++    audio::sample_queue_t queue;
++    sunshine_android::AudioPacketizer packetizer;
++    AudioSubscriber(int frames, int channels, int queuePackets)
++        : queue(std::make_shared<audio::sample_queue_t::element_type>(queuePackets)),
++          packetizer(frames, channels) {}
++};
++static std::mutex audioSubscribersMutex;
++static std::vector<std::shared_ptr<AudioSubscriber>> audioSubscribers;
++static std::atomic_bool audioRecordingActive{false};
+ 
+ // 声明全局变量来存储音频录制状态
+ static std::thread audioRecordingThread;
+@@ -51,45 +80,45 @@ Java_com_connect_1screen_mirror_job_SunshineServer_start(JNIEnv *env, jclass cla
+     } else {
+         BOOST_LOG(error) << "无法在启动时找到 SunshineServer 类"sv;
+     }
+-    
++
+     jclass mouseClass = env->FindClass("com/connect_screen/mirror/job/SunshineMouse");
+     if (mouseClass != nullptr) {
+         sunshineMouseClass = (jclass)env->NewGlobalRef(mouseClass);
+         env->DeleteLocalRef(mouseClass);
+-        
++
+         // 在类引用创建后立即缓存常用方法ID
+         handleTouchPacketMethod = env->GetStaticMethodID(sunshineMouseClass, "handleTouchPacket", "(IIIFFFFF)V");
+         handleAbsMouseMoveMethod = env->GetStaticMethodID(sunshineMouseClass, "handleAbsMouseMovePacket", "(FFFF)V");
+         handleLeftMouseButtonMethod = env->GetStaticMethodID(sunshineMouseClass, "handleLeftMouseButton", "(Z)V");
+-        
++
+         if (!handleTouchPacketMethod || !handleAbsMouseMoveMethod || !handleLeftMouseButtonMethod) {
+             BOOST_LOG(warning) << "无法缓存一个或多个输入处理方法ID"sv;
+         }
+     } else {
+         BOOST_LOG(error) << "无法在启动时找到 SunshineMouse 类"sv;
+     }
+-    
++
+     // 在现有类引用创建后添加 SunshineKeyboard 类的缓存
+     jclass keyboardClass = env->FindClass("com/connect_screen/mirror/job/SunshineKeyboard");
+     if (keyboardClass != nullptr) {
+         sunshineKeyboardClass = (jclass)env->NewGlobalRef(keyboardClass);
+         env->DeleteLocalRef(keyboardClass);
+-        
++
+         // 缓存键盘处理方法ID
+         handleKeyboardMethod = env->GetStaticMethodID(sunshineKeyboardClass, "handleKeyboardEvent", "(IZI)V");
+-        
++
+         if (!handleKeyboardMethod) {
+             BOOST_LOG(warning) << "无法缓存键盘处理方法ID"sv;
+         }
+     } else {
+         BOOST_LOG(error) << "无法在启动时找到 SunshineKeyboard 类"sv;
+     }
+-    
++
+     deinit = logging::init(1, "/dev/null");
+     BOOST_LOG(info) << "start sunshine server"sv;
+     mail::man = std::make_shared<safe::mail_raw_t>();
+     task_pool.start(1);
+-    
++
+     std::thread httpThread {nvhttp::start};
+     rtsp_stream::rtpThread();
+     httpThread.join();
+@@ -135,88 +164,64 @@ Java_com_connect_1screen_mirror_job_SunshineServer_cleanup(JNIEnv *env, jclass c
+     if (sunshineServerClass != nullptr) {
+         env->DeleteGlobalRef(sunshineServerClass);
+         sunshineServerClass = nullptr;
+-        
++
+         // 清除缓存的方法ID
+         handleTouchPacketMethod = nullptr;
+         handleAbsMouseMoveMethod = nullptr;
+         handleLeftMouseButtonMethod = nullptr;
+     }
+-    
++
+     // 在清理部分添加对 SunshineKeyboard 类的清理
+     if (sunshineKeyboardClass != nullptr) {
+         env->DeleteGlobalRef(sunshineKeyboardClass);
+         sunshineKeyboardClass = nullptr;
+         handleKeyboardMethod = nullptr;
+     }
+-    
++
+     // 其他清理工作...
+ }
+ 
+ JNIEXPORT void JNICALL
+ Java_com_connect_1screen_mirror_job_SunshineServer_startAudioRecording(JNIEnv *env, jclass clazz, jobject audioRecord, jint framesPerPacket) {
+-    // 创建 AudioRecord 的全局引用，以便在线程中使用
++    if (framesPerPacket <= 0 || framesPerPacket > 4800 || audioRecordingActive.exchange(true)) return;
+     jobject globalAudioRecord = env->NewGlobalRef(audioRecord);
+-    if (globalAudioRecord == nullptr) {
+-        BOOST_LOG(error) << "无法创建 AudioRecord 的全局引用"sv;
+-        return;
+-    }
+-    
+-    // 获取 AudioRecord 类和方法 ID
+-    jclass audioRecordClass = env->GetObjectClass(globalAudioRecord);
+-    if (audioRecordClass == nullptr) {
+-        BOOST_LOG(error) << "无法获取 AudioRecord 类"sv;
+-        env->DeleteGlobalRef(globalAudioRecord);
++    jclass sourceClass = env->GetObjectClass(audioRecord);
++    jmethodID readMethod = env->GetMethodID(sourceClass, "read", "([FIII)I");
++    env->DeleteLocalRef(sourceClass);
++    if (!globalAudioRecord || !readMethod) {
++        if (globalAudioRecord) env->DeleteGlobalRef(globalAudioRecord);
++        audioRecordingActive = false;
+         return;
+     }
+-    jmethodID readMethod = env->GetMethodID(audioRecordClass, "read", "([FIII)I");
+-
+-    if (!readMethod) {
+-        BOOST_LOG(error) << "无法获取 AudioRecord 方法"sv;
+-        env->DeleteGlobalRef(globalAudioRecord);
+-        return;
+-    }
+-    
+-    // 设置活动标志并启动录制线程
+-    audioRecordingThread = std::thread([globalAudioRecord, readMethod, framesPerPacket, env]() {
+-        JNIEnv *threadEnv;
+-        jint result = jvm->AttachCurrentThread(&threadEnv, nullptr);
+-        if (result != JNI_OK) {
+-            BOOST_LOG(error) << "无法将音频线程附加到 JVM"sv;
+-            return;
+-        }
+-        
+-        // 创建缓冲区
+-        jfloatArray buffer = threadEnv->NewFloatArray(framesPerPacket * 2); // 立体声，每帧两个通道
+-        
+-        try {
+-            while (true) {
+-                // 读取音频数据
+-                jint samplesRead = threadEnv->CallIntMethod(globalAudioRecord, readMethod, buffer, 0, framesPerPacket * 2, 0);
+-                
+-                if (samplesRead > 0) {
+-                    // 获取缓冲区数据
+-                    jfloat *audioData = threadEnv->GetFloatArrayElements(buffer, nullptr);
+-                    if (audioData) {
+-                        // 将音频数据转换为 std::vector<float>
+-                        std::vector<float> audioSamples(audioData, audioData + samplesRead);
+-                        
+-                        // 将音频数据传递给 Sunshine 的音频处理系统
+-                        if (samples) {
+-                            samples->raise(std::move(audioSamples));
+-                        }
+-
+-                        // 释放缓冲区
+-                        threadEnv->ReleaseFloatArrayElements(buffer, audioData, JNI_ABORT);
+-                    }
+-                }
++    audioRecordingThread = std::thread([globalAudioRecord, readMethod, framesPerPacket]() {
++        JNIEnv* threadEnv = nullptr;
++        if (jvm->AttachCurrentThread(&threadEnv, nullptr) != JNI_OK) {
++            audioRecordingActive = false;
++            return;
++        }
++        jfloatArray buffer = threadEnv->NewFloatArray(framesPerPacket * 2);
++        std::vector<float> captured(framesPerPacket * 2);
++        while (buffer && audioRecordingActive) {
++            const jint count = threadEnv->CallIntMethod(globalAudioRecord, readMethod, buffer, 0, static_cast<jint>(captured.size()), 0);
++            if (threadEnv->ExceptionCheck()) { threadEnv->ExceptionClear(); break; }
++            if (count <= 0) { std::this_thread::sleep_for(5ms); continue; }
++            if (static_cast<std::size_t>(count) > captured.size()) break;
++            threadEnv->GetFloatArrayRegion(buffer, 0, count, captured.data());
++            if (threadEnv->ExceptionCheck()) { threadEnv->ExceptionClear(); break; }
++            std::lock_guard lock(audioSubscribersMutex);
++            for (auto& subscriber : audioSubscribers) {
++                subscriber->packetizer.append(captured.data(), count, [&](std::vector<float> packet) {
++                    subscriber->queue->raise_latest(std::move(packet));
++                });
+             }
+-        } catch (...) {
+-            BOOST_LOG(error) << "音频录制过程中发生异常"sv;
+         }
+-
+-        // 分离线程
++        if (buffer) threadEnv->DeleteLocalRef(buffer);
++        threadEnv->DeleteGlobalRef(globalAudioRecord);
++        audioRecordingActive = false;
+         jvm->DetachCurrentThread();
+     });
++    // The engine process owns lifetime; never destroy a joinable global std::thread.
++    audioRecordingThread.detach();
+ }
+ 
+ JNIEXPORT void JNICALL
+@@ -249,15 +254,15 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineServerClass == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -265,7 +270,7 @@ namespace sunshine_callbacks {
+         jmethodID onPinRequestedMethod = env->GetStaticMethodID(sunshineServerClass, "onPinRequested", "()V");
+         if (onPinRequestedMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 onPinRequested 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -276,7 +281,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void createVirtualDisplay(JNIEnv *env, jint width, jint height, jint frameRate, jint packetDuration, jobject surface, jboolean shouldMute) {
+@@ -293,7 +298,7 @@ namespace sunshine_callbacks {
+         jmethodID createVirtualDisplayMethod = env->GetStaticMethodID(sunshineServerClass, "createVirtualDisplay", "(IIIILandroid/view/Surface;Z)V");
+         if (createVirtualDisplayMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 createVirtualDisplay 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -304,13 +309,13 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void stopVirtualDisplay() {
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -327,7 +332,7 @@ namespace sunshine_callbacks {
+         jmethodID stopVirtualDisplayMethod = env->GetStaticMethodID(sunshineServerClass, "stopVirtualDisplay", "()V");
+         if (stopVirtualDisplayMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 stopVirtualDisplay 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -338,7 +343,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void showEncoderError(const char* errorMessage) {
+@@ -347,9 +352,9 @@ namespace sunshine_callbacks {
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -357,7 +362,7 @@ namespace sunshine_callbacks {
+         jmethodID showErrorMethod = env->GetStaticMethodID(sunshineServerClass, "showEncoderError", "(Ljava/lang/String;)V");
+         if (showErrorMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 showEncoderError 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -370,13 +375,13 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void captureVideoLoop(void *channel_data, safe::mail_t mail, const video::config_t& config, const audio::config_t& audioConfig) {
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -390,7 +395,7 @@ namespace sunshine_callbacks {
+         BOOST_LOG(info) << "  - 色度采样: "sv << (config.chromaSamplingType == 1 ? "YUV 4:4:4" : "YUV 4:2:0");
+         BOOST_LOG(info) << "  - 动态范围: "sv << (config.dynamicRange ? "HDR" : "SDR");
+         BOOST_LOG(info) << "  - 编码器色彩空间模式: 0x"sv << std::hex << config.encoderCscMode << std::dec;
+-        
++
+         // 获取并记录详细的色彩空间信息
+         bool isHdr = false;
+         video::sunshine_colorspace_t colorspace = colorspace_from_client_config(config, isHdr);
+@@ -398,7 +403,7 @@ namespace sunshine_callbacks {
+         BOOST_LOG(info) << "  - 色彩空间: "sv << static_cast<int>(colorspace.colorspace);
+         BOOST_LOG(info) << "  - 位深度: "sv << colorspace.bit_depth;
+         BOOST_LOG(info) << "  - 色彩范围: "sv << (colorspace.full_range ? "Full" : "Limited");
+-        
++
+         // 创建 MediaFormat
+         AMediaFormat *format = AMediaFormat_new();
+         AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, config.videoFormat == 1 ? "video/hevc" : "video/avc");
+@@ -447,7 +452,7 @@ namespace sunshine_callbacks {
+         }
+ 
+         // 设置色彩范围
+-        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_RANGE, 
++        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_RANGE,
+             colorspace.full_range ? 1 : 2); // 1=FULL, 2=LIMITED
+ 
+         // 设置位深度
+@@ -462,7 +467,7 @@ namespace sunshine_callbacks {
+         AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_STANDARD, &colorStandard);
+         AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_RANGE, &colorRange);
+         AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_TRANSFER, &colorTransfer);
+-        
++
+         BOOST_LOG(info) << "最终媒体格式颜色配置:"sv;
+         BOOST_LOG(info) << "  - COLOR_STANDARD: "sv << colorStandard;
+         BOOST_LOG(info) << "  - COLOR_RANGE: "sv << colorRange << (colorRange == 1 ? " (FULL)" : " (LIMITED)");
+@@ -485,7 +490,7 @@ namespace sunshine_callbacks {
+             AMediaFormat_delete(format);
+             return;
+         }
+-        
++
+         // 配置编码器
+         media_status_t status = AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
+         if (status != AMEDIA_OK) {
+@@ -496,7 +501,7 @@ namespace sunshine_callbacks {
+             AMediaFormat_delete(format);
+             return;
+         }
+-        
++
+         // 获取输入 Surface
+         ANativeWindow* inputSurface;
+         media_status_t surfaceStatus = AMediaCodec_createInputSurface(codec, &inputSurface);
+@@ -506,7 +511,7 @@ namespace sunshine_callbacks {
+             AMediaFormat_delete(format);
+             return;
+         }
+-        
++
+         // 将 ANativeWindow 转换为 Java Surface 对象并创建虚拟显示
+         if (jvm == nullptr) {
+             BOOST_LOG(error) << "JVM 指针为空，无法创建 Surface"sv;
+@@ -515,12 +520,12 @@ namespace sunshine_callbacks {
+             AMediaFormat_delete(format);
+             return;
+         }
+-        
++
+         // 将 ANativeWindow 转换为 Java Surface 对象
+         jobject javaSurface = ANativeWindow_toSurface(env, inputSurface);
+         if (javaSurface == nullptr) {
+             BOOST_LOG(error) << "无法将 ANativeWindow 转换为 Surface"sv;
+-            jvm->DetachCurrentThread();
++
+             ANativeWindow_release(inputSurface);
+             AMediaCodec_delete(codec);
+             AMediaFormat_delete(format);
+@@ -534,26 +539,28 @@ namespace sunshine_callbacks {
+         } else {
+             BOOST_LOG(info) << "音频配置: 声音将在客户端(Moonlight)播放"sv;
+         }
+-        
++
+         // 调用 createVirtualDisplay 方法，传递 shouldMute 参数
+-        createVirtualDisplay(env, config.width, config.height, config.framerate, audioConfig.packetDuration, javaSurface, shouldMute);
+-        
++
++
+         // 启动编码器
+         status = AMediaCodec_start(codec);
+         if (status != AMEDIA_OK) {
+             BOOST_LOG(error) << "无法启动编码器，错误码: "sv << status;
+             env->DeleteLocalRef(javaSurface);
+-            jvm->DetachCurrentThread();
++
+             ANativeWindow_release(inputSurface);
+             AMediaCodec_delete(codec);
+             AMediaFormat_delete(format);
+             return;
+         }
+-        
++
++        createVirtualDisplay(env, config.width, config.height, config.framerate, audioConfig.packetDuration, javaSurface, true);
++
+         // 编码循环
+         std::vector<uint8_t> codecConfigData;  // 用于存储完整的编解码器配置数据
+         int64_t frameIndex = 0;
+-        
++
+         while (!shutdown_event->peek()) {
+             bool requested_idr_frame = false;
+             if (idr_events->peek()) {
+@@ -573,17 +580,17 @@ namespace sunshine_callbacks {
+                 }
+                 AMediaFormat_delete(params);
+             }
+-            
++
+             // 获取输出缓冲区，使用1秒的超时时间
+             AMediaCodecBufferInfo bufferInfo;
+             ssize_t outputBufferIndex = AMediaCodec_dequeueOutputBuffer(codec, &bufferInfo, 1000000); // 1秒 = 1000000微秒
+-            
++
+             if (outputBufferIndex >= 0) {
+                 // 获取到有效的输出缓冲区
+                 size_t bufferSize = bufferInfo.size;
+                 uint8_t* buffer = nullptr;
+                 size_t out_size = 0;
+-                
++
+                 // 获取缓冲区数据
+                 buffer = AMediaCodec_getOutputBuffer(codec, outputBufferIndex, &out_size);
+                 if (buffer != nullptr) {
+@@ -591,7 +598,7 @@ namespace sunshine_callbacks {
+                     if (bufferInfo.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) {
+                         // 这是编解码器配置数据（SPS/PPS）
+                         BOOST_LOG(info) << "收到编解码器配置数据，大小: "sv << bufferSize;
+-                        
++
+                         // 直接保存整个配置数据
+                         codecConfigData.assign(buffer, buffer + bufferSize);
+                         BOOST_LOG(info) << "保存完整的编解码器配置数据，大小: "sv << codecConfigData.size();
+@@ -600,16 +607,16 @@ namespace sunshine_callbacks {
+                         bool isKeyFrame = (bufferInfo.flags & AMEDIACODEC_BUFFER_FLAG_KEY_FRAME) != 0;
+                         BOOST_LOG(verbose) << "收到" << (isKeyFrame ? "关键帧" : "普通帧") << "，大小: "sv << bufferSize;
+                         frameIndex++;
+-                        
++
+                         if(isKeyFrame) {
+                             // 对于关键帧，需要在数据前附加编解码器配置数据
+                             if (!codecConfigData.empty()) {
+                                 // 创建包含配置数据和关键帧的完整数据
+                                 std::vector<uint8_t> frameData;
+-                                
++
+                                 // 添加配置数据
+                                 frameData.insert(frameData.end(), codecConfigData.begin(), codecConfigData.end());
+-                                
++
+                                 // 添加关键帧数据
+                                 frameData.insert(frameData.end(), buffer, buffer + bufferSize);
+ 
+@@ -626,7 +633,7 @@ namespace sunshine_callbacks {
+                         }
+                     }
+                 }
+-                
++
+                 // 释放输出缓冲区
+                 AMediaCodec_releaseOutputBuffer(codec, outputBufferIndex, false);
+             } else if (outputBufferIndex == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
+@@ -652,19 +659,40 @@ namespace sunshine_callbacks {
+         stopVirtualDisplay();
+         // 停止编码器
+         AMediaCodec_stop(codec);
+-        
++
+         // 清理资源
+         ANativeWindow_release(inputSurface);
+         AMediaCodec_delete(codec);
+         AMediaFormat_delete(format);
+-        
+-        // 清理 Java Surface 引用
+-        jvm->DetachCurrentThread();
++
++        // Release the local Surface only after synchronous host EGL detachment.
++        env->DeleteLocalRef(javaSurface);
++
+     }
+ 
+     void captureAudioLoop(void *channel_data, safe::mail_t mail, const audio::config_t& config) {
+-        samples = std::make_shared<audio::sample_queue_t::element_type>(30);
+-        encodeThread(samples, config, channel_data);
++        auto shutdown = mail->event<bool>(mail::shutdown);
++        const int frames = config.packetDuration * 48;
++        if (frames <= 0 || frames > 4800 || (config.channels != 2 && config.channels != 6 && config.channels != 8)) {
++            BOOST_LOG(error) << "Unsupported Android audio format";
++            shutdown->view();
++            return;
++        }
++        // At most 40ms of complete native PCM packets, or one longer negotiated packet.
++        auto subscriber = std::make_shared<AudioSubscriber>(frames, config.channels,
++            std::max(1, 40 / std::max(1, config.packetDuration)));
++        std::thread encoder{audio::encodeThread, subscriber->queue, config, channel_data};
++        {
++            std::lock_guard lock(audioSubscribersMutex);
++            audioSubscribers.push_back(subscriber);
++        }
++        shutdown->view();
++        {
++            std::lock_guard lock(audioSubscribersMutex);
++            audioSubscribers.erase(std::remove(audioSubscribers.begin(), audioSubscribers.end(), subscriber), audioSubscribers.end());
++        }
++        subscriber->queue->stop(); // Wake pop() before joining, even when source is silent.
++        encoder.join();
+     }
+ 
+     float from_netfloat(netfloat f) {
+@@ -676,15 +704,15 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineMouseClass == nullptr || handleTouchPacketMethod == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用或方法ID为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -705,7 +733,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void callJavaOnAbsMouseMove(NV_ABS_MOUSE_MOVE_PACKET* packet) {
+@@ -713,15 +741,15 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineMouseClass == nullptr || handleAbsMouseMoveMethod == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用或方法ID为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -731,7 +759,7 @@ namespace sunshine_callbacks {
+         float y = util::endian::big(packet->y);
+         float width = (float) util::endian::big(packet->width);
+         float height = (float) util::endian::big(packet->height);
+-        
++
+         BOOST_LOG(info) << "调用 Java 处理鼠标移动: "sv << x << ","sv << y << " 在 "sv << width << "*"sv << height << " 范围内";
+ 
+         env->CallStaticVoidMethod(sunshineMouseClass, handleAbsMouseMoveMethod, x, y, width, height);
+@@ -741,25 +769,25 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void callJavaOnMouseButton(std::uint8_t button, bool release) {
+         BOOST_LOG(info) << "on mouse button "sv << static_cast<int>(button) << " release "sv << release;
+-        
++
+         if (jvm == nullptr) {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineMouseClass == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -777,7 +805,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void callJavaOnConnectScreenClientDiscovered(std::string connectScreenClient) {
+@@ -785,15 +813,15 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineServerClass == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -801,7 +829,7 @@ namespace sunshine_callbacks {
+         jmethodID onClientDiscoveredMethod = env->GetStaticMethodID(sunshineServerClass, "onConnectScreenClientDiscovered", "(Ljava/lang/String;)V");
+         if (onClientDiscoveredMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 onConnectScreenClientDiscovered 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -814,7 +842,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void callJavaSetConnectScreenServerUuid(std::string uuid) {
+@@ -822,15 +850,15 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineServerClass == nullptr) {
+             BOOST_LOG(error) << "SunshineServer 类引用为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+@@ -838,7 +866,7 @@ namespace sunshine_callbacks {
+         jmethodID setServerUuidMethod = env->GetStaticMethodID(sunshineServerClass, "setConnectScreenServerUuid", "(Ljava/lang/String;)V");
+         if (setServerUuidMethod == nullptr) {
+             BOOST_LOG(error) << "找不到 setConnectScreenServerUuid 方法"sv;
+-            jvm->DetachCurrentThread();
++
+             return;
+         }
+ 
+@@ -851,7 +879,7 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+ 
+     void callJavaOnKeyboard(uint16_t modcode, bool release, uint8_t flags) {
+@@ -859,21 +887,21 @@ namespace sunshine_callbacks {
+             BOOST_LOG(error) << "JVM 指针为空"sv;
+             return;
+         }
+-        
++
+         if (sunshineKeyboardClass == nullptr || handleKeyboardMethod == nullptr) {
+             BOOST_LOG(error) << "SunshineKeyboard 类引用或方法ID为空"sv;
+             return;
+         }
+ 
+-        JNIEnv *env;
+-        jint result = jvm->AttachCurrentThread(&env, nullptr);
+-        if (result != JNI_OK) {
++        ScopedJniAttachment attachment(jvm);
++        JNIEnv* env = attachment.env;
++        if (!env) {
+             BOOST_LOG(error) << "无法附加到 Java 线程"sv;
+             return;
+         }
+ 
+         // 直接使用缓存的类引用和方法ID
+-        env->CallStaticVoidMethod(sunshineKeyboardClass, handleKeyboardMethod, 
++        env->CallStaticVoidMethod(sunshineKeyboardClass, handleKeyboardMethod,
+             static_cast<jint>(modcode),
+             static_cast<jboolean>(release),
+             static_cast<jint>(flags));
+@@ -883,6 +911,6 @@ namespace sunshine_callbacks {
+             env->ExceptionClear();
+         }
+ 
+-        jvm->DetachCurrentThread();
++
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/app-mirror/src/main/cpp/sunshine.h b/app-mirror/src/main/cpp/sunshine.h
+index 10b651b..6f7f51e 100644
+--- a/app-mirror/src/main/cpp/sunshine.h
++++ b/app-mirror/src/main/cpp/sunshine.h
+@@ -1,6 +1,6 @@
+ #pragma once
+ #include "stream.h"
+-#include "moonlight-common-c/src/input.h"
++#include "moonlight-common-c/src/Input.h"
+ 
+ namespace sunshine_callbacks {
+     void callJavaOnPinRequested();
+@@ -12,4 +12,4 @@ namespace sunshine_callbacks {
+     void callJavaOnConnectScreenClientDiscovered(std::string connectScreenClient);
+     void callJavaSetConnectScreenServerUuid(std::string uuid);
+     void callJavaOnKeyboard(uint16_t modcode, bool release, uint8_t flags);
+-}
+\ No newline at end of file
++}
+diff --git a/app-mirror/src/main/cpp/thread_safe.h b/app-mirror/src/main/cpp/thread_safe.h
+index bdfa8fd..7cb4149 100644
+--- a/app-mirror/src/main/cpp/thread_safe.h
++++ b/app-mirror/src/main/cpp/thread_safe.h
+@@ -275,6 +275,16 @@ namespace safe {
+             _cv.notify_all();
+         }
+ 
++        // Audio only: discard the oldest complete packet, never block the capture producer.
++        template<class... Args>
++        void raise_latest(Args&&... args) {
++            std::lock_guard lock(_lock);
++            if (!_continue) return;
++            if (_queue.size() >= _max_elements) _queue.erase(_queue.begin());
++            _queue.emplace_back(std::forward<Args>(args)...);
++            _cv.notify_all();
++        }
++
+         bool peek() {
+             return _continue && !_queue.empty();
+         }
+@@ -557,4 +567,4 @@ namespace safe {
+     inline void cleanup(mail_raw_t *mail) {
+         mail->cleanup();
+     }
+-}  // namespace safe
+\ No newline at end of file
++}  // namespace safe

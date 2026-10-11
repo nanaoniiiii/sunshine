@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.combine
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import java.io.File
@@ -145,6 +146,7 @@ class SunshineService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var apiServer: SunshineApiServer? = null
     private var jmDnsList = mutableListOf<JmDNS>()
+    private val streamingPower by lazy { StreamingPowerManager(this) }
     private val engineClient by lazy { SunshineEngineClient(this) }
 
     override fun onCreate() {
@@ -152,6 +154,11 @@ class SunshineService : Service() {
         createNotificationChannel()
         SunshineRuntimeManager.getInstance().initialize(this)
         SunshineRuntimeManager.getInstance().engineClient = engineClient
+        val runtime = SunshineRuntimeManager.getInstance()
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            combine(runtime.isStreaming, runtime.streamingSettings) { active, settings -> active to settings.wifiLowLatency }
+                .collect { (active, lowLatency) -> streamingPower.update(active, lowLatency) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -402,6 +409,7 @@ class SunshineService : Service() {
             apiServer?.stop()
         } catch (_: Exception) {}
         serviceScope.cancel()
+        streamingPower.release()
         SunshineLogManager.log("SERVICE", "SunshineService destroyed")
     }
 

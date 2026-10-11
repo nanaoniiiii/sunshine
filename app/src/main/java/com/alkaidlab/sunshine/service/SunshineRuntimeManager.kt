@@ -16,6 +16,8 @@ import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import com.alkaidlab.sunshine.data.AudioDiagnostics
+import com.alkaidlab.sunshine.data.DiagnosticsResponse
 import com.alkaidlab.sunshine.data.PerfResponse
 import com.alkaidlab.sunshine.data.RuntimeSession
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,20 +62,21 @@ class SunshineRuntimeManager private constructor() {
     val perfFlow: StateFlow<PerfResponse> = _perfFlow.asStateFlow()
 
     private val activeSessions = CopyOnWriteArrayList<RuntimeSession>()
-    private var currentStreamSurface: Surface? = null
     private var streamStartTime: Long = 0
 
     @Volatile
     private var lastDiscoveredClient: String? = null
 
     // Telemetry & Config State
-    @Volatile private var lastFps: Double = 60.0
-    @Volatile private var lastEncodeTimeMs: Double = 1.8
-    @Volatile private var lastNetworkLatencyMs: Double = 1.2
+    @Volatile private var lastFps: Double = 0.0
+    @Volatile private var lastEncodeTimeMs: Double = 0.0
+    @Volatile private var lastNetworkLatencyMs: Double? = null
+    @Volatile private var lastNetworkProbeIp: String? = null
+    @Volatile private var lastNetworkSampleMs = 0L
     @Volatile private var lastBitrate: Int = 10000
     private var lastWidth: Int = 0
     private var lastHeight: Int = 0
-    @Volatile private var lastCodec: String = "HEVC (H.265)"
+    private val lastCodec = "未知（原生未上报）"
     private var clientUuid: String = ""
 
     @Volatile var hevcEnabled: Boolean = true
@@ -87,7 +90,11 @@ class SunshineRuntimeManager private constructor() {
     @Volatile var configuredMinBitrate: Int = 5000
         private set
 
+    private val _streamingSettings = MutableStateFlow(StreamingSettings())
+    val streamingSettings: StateFlow<StreamingSettings> = _streamingSettings.asStateFlow()
+
     private var telemetryThread: Thread? = null
+    @Volatile private var telemetryEpoch = 0L
     private var prevTxBytes: Long = -1L
     private var prevTxTimeMs: Long = 0L
 
@@ -107,6 +114,7 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
+    @Synchronized
     fun reloadConfig(ctx: Context? = this.context) {
         val c = ctx ?: return
         try {
@@ -125,7 +133,13 @@ class SunshineRuntimeManager private constructor() {
                 autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
                 configuredMinBitrate = props["min_bitrate"]?.toIntOrNull() ?: 5000
                 configuredMaxBitrate = props["max_bitrate"]?.toIntOrNull() ?: 50000
-                lastCodec = if (hevcEnabled) "HEVC (H.265)" else "AVC (H.264)"
+                val settings = StreamingSettings.from(props)
+                _streamingSettings.value = settings
+                frameDispatcher.configure(settings)
+                if (audioBufferMs != settings.audioBufferMs) {
+                    audioBuffer = PcmAudioBuffer(maxOf(settings.audioBufferMs * 96, audioPacketFloats))
+                    audioBufferMs = settings.audioBufferMs
+                }
             }
         } catch (e: Exception) {
             SunshineLogManager.log("CONFIG_WARN", "reloadConfig error: ${e.message}")
@@ -164,28 +178,27 @@ class SunshineRuntimeManager private constructor() {
         prevTxBytes = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
         prevTxTimeMs = SystemClock.elapsedRealtime()
 
+        val epoch = ++telemetryEpoch
         telemetryThread = Thread({
             val timeRegex = Regex("time=([0-9.]+)")
-            while (_isStreaming.value && !Thread.currentThread().isInterrupted) {
+            while (_isStreaming.value && telemetryEpoch == epoch && !Thread.currentThread().isInterrupted) {
                 try {
                     Thread.sleep(1000)
-                    if (!_isStreaming.value) break
+                    if (!_isStreaming.value || telemetryEpoch != epoch) break
 
                     // 1. Sample real-time FPS & GPU->Hardware Encoder surface latency
                     val (measuredFps, measuredEncodeMs) = frameDispatcher.sampleTelemetry()
-                    lastFps = if (measuredFps > 0.0) measuredFps else frameDispatcher.targetFps.toDouble()
+                    lastFps = measuredFps
                     lastEncodeTimeMs = measuredEncodeMs
 
                     // 2. Sample real-time process network TX bitrate via TrafficStats
                     val nowTx = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
                     val nowMs = SystemClock.elapsedRealtime()
-                    if (prevTxBytes > 0 && nowTx >= prevTxBytes && nowMs > prevTxTimeMs) {
+                    if (prevTxBytes >= 0 && nowTx >= prevTxBytes && nowMs > prevTxTimeMs) {
                         val deltaBytes = nowTx - prevTxBytes
                         val elapsedSec = (nowMs - prevTxTimeMs) / 1000.0
                         val kbps = ((deltaBytes * 8.0) / elapsedSec / 1000.0).toInt()
-                        if (kbps > 50) {
-                            lastBitrate = kbps
-                        }
+                        lastBitrate = kbps
                     }
                     prevTxBytes = nowTx
                     prevTxTimeMs = nowMs
@@ -196,21 +209,22 @@ class SunshineRuntimeManager private constructor() {
                         lastDiscoveredClient = peerIps.last()
                     }
 
-                    // 4. Measure real network RTT to active peer IP or LAN gateway
+                    // ICMP is a peer probe, not a video transport/encode latency measurement.
                     val probeIp = activeSessions.lastOrNull()?.clientIp?.takeIf { it != "127.0.0.1" }
                         ?: peerIps.lastOrNull()
-                        ?: deriveGatewayIp(SunshineService.currentIp)
                     if (probeIp != null && probeIp != "127.0.0.1") {
                         val rtt = measurePingRttMs(probeIp, timeRegex)
                         if (rtt != null && rtt > 0.0) {
-                            lastNetworkLatencyMs = Math.round((lastNetworkLatencyMs * 0.3 + rtt * 0.7) * 100.0) / 100.0
+                            lastNetworkLatencyMs = rtt
+                            lastNetworkProbeIp = probeIp
+                            lastNetworkSampleMs = SystemClock.elapsedRealtime()
                         }
                     }
 
-                    // 5. Sync session metadata (peer IP, live per-client bitrate, codec)
+                    if (telemetryEpoch != epoch || Thread.currentThread().isInterrupted) break
+                    // Preserve unavailable per-client bitrate/codec instead of inventing values.
                     synchronized(this@SunshineRuntimeManager) {
                         if (activeSessions.isNotEmpty()) {
-                            val perClientBitrate = (lastBitrate / activeSessions.size.coerceAtLeast(1)).coerceAtLeast(500)
                             var changed = false
                             val updated = activeSessions.mapIndexed { idx, s ->
                                 val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
@@ -219,9 +233,9 @@ class SunshineRuntimeManager private constructor() {
                                 val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
                                     "Moonlight ($resolvedIp)"
                                 } else s.clientName
-                                if (s.clientIp != resolvedIp || s.clientName != resolvedName || s.bitrate != perClientBitrate || s.codec != lastCodec) {
+                                if (s.clientIp != resolvedIp || s.clientName != resolvedName) {
                                     changed = true
-                                    s.copy(clientName = resolvedName, clientIp = resolvedIp, bitrate = perClientBitrate, codec = lastCodec)
+                                    s.copy(clientName = resolvedName, clientIp = resolvedIp)
                                 } else s
                             }
                             if (changed) {
@@ -250,6 +264,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     private fun stopTelemetryLoop() {
+        ++telemetryEpoch
         try {
             telemetryThread?.interrupt()
         } catch (_: Throwable) {}
@@ -297,28 +312,19 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    private fun deriveGatewayIp(lanIp: String): String? {
-        val parts = lanIp.split(".")
-        return if (parts.size == 4 && parts[0] != "127") {
-            "${parts[0]}.${parts[1]}.${parts[2]}.1"
-        } else null
-    }
-
     private fun measurePingRttMs(ip: String, timeRegex: Regex): Double? {
+        var proc: java.lang.Process? = null
         return try {
-            val proc = ProcessBuilder("ping", "-c", "1", "-W", "1", ip)
-                .redirectErrorStream(true)
-                .start()
-            val finished = proc.waitFor(800, java.util.concurrent.TimeUnit.MILLISECONDS)
-            if (!finished) {
-                proc.destroy()
-                return null
-            }
-            val output = proc.inputStream.bufferedReader().readText()
-            val match = timeRegex.find(output)
-            match?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-        } catch (_: Throwable) {
+            proc = ProcessBuilder("ping", "-c", "1", "-W", "1", ip).redirectErrorStream(true).start()
+            if (!proc.waitFor(800, java.util.concurrent.TimeUnit.MILLISECONDS)) return null
+            timeRegex.find(proc.inputStream.bufferedReader().readText())?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
             null
+        } catch (_: Exception) {
+            null
+        } finally {
+            proc?.destroy()
         }
     }
 
@@ -374,9 +380,14 @@ class SunshineRuntimeManager private constructor() {
 
         lastWidth = width
         lastHeight = height
-        lastFps = fps.toDouble()
-        lastBitrate = (configuredMaxBitrate / 2).coerceIn(configuredMinBitrate, configuredMaxBitrate)
-        lastCodec = if (hevcEnabled) "HEVC (H.265)" else "AVC (H.264)"
+        if (activeSessions.isEmpty()) {
+            lastBitrate = 0
+            lastFps = 0.0
+            lastEncodeTimeMs = 0.0
+            lastNetworkLatencyMs = null
+            lastNetworkSampleMs = 0L
+            lastNetworkProbeIp = null
+        }
         if (streamStartTime == 0L) {
             streamStartTime = System.currentTimeMillis()
         }
@@ -389,11 +400,12 @@ class SunshineRuntimeManager private constructor() {
             width = width,
             height = height,
             fps = fps,
-            bitrate = lastBitrate,
+            bitrate = 0, // JNI does not report this session's negotiated or measured bitrate.
             codec = lastCodec,
             startTime = System.currentTimeMillis(),
             surface = surface,
-            videoThreadId = callerThreadId
+            videoThreadId = callerThreadId,
+            audioEnabled = shouldSendAudio
         )
         activeSessions.add(session)
         _activeSessionsFlow.value = activeSessions.toList()
@@ -460,8 +472,9 @@ class SunshineRuntimeManager private constructor() {
             _isStreaming.value = false
             stopTelemetryLoop()
             streamStartTime = 0L
-            // Keep MediaProjection, its one VirtualDisplay, and AudioRecord alive for reconnects.
+            // Preserve projection/display/recorder, but stop draining audio while idle.
         }
+        if (activeSessions.none { it.audioEnabled }) pauseAudioCapture()
         _activeSessionsFlow.value = activeSessions.toList()
         _perfFlow.value = getPerfSnapshot()
     }
@@ -470,6 +483,8 @@ class SunshineRuntimeManager private constructor() {
     fun onEngineDisconnected() {
         activeSessions.toList().forEach { onStreamStopped(it.videoThreadId) }
         _pinRequested.value = null
+        audioPacketFloats = 0
+        audioBuffer = PcmAudioBuffer(audioBufferMs * 96)
     }
 
     fun onProjectionStopped(projection: MediaProjection) {
@@ -517,8 +532,11 @@ class SunshineRuntimeManager private constructor() {
                 active = true,
                 fps = lastFps,
                 encodeTimeMs = lastEncodeTimeMs,
-                networkLatencyMs = lastNetworkLatencyMs,
-                bitrateKbps = lastBitrate
+                networkLatencyMs = lastNetworkLatencyMs.takeIf { lastNetworkSampleMs > 0 && SystemClock.elapsedRealtime() - lastNetworkSampleMs <= 5000 },
+                bitrateKbps = lastBitrate,
+                gpuHandoffMs = lastEncodeTimeMs,
+                networkProbeIp = lastNetworkProbeIp,
+                networkSampleAgeMs = if (lastNetworkSampleMs > 0) SystemClock.elapsedRealtime() - lastNetworkSampleMs else null
             )
         } else {
             PerfResponse(active = false)
@@ -533,8 +551,79 @@ class SunshineRuntimeManager private constructor() {
     }
 
     private var isAudioCaptureInitialized = false
+    private val audioCaptureLock = Any()
+    @Volatile private var audioCapturing = false
+    @Volatile private var audioCaptureEpoch = 0L
+    @Volatile private var audioPacketFloats = 0
+    @Volatile private var audioBufferMs = 40
+    @Volatile private var audioBuffer = PcmAudioBuffer(40 * 96)
+    private var audioCaptureThread: Thread? = null
+
+    fun diagnostics(): DiagnosticsResponse {
+        val currentAudioBuffer = audioBuffer
+        val (queued, dropped) = currentAudioBuffer.snapshot()
+        return DiagnosticsResponse(
+            frames = frameDispatcher.diagnostics(),
+            audio = AudioDiagnostics(audioCapturing, currentAudioBuffer.capacityFloats / 96, queued / 96.0, dropped / 96.0),
+            perf = getPerfSnapshot(),
+            capabilities = mapOf(
+                "frame_pacing" to "per-client; monotonic; missed deadlines skipped",
+                "frame_buffer" to "latest SurfaceTexture; at most one pending dispatch",
+                "gpu_handoff_ms" to "GL draw and encoder surface swap; not hardware encode latency",
+                "network_latency_ms" to "ICMP probe to detected peer; null if unavailable or stale",
+                "packet_loss_percent" to "unavailable: native client-feedback callback required",
+                "bitrate_kbps" to "aggregate UID TX including audio, FEC and API traffic; not per-client bitrate",
+                "session_codec" to "unavailable: native callback does not report negotiated codec",
+                "encoder_latency" to "unavailable: native output timestamps callback required",
+                "dynamic_bitrate" to "unavailable: bundled JNI has no bitrate setter",
+                "adaptive_fec" to "unavailable: bundled JNI has no FEC setter",
+                "audio_buffer" to "bounded stereo PCM; drops oldest on overflow; cleared on idle",
+                "wifi_low_latency" to "requested only while streaming; OS/device decides effectiveness"
+            )
+        )
+    }
+
+    private fun resumeAudioCapture(record: AudioRecord) = synchronized(audioCaptureLock) {
+        if (audioCapturing) return@synchronized
+        if (audioCaptureThread?.isAlive == true) {
+            SunshineLogManager.log("AUDIO_WARN", "Previous audio reader is still stopping")
+            return@synchronized
+        }
+        audioBuffer.clear()
+        record.startRecording()
+        val epoch = ++audioCaptureEpoch
+        audioCapturing = true
+        audioCaptureThread = Thread({
+            val chunk = FloatArray(960) // 10ms, 48kHz stereo; independent of client packet size.
+            try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+                while (audioCapturing && audioCaptureEpoch == epoch) {
+                    val read = record.read(chunk, 0, chunk.size, AudioRecord.READ_BLOCKING)
+                    if (read > 0 && audioCaptureEpoch == epoch) audioBuffer.write(chunk, read)
+                    else if (read < 0) break
+                    else Thread.sleep(2)
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (e: Exception) {
+                SunshineLogManager.log("AUDIO_WARN", "Audio reader stopped: ${e.message}")
+            } finally {
+                if (audioCaptureEpoch == epoch) audioCapturing = false
+            }
+        }, "Sunshine-Audio-Capture").apply { isDaemon = true; start() }
+    }
+
+    private fun pauseAudioCapture() = synchronized(audioCaptureLock) {
+        audioCapturing = false
+        ++audioCaptureEpoch
+        try { audioRecord?.stop() } catch (_: IllegalStateException) {}
+        audioCaptureThread?.interrupt()
+        try { audioCaptureThread?.join(100) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        audioBuffer.clear()
+    }
 
     // Audio capture via AudioPlaybackCapture
+    @Synchronized
     private fun startAudioCapture(packetDuration: Int = 10) {
         val ctx = context ?: return
         if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO)
@@ -542,10 +631,19 @@ class SunshineRuntimeManager private constructor() {
             SunshineLogManager.log("AUDIO_WARN", "Audio permission not granted; streaming video only")
             return
         }
-        val duration = if (packetDuration > 0) packetDuration else 10
+        val duration = packetDuration.takeIf { it in 1..100 } ?: 10
         val samplesPerPacket = (duration * 48000) / 1000
+        audioPacketFloats = maxOf(audioPacketFloats, samplesPerPacket * 2)
+        if (audioBuffer.capacityFloats < samplesPerPacket * 2) {
+            audioBuffer = PcmAudioBuffer(samplesPerPacket * 2)
+        }
         if (isAudioCaptureInitialized && audioRecord != null) {
-            engineClient?.startAudio(samplesPerPacket)
+            try {
+                resumeAudioCapture(audioRecord!!)
+                engineClient?.startAudio(samplesPerPacket)
+            } catch (e: RuntimeException) {
+                SunshineLogManager.log("AUDIO_WARN", "Cannot resume audio capture: ${e.message}")
+            }
             return
         }
         val mp = mediaProjection ?: run {
@@ -578,26 +676,39 @@ class SunshineRuntimeManager private constructor() {
                     .setBufferSizeInBytes(bufferSize)
                     .build()
 
-                record.startRecording()
                 audioRecord = record
+                resumeAudioCapture(record)
                 isAudioCaptureInitialized = true
                 engineClient?.startAudio(samplesPerPacket)
                 SunshineLogManager.log("AUDIO", "Audio playback capture started: 48000Hz stereo float ($samplesPerPacket samples/pkt)")
             } catch (e: Throwable) {
+                pauseAudioCapture()
+                try { audioRecord?.release() } catch (_: RuntimeException) {}
+                audioRecord = null
+                isAudioCaptureInitialized = false
                 SunshineLogManager.log("AUDIO_ERR", "Failed to start AudioPlaybackCapture: ${e.message}")
             }
         }
     }
 
     fun readAudio(count: Int, mode: Int): FloatArray {
-        // Bound the Binder payload; normal 10ms stereo packets contain 960 floats.
-        val buffer = FloatArray(count.coerceIn(0, 48000))
-        val record = audioRecord ?: return floatArrayOf()
-        val read = try { record.read(buffer, 0, buffer.size, mode) } catch (_: Exception) { 0 }
-        return if (read > 0) buffer.copyOf(read) else floatArrayOf()
+        val epoch = audioCaptureEpoch
+        val requested = count.coerceIn(0, 9600) / 2 * 2
+        if (requested == 0 || !audioCapturing) return floatArrayOf()
+        if (requested > audioBuffer.capacityFloats) {
+            audioPacketFloats = maxOf(audioPacketFloats, requested)
+            audioBuffer = PcmAudioBuffer(maxOf(audioBufferMs * 96, requested))
+        }
+        // Wait on the producer condition, never on AudioRecord and never in a polling loop.
+        val timeoutMs = if (mode == AudioRecord.READ_BLOCKING) (requested / 96 + 10).coerceIn(20, 110).toLong() else 0L
+        val samples = try { audioBuffer.readPacket(requested, timeoutMs) }
+        catch (_: InterruptedException) { Thread.currentThread().interrupt(); return floatArrayOf() }
+        return if (audioCapturing && epoch == audioCaptureEpoch) samples else floatArrayOf()
     }
 
+    @Synchronized
     private fun releaseCapture() {
+        pauseAudioCapture()
         frameDispatcher.stop()
         virtualDisplay?.release()
         virtualDisplay = null
@@ -615,7 +726,6 @@ class SunshineRuntimeManager private constructor() {
     fun releaseAll() {
         onEngineDisconnected()
         releaseCapture()
-        currentStreamSurface = null
         com.connect_screen.mirror.job.SunshineMouse.reset()
     }
 
@@ -678,7 +788,7 @@ class SunshineRuntimeManager private constructor() {
         try {
             method.invoke(im, event, 0)
         } catch (e: Exception) {
-            SunshineLogManager.log("INJECT_ERR", "injectInputEvent error: ${e.message}")
+            SunshineLogManager.log("INJECT_ERR", "injectInputEvent error: ${(e.cause ?: e).message}")
         }
     }
 
