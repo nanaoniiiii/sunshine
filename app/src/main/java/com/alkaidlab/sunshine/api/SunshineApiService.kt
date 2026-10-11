@@ -42,6 +42,9 @@ interface SunshineApiService {
     @GET("/api/perf/current")
     suspend fun getPerfCurrent(): Response<PerfResponse>
 
+    @GET("/api/diagnostics")
+    suspend fun getDiagnostics(): Response<DiagnosticsResponse>
+
     @GET("/api/logs")
     suspend fun getLogs(): Response<LogsResponse>
 

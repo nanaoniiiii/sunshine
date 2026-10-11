@@ -31,6 +31,10 @@ fun SettingsScreen(
     var minBitrateText by remember { mutableStateOf("5000") }
     var portText by remember { mutableStateOf("47989") }
     var webPortText by remember { mutableStateOf("47990") }
+    var maxFpsText by remember { mutableStateOf("240") }
+    var audioBufferText by remember { mutableStateOf("40") }
+    var repeatFrames by remember { mutableStateOf(true) }
+    var wifiLowLatency by remember { mutableStateOf(true) }
     var addressFamily by remember { mutableStateOf("both") }
 
     LaunchedEffect(config) {
@@ -43,6 +47,10 @@ fun SettingsScreen(
             portText = c.port
             webPortText = c.webPort
             addressFamily = c.addressFamily
+            maxFpsText = c.maxStreamFps
+            audioBufferText = c.audioBufferMs
+            repeatFrames = c.repeatFrames != "false"
+            wifiLowLatency = c.wifiLowLatency != "false"
         }
     }
 
@@ -88,7 +96,11 @@ fun SettingsScreen(
                         "min_bitrate" to minBitrateText,
                         "port" to portText,
                         "web_port" to webPortText,
-                        "address_family" to addressFamily
+                        "address_family" to addressFamily,
+                        "max_stream_fps" to maxFpsText,
+                        "repeat_frames" to repeatFrames.toString(),
+                        "audio_buffer_ms" to audioBufferText,
+                        "wifi_low_latency" to wifiLowLatency.toString()
                     )
                     viewModel.saveConfig(map)
                 },
@@ -98,6 +110,34 @@ fun SettingsScreen(
                 Icon(Icons.Default.Save, contentDescription = null, tint = DarkBg, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("保存设置", color = DarkBg, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = CardBg),
+            shape = RoundedCornerShape(16.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("串流节奏与缓冲", color = TextPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(value = maxFpsText, onValueChange = { maxFpsText = it },
+                        label = { Text("帧率上限 (15–240)") }, singleLine = true, modifier = Modifier.weight(1f))
+                    OutlinedTextField(value = audioBufferText, onValueChange = { audioBufferText = it },
+                        label = { Text("音频缓冲 (20–100 ms)") }, singleLine = true, modifier = Modifier.weight(1f))
+                }
+                Text("每个客户端按请求帧率独立送帧；缓冲较小可降低音频等待，但更容易受系统调度影响。", color = TextSecondary, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("静态画面持续补帧", color = TextPrimary, modifier = Modifier.weight(1f))
+                    Switch(checked = repeatFrames, onCheckedChange = { repeatFrames = it })
+                }
+                Text("关闭后静止画面减少送帧；如客户端出现停顿或重连黑屏，请开启。", color = TextMuted, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("串流期间 Wi-Fi 低延迟模式", color = TextPrimary, modifier = Modifier.weight(1f))
+                    Switch(checked = wifiLowLatency, onCheckedChange = { wifiLowLatency = it })
+                }
+                Text("仅有连接时保持处理器唤醒并请求 Wi-Fi 低延迟模式，可能增加耗电；效果取决于系统和无线网络。", color = TextSecondary, fontSize = 12.sp)
             }
         }
 

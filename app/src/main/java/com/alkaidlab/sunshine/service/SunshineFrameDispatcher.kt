@@ -15,8 +15,8 @@ import java.util.concurrent.TimeUnit
 /**
  * High-performance hardware OpenGL ES 2.0 multi-surface frame dispatcher.
  * Captures screen frames once from Android VirtualDisplay via SurfaceTexture,
- * and distributes each frame to multiple AMediaCodec encoder surfaces simultaneously
- * with zero-copy GPU blitting (<0.2ms overhead).
+ * and distributes each frame to multiple AMediaCodec encoder surfaces
+ * with GPU blitting and one latest texture; each encoder has its own frame deadline.
  */
 class SunshineFrameDispatcher {
 
@@ -25,11 +25,18 @@ class SunshineFrameDispatcher {
         var eglSurface: EGLSurface? = null,
         val width: Int,
         val height: Int,
+        val requestedFps: Int,
+        val pacer: FramePacer,
+        var lastTextureVersion: Long = -1,
+        var lastPresentationNs: Long = 0,
+        var telemetryFrames: Int = 0,
+        @Volatile var measuredFps: Double = 0.0,
         var failureCount: Int = 0
     )
 
-    private var glThread: HandlerThread? = null
-    private var glHandler: Handler? = null
+    @Volatile private var stopping = false
+    @Volatile private var glThread: HandlerThread? = null
+    @Volatile private var glHandler: Handler? = null
 
     private var eglDisplay: EGLDisplay? = null
     private var eglConfig: EGLConfig? = null
@@ -95,79 +102,165 @@ class SunshineFrameDispatcher {
             }
     }
 
-    private var lastFrameTimeMs: Long = 0L
-    private var hasDrawnAnyTexture: Boolean = false
+    private var hasDrawnAnyTexture = false
+    private var textureVersion = 0L
+    private var pendingTexture = false
+    private var frameScheduled = false
+    @Volatile private var settings = StreamingSettings()
 
-    @Volatile
-    var targetFps: Int = 60
+    val targetFps: Int
+        get() = clientTargets.maxOfOrNull { minOf(it.requestedFps, settings.maxFps) } ?: 0
 
-    // Real-time telemetry counters
     private val telemetryLock = Any()
-    private var windowStartNs: Long = System.nanoTime()
-    private var windowFrames: Int = 0
-    private var windowEncodeTimeNs: Long = 0L
-    @Volatile
-    var latestMeasuredFps: Double = 60.0
+    private var windowStartNs = System.nanoTime()
+    private var windowCaptures = 0
+    private var windowSubmissions = 0
+    private var windowHandoffNs = 0L
+    private var totalSubmitted = 0L
+    private var totalRepeated = 0L
+    private var totalCoalesced = 0L
+    private var totalFailures = 0L
+    private var slowHandoffs = 0L
+    private var lastCaptureNs = 0L
+    private val handoffSamples = LongArray(256)
+    private var handoffSampleCount = 0
+    private var handoffSampleIndex = 0
+    @Volatile var latestMeasuredFps = 0.0
         private set
-    @Volatile
-    var latestEncodeTimeMs: Double = 1.8
+    @Volatile var latestEncodeTimeMs = 0.0
         private set
+    @Volatile private var latestCaptureFps = 0.0
 
-    private val framePumpRunnable = object : Runnable {
-        override fun run() {
-            if (!isRunning) return
-            val handler = glHandler ?: return
-            val now = System.currentTimeMillis()
-            val intervalMs = (1000L / targetFps.coerceIn(15, 120)).coerceIn(8L, 33L)
-            // Repeat frame at target FPS interval when Android screen is static so AMediaCodec and telemetry stay live
-            if (hasDrawnAnyTexture && clientTargets.isNotEmpty() && (now - lastFrameTimeMs >= intervalMs)) {
-                pumpFrame()
-            }
-            handler.postDelayed(this, (intervalMs / 2).coerceAtLeast(4L))
+    fun configure(updated: StreamingSettings) {
+        settings = updated
+        glHandler?.post {
+            clientTargets.forEach { it.pacer.setFps(minOf(it.requestedFps, updated.maxFps)) }
+            rescheduleFrame()
         }
     }
 
-    fun recordFrameTelemetry(encodeElapsedNs: Long, renderedTargets: Int) {
-        if (renderedTargets <= 0) return
-        val perTargetNs = encodeElapsedNs / renderedTargets
-        synchronized(telemetryLock) {
-            windowFrames++
-            windowEncodeTimeNs += perTargetNs
-        }
-    }
-
-    /**
-     * Samples real-time FPS and average GPU->AMediaCodec surface handoff latency over the last window.
-     */
     fun sampleTelemetry(): Pair<Double, Double> {
-        val nowNs = System.nanoTime()
         synchronized(telemetryLock) {
+            val nowNs = System.nanoTime()
             val elapsedSec = (nowNs - windowStartNs) / 1_000_000_000.0
             if (elapsedSec >= 0.25) {
-                val rawFps = if (windowFrames > 0) (windowFrames / elapsedSec) else 0.0
-                val maxAllowed = targetFps.toDouble() + 0.5
-                val clampedFps = rawFps.coerceIn(0.0, maxAllowed)
-                latestMeasuredFps = Math.round(clampedFps * 10.0) / 10.0
-
-                if (windowFrames > 0) {
-                    val avgMs = (windowEncodeTimeNs.toDouble() / windowFrames) / 1_000_000.0
-                    latestEncodeTimeMs = (Math.round(avgMs.coerceIn(0.15, 25.0) * 100.0) / 100.0)
-                }
+                clientTargets.forEach { it.measuredFps = it.telemetryFrames / elapsedSec; it.telemetryFrames = 0 }
+                latestMeasuredFps = clientTargets.maxOfOrNull { it.measuredFps } ?: 0.0
+                latestCaptureFps = windowCaptures / elapsedSec
+                latestEncodeTimeMs = if (windowSubmissions > 0) windowHandoffNs / windowSubmissions / 1_000_000.0 else 0.0
                 windowStartNs = nowNs
-                windowFrames = 0
-                windowEncodeTimeNs = 0L
+                windowCaptures = 0
+                windowSubmissions = 0
+                windowHandoffNs = 0L
             }
-            return Pair(latestMeasuredFps, latestEncodeTimeMs)
+            return latestMeasuredFps to latestEncodeTimeMs
         }
     }
 
+    fun diagnostics(): com.alkaidlab.sunshine.data.FrameDiagnostics = synchronized(telemetryLock) {
+        val sorted = handoffSamples.take(handoffSampleCount).sorted()
+        val p95 = sorted.getOrNull(((sorted.size * 95 + 99) / 100 - 1).coerceAtLeast(0)) ?: 0L
+        com.alkaidlab.sunshine.data.FrameDiagnostics(
+            captureFps = latestCaptureFps,
+            submittedFrames = totalSubmitted,
+            repeatedFrames = totalRepeated,
+            coalescedFrames = totalCoalesced,
+            surfaceFailures = totalFailures,
+            slowHandoffs = slowHandoffs,
+            handoffP95Ms = p95 / 1_000_000.0,
+            handoffMaxMs = (sorted.lastOrNull() ?: 0L) / 1_000_000.0,
+            captureAgeMs = if (lastCaptureNs == 0L) null else (System.nanoTime() - lastCaptureNs) / 1_000_000.0,
+            targets = clientTargets.map { com.alkaidlab.sunshine.data.FrameTargetDiagnostics(
+                it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps) }
+        )
+    }
+
+    private val latchFrameRunnable = Runnable {
+        if (!isRunning || !pendingTexture) return@Runnable
+        pendingTexture = false
+        val st = surfaceTexture ?: return@Runnable
+        try {
+            restoreDummySurface()
+            st.updateTexImage() // SurfaceTexture acquires the newest queued buffer.
+            st.getTransformMatrix(texMatrix)
+            synchronized(telemetryLock) {
+                if (hasDrawnAnyTexture && clientTargets.isNotEmpty() && clientTargets.none { it.lastTextureVersion == textureVersion }) totalCoalesced++
+                windowCaptures++
+                lastCaptureNs = System.nanoTime()
+            }
+            textureVersion++
+            hasDrawnAnyTexture = true
+        } catch (e: RuntimeException) {
+            SunshineLogManager.log("DISPATCHER_WARN", "Cannot acquire capture frame: ${e.message}")
+            return@Runnable
+        }
+        rescheduleFrame()
+    }
+
+    private val framePumpRunnable = Runnable {
+        frameScheduled = false
+        if (!isRunning || !hasDrawnAnyTexture) return@Runnable
+        val nowNs = System.nanoTime()
+        for (target in clientTargets) {
+            if (!target.pacer.isDue(nowNs)) continue
+            if (!settings.repeatFrames && target.lastTextureVersion == textureVersion) continue
+            val startNs = System.nanoTime()
+            // Every submission, including a static-frame repeat, shares the same monotonic clock.
+            val timestamp = maxOf(startNs, target.lastPresentationNs + 1)
+            val repeated = target.lastTextureVersion == textureVersion
+            if (renderSingleTarget(target, timestamp)) {
+                val elapsedNs = System.nanoTime() - startNs
+                target.lastPresentationNs = timestamp
+                target.lastTextureVersion = textureVersion
+                synchronized(telemetryLock) {
+                    target.telemetryFrames++
+                    windowSubmissions++
+                    windowHandoffNs += elapsedNs
+                    totalSubmitted++
+                    if (repeated) totalRepeated++
+                    if (elapsedNs > 1_000_000_000L / target.pacer.fps) slowHandoffs++
+                    handoffSamples[handoffSampleIndex] = elapsedNs
+                    handoffSampleIndex = (handoffSampleIndex + 1) % handoffSamples.size
+                    handoffSampleCount = minOf(handoffSampleCount + 1, handoffSamples.size)
+                }
+            } else {
+                synchronized(telemetryLock) { totalFailures++ }
+                target.failureCount++
+                if (!target.surface.isValid || target.failureCount >= 30) {
+                    clientTargets.remove(target)
+                    destroyTargetEgl(target)
+                    onSurfaceEvictedListener?.invoke(target.surface)
+                    SunshineLogManager.log("DISPATCHER_WARN", "Evicted failing encoder surface; native session remains protected")
+                }
+            }
+            // No backlog or catch-up burst after a slow encoder or a paused GL thread.
+            target.pacer.advance(System.nanoTime())
+        }
+        restoreDummySurface()
+        scheduleFrame()
+    }
+
+    private fun scheduleFrame() {
+        val handler = glHandler ?: return
+        if (!isRunning || !hasDrawnAnyTexture || frameScheduled) return
+        val eligible = clientTargets.filter { settings.repeatFrames || it.lastTextureVersion != textureVersion }
+        val dueNs = eligible.minOfOrNull { it.pacer.nextFrameNs } ?: return
+        val delayNs = (dueNs - System.nanoTime()).coerceAtLeast(0)
+        frameScheduled = handler.postDelayed(framePumpRunnable, (delayNs + 999_999L) / 1_000_000L)
+    }
+
+    private fun rescheduleFrame() {
+        glHandler?.removeCallbacks(framePumpRunnable)
+        frameScheduled = false
+        scheduleFrame()
+    }
+
+    @Synchronized
     fun start(width: Int, height: Int): Surface {
+        if (!isRunning && glThread != null) throw IllegalStateException("Previous GL dispatcher is still stopping")
+        if (isRunning && inputSurface != null) return inputSurface!!
         sourceWidth = if (width > 0) width else 1920
         sourceHeight = if (height > 0) height else 1080
-
-        if (isRunning && inputSurface != null) {
-            return inputSurface!!
-        }
 
         val thread = HandlerThread("Sunshine-GL-Dispatcher")
         thread.start()
@@ -182,16 +275,26 @@ class SunshineFrameDispatcher {
             try {
                 initEgl()
                 initGl()
-                initSurfaceTexture(width, height)
+                initSurfaceTexture(sourceWidth, sourceHeight)
                 isRunning = true
                 hasDrawnAnyTexture = false
-                lastFrameTimeMs = System.currentTimeMillis()
+                textureVersion = 0
+                pendingTexture = false
+                frameScheduled = false
                 synchronized(telemetryLock) {
                     windowStartNs = System.nanoTime()
-                    windowFrames = 0
-                    windowEncodeTimeNs = 0L
+                    windowCaptures = 0
+                    windowSubmissions = 0
+                    windowHandoffNs = 0L
+                    totalSubmitted = 0
+                    totalRepeated = 0
+                    totalCoalesced = 0
+                    totalFailures = 0
+                    slowHandoffs = 0
+                    lastCaptureNs = 0
+                    handoffSampleCount = 0
+                    handoffSampleIndex = 0
                 }
-                handler.postDelayed(framePumpRunnable, 16)
                 SunshineLogManager.log("DISPATCHER", "SunshineFrameDispatcher initialized (${width}x$height)")
             } catch (t: Throwable) {
                 initError = t
@@ -201,38 +304,36 @@ class SunshineFrameDispatcher {
             }
         }
 
-        latch.await(3, TimeUnit.SECONDS)
-        initError?.let { throw RuntimeException("Failed to initialize SunshineFrameDispatcher", it) }
+        if (!latch.await(3, TimeUnit.SECONDS)) {
+            stop()
+            throw IllegalStateException("GL dispatcher initialization timed out")
+        }
+        initError?.let { stop(); throw RuntimeException("Failed to initialize SunshineFrameDispatcher", it) }
         return inputSurface ?: throw IllegalStateException("Input surface is null")
     }
 
     fun addSurface(surface: Surface, width: Int, height: Int, fps: Int = 60) {
-        if (fps > 0) {
-            targetFps = fps.coerceIn(15, 120)
-            latestMeasuredFps = targetFps.toDouble()
-        }
         val handler = glHandler ?: return
         handler.post {
-            var target = clientTargets.find { it.surface == surface }
-            if (target == null) {
-                target = ClientTarget(surface, null, width, height)
-                clientTargets.add(target)
-                SunshineLogManager.log("DISPATCHER", "Added client stream surface (${width}x$height @ ${fps}fps). Total active clients: ${clientTargets.size}")
-            }
-            // If a frame is already available in OpenGL, immediately render it to the newly attached surface.
-            // This feeds AMediaCodec its first input buffer in <1ms without waiting for an Android screen update,
-            // instantly unhanging Moonlight from 'Starting Desktop' / '正在启动 Desktop'.
-            if (hasDrawnAnyTexture) {
-                val t0 = System.nanoTime()
-                if (renderSingleTarget(target, t0)) {
-                    recordFrameTelemetry(System.nanoTime() - t0, 1)
+            if (!isRunning) return@post
+            if (clientTargets.none { it.surface == surface }) {
+                if (clientTargets.isEmpty()) synchronized(telemetryLock) {
+                    // An idle period must not dilute the first measurement after reconnect.
+                    windowStartNs = System.nanoTime()
+                    windowCaptures = 0
+                    windowSubmissions = 0
+                    windowHandoffNs = 0L
+                    latestMeasuredFps = 0.0
+                    latestCaptureFps = 0.0
+                    latestEncodeTimeMs = 0.0
                 }
-                dummySurface?.let { dummy ->
-                    val dpy = eglDisplay ?: return@let
-                    val ctx = eglContext ?: return@let
-                    EGL14.eglMakeCurrent(dpy, dummy, dummy, ctx)
-                }
+                val requestedFps = if (fps > 0) fps.coerceAtMost(240) else 60
+                clientTargets.add(ClientTarget(surface, null, width, height, requestedFps,
+                    FramePacer(minOf(requestedFps, settings.maxFps))))
+                SunshineLogManager.log("DISPATCHER", "Added ${width}x$height @ ${requestedFps}fps encoder; active=${clientTargets.size}")
             }
+            // A new client is immediately due, including when the captured screen is static.
+            rescheduleFrame()
         }
     }
 
@@ -253,6 +354,7 @@ class SunshineFrameDispatcher {
             if (target != null) {
                 clientTargets.remove(target)
                 destroyTargetEgl(target)
+                rescheduleFrame()
                 SunshineLogManager.log("DISPATCHER", "Removed client stream surface. Remaining active clients: ${clientTargets.size}")
             }
         }
@@ -289,14 +391,17 @@ class SunshineFrameDispatcher {
                         destroyTargetEgl(lateTarget)
                     }
                 }
+                rescheduleFrame()
                 SunshineLogManager.log("DISPATCHER", "Synchronously removed client stream surface. Remaining active clients: ${clientTargets.size}")
             } finally {
                 latch.countDown()
             }
         }
         try {
-            latch.await(250, TimeUnit.MILLISECONDS)
-        } catch (_: InterruptedException) {}
+            if (!latch.await(250, TimeUnit.MILLISECONDS)) {
+                SunshineLogManager.log("DISPATCHER_WARN", "Encoder EGL teardown exceeded 250ms; inspect handoff diagnostics")
+            }
+        } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
     }
 
     fun pruneDeadSurfaces() {
@@ -321,58 +426,75 @@ class SunshineFrameDispatcher {
                 destroyTargetEgl(target)
             }
             clientTargets.clear()
+            rescheduleFrame()
             SunshineLogManager.log("DISPATCHER", "Cleared all client stream surfaces")
         }
     }
 
     fun getActiveTargetCount(): Int = clientTargets.size
 
+    @Synchronized
     fun stop() {
+        if (stopping) return
         isRunning = false
         val thread = glThread ?: return
+        stopping = true
         val handler = glHandler
         handler?.removeCallbacks(framePumpRunnable)
+        handler?.removeCallbacks(latchFrameRunnable)
         handler?.post {
-            for (target in clientTargets) {
-                destroyTargetEgl(target)
-            }
-            clientTargets.clear()
-
-            if (programId != 0) {
-                GLES20.glDeleteProgram(programId)
-                programId = 0
-            }
-            if (textureId != 0) {
-                GLES20.glDeleteTextures(1, intArrayOf(textureId), 0)
-                textureId = 0
-            }
-
-            surfaceTexture?.release()
-            surfaceTexture = null
-            inputSurface?.release()
-            inputSurface = null
-
-            val dpy = eglDisplay
-            if (dpy != null && dpy != EGL14.EGL_NO_DISPLAY) {
-                dummySurface?.let {
-                    if (it != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, it)
+            if (glThread !== thread) return@post
+            isRunning = false
+            try {
+                for (target in clientTargets) {
+                    destroyTargetEgl(target)
                 }
-                dummySurface = null
+                clientTargets.clear()
 
-                eglContext?.let {
-                    if (it != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, it)
+                if (programId != 0) {
+                    GLES20.glDeleteProgram(programId)
+                    programId = 0
                 }
-                eglContext = null
+                if (textureId != 0) {
+                    GLES20.glDeleteTextures(1, intArrayOf(textureId), 0)
+                    textureId = 0
+                }
 
-                EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                EGL14.eglTerminate(dpy)
-                eglDisplay = null
+                surfaceTexture?.setOnFrameAvailableListener(null)
+                surfaceTexture?.release()
+                surfaceTexture = null
+                inputSurface?.release()
+                inputSurface = null
+
+                val dpy = eglDisplay
+                if (dpy != null && dpy != EGL14.EGL_NO_DISPLAY) {
+                    dummySurface?.let {
+                        if (it != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, it)
+                    }
+                    dummySurface = null
+
+                    EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                    eglContext?.let {
+                        if (it != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, it)
+                    }
+                    eglContext = null
+
+                    EGL14.eglTerminate(dpy)
+                    eglDisplay = null
+                }
+                SunshineLogManager.log("DISPATCHER", "SunshineFrameDispatcher stopped and resources released")
+            } catch (e: RuntimeException) {
+                SunshineLogManager.log("DISPATCHER_WARN", "GL resource teardown failed: ${e.message}")
+            } finally {
+                glHandler = null
+                frameScheduled = false
+                pendingTexture = false
+                hasDrawnAnyTexture = false
+                stopping = false
+                glThread = null
+                thread.quitSafely()
             }
-            SunshineLogManager.log("DISPATCHER", "SunshineFrameDispatcher stopped and resources released")
-            thread.quitSafely()
         }
-        glThread = null
-        glHandler = null
     }
 
     private fun initEgl() {
@@ -392,6 +514,8 @@ class SunshineFrameDispatcher {
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
+            0x3142, 1, // EGL_RECORDABLE_ANDROID: required by encoder input surfaces.
             EGL14.EGL_NONE
         )
 
@@ -471,7 +595,10 @@ class SunshineFrameDispatcher {
 
         val handler = glHandler ?: return
         st.setOnFrameAvailableListener({
-            handleFrameAvailable()
+            if (isRunning && !pendingTexture) {
+                pendingTexture = true
+                handler.post(latchFrameRunnable)
+            }
         }, handler)
     }
 
@@ -576,87 +703,6 @@ class SunshineFrameDispatcher {
             destroyTargetEgl(target)
             false
         }
-    }
-
-    private fun handleFrameAvailable() {
-        val st = surfaceTexture ?: return
-        val startNs = System.nanoTime()
-
-        try {
-            restoreDummySurface()
-            st.updateTexImage()
-            st.getTransformMatrix(texMatrix)
-            hasDrawnAnyTexture = true
-            lastFrameTimeMs = System.currentTimeMillis()
-        } catch (_: Exception) {
-            return
-        }
-
-        val timestamp = if (st.timestamp != 0L) st.timestamp else System.nanoTime()
-
-        // Render to all active client surfaces
-        val toRemove = mutableListOf<ClientTarget>()
-        var renderedCount = 0
-        for (target in clientTargets) {
-            if (!renderSingleTarget(target, timestamp)) {
-                target.failureCount++
-                if (!target.surface.isValid || target.failureCount >= 30) {
-                    toRemove.add(target)
-                }
-            } else {
-                renderedCount++
-            }
-        }
-
-        if (renderedCount > 0) {
-            recordFrameTelemetry(System.nanoTime() - startNs, renderedCount)
-        }
-
-        for (dead in toRemove) {
-            clientTargets.remove(dead)
-            destroyTargetEgl(dead)
-            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface (failures=${dead.failureCount}, valid=${dead.surface.isValid}). Remaining: ${clientTargets.size}")
-            try {
-                onSurfaceEvictedListener?.invoke(dead.surface)
-            } catch (_: Exception) {}
-        }
-
-        // Return to dummy surface
-        restoreDummySurface()
-    }
-
-    private fun pumpFrame() {
-        val startNs = System.nanoTime()
-        lastFrameTimeMs = System.currentTimeMillis()
-        val timestamp = startNs
-
-        val toRemove = mutableListOf<ClientTarget>()
-        var renderedCount = 0
-        for (target in clientTargets) {
-            if (!renderSingleTarget(target, timestamp)) {
-                target.failureCount++
-                if (!target.surface.isValid || target.failureCount >= 30) {
-                    toRemove.add(target)
-                }
-            } else {
-                renderedCount++
-            }
-        }
-
-        if (renderedCount > 0) {
-            recordFrameTelemetry(System.nanoTime() - startNs, renderedCount)
-        }
-
-        for (dead in toRemove) {
-            clientTargets.remove(dead)
-            destroyTargetEgl(dead)
-            SunshineLogManager.log("DISPATCHER", "Evicted dead client surface (failures=${dead.failureCount}, valid=${dead.surface.isValid}). Remaining: ${clientTargets.size}")
-            try {
-                onSurfaceEvictedListener?.invoke(dead.surface)
-            } catch (_: Exception) {}
-        }
-
-        restoreDummySurface()
     }
 
     private fun destroyTargetEgl(target: ClientTarget) {

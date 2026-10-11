@@ -21,6 +21,10 @@ data class ConfigResponse(
     @SerializedName("auto_rotate") val autoRotate: String = "true",
     @SerializedName("auto_scale") val autoScale: String = "true",
     @SerializedName("address_family") val addressFamily: String = "both",
+    @SerializedName("max_stream_fps") val maxStreamFps: String = "240",
+    @SerializedName("repeat_frames") val repeatFrames: String = "true",
+    @SerializedName("audio_buffer_ms") val audioBufferMs: String = "40",
+    @SerializedName("wifi_low_latency") val wifiLowLatency: String = "true",
     @SerializedName("ipv6_address") val ipv6Address: String? = null
 )
 
@@ -89,7 +93,8 @@ data class RuntimeSession(
     val codec: String,
     @SerializedName("start_time") val startTime: Long,
     @Transient val surface: Surface? = null,
-    @Transient val videoThreadId: Long = 0L
+    @Transient val videoThreadId: Long = 0L,
+    @Transient val audioEnabled: Boolean = false
 )
 
 data class RuntimeSessionsResponse(
@@ -100,8 +105,58 @@ data class PerfResponse(
     val active: Boolean = false,
     val fps: Double = 0.0,
     @SerializedName("encode_time_ms") val encodeTimeMs: Double = 0.0,
-    @SerializedName("network_latency_ms") val networkLatencyMs: Double = 0.0,
-    @SerializedName("bitrate_kbps") val bitrateKbps: Int = 0
+    @SerializedName("network_latency_ms") val networkLatencyMs: Double? = null,
+    @SerializedName("bitrate_kbps") val bitrateKbps: Int = 0,
+    @SerializedName("gpu_handoff_ms") val gpuHandoffMs: Double = 0.0,
+    @SerializedName("network_probe_ip") val networkProbeIp: String? = null,
+    @SerializedName("network_sample_age_ms") val networkSampleAgeMs: Long? = null,
+    @SerializedName("packet_loss_percent") val packetLossPercent: Double? = null
+)
+
+data class FrameTargetDiagnostics(
+    val width: Int, val height: Int,
+    @SerializedName("requested_fps") val requestedFps: Int,
+    @SerializedName("effective_fps") val effectiveFps: Int,
+    @SerializedName("measured_fps") val measuredFps: Double
+)
+
+data class FrameDiagnostics(
+    @SerializedName("capture_fps") val captureFps: Double = 0.0,
+    @SerializedName("submitted_frames") val submittedFrames: Long = 0,
+    @SerializedName("repeated_frames") val repeatedFrames: Long = 0,
+    @SerializedName("coalesced_frames") val coalescedFrames: Long = 0,
+    @SerializedName("surface_failures") val surfaceFailures: Long = 0,
+    @SerializedName("slow_handoffs") val slowHandoffs: Long = 0,
+    @SerializedName("handoff_p95_ms") val handoffP95Ms: Double = 0.0,
+    @SerializedName("handoff_max_ms") val handoffMaxMs: Double = 0.0,
+    @SerializedName("capture_age_ms") val captureAgeMs: Double? = null,
+    @SerializedName("pending_texture_limit") val pendingTextureLimit: Int = 1,
+    val targets: List<FrameTargetDiagnostics> = emptyList()
+)
+
+data class AudioDiagnostics(
+    val capturing: Boolean,
+    @SerializedName("buffer_limit_ms") val bufferLimitMs: Int,
+    @SerializedName("queued_ms") val queuedMs: Double,
+    @SerializedName("overflow_dropped_ms") val overflowDroppedMs: Double
+)
+
+data class DiagnosticsResponse(
+    val frames: FrameDiagnostics,
+    val audio: AudioDiagnostics,
+    val perf: PerfResponse,
+    val capabilities: Map<String, String>
+)
+
+data class EncoderCapability(
+    val name: String,
+    val mime: String,
+    val hardware: Boolean,
+    @SerializedName("width_alignment") val widthAlignment: Int,
+    @SerializedName("height_alignment") val heightAlignment: Int,
+    @SerializedName("max_width") val maxWidth: Int,
+    @SerializedName("max_height") val maxHeight: Int,
+    @SerializedName("low_latency_feature") val lowLatencyFeature: Boolean
 )
 
 data class LogsResponse(

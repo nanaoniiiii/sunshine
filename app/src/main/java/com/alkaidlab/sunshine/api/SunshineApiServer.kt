@@ -6,6 +6,7 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.data.*
+import com.alkaidlab.sunshine.service.StreamingSettings
 import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 import com.google.gson.Gson
@@ -19,7 +20,8 @@ class SunshineApiServer(
     port: Int = 47990
 ) : NanoHTTPD(port) {
 
-    private val gson = Gson()
+    private val gson = com.google.gson.GsonBuilder().serializeNulls().create()
+    private val configLock = Any()
     private val filesDir: File = context.filesDir
     private val configFile: File get() = File(filesDir, "sunshine.conf")
     private val appsFile: File get() = File(filesDir, "apps.json")
@@ -43,6 +45,10 @@ class SunshineApiServer(
                 auto_rotate = true
                 auto_scale = true
                 address_family = both
+                max_stream_fps = 240
+                repeat_frames = true
+                audio_buffer_ms = 40
+                wifi_low_latency = true
             """.trimIndent()
             configFile.writeText(defaultConfig)
         } else {
@@ -112,6 +118,8 @@ class SunshineApiServer(
                 uri == "/api/clients/unpair-all" && method == Method.POST -> handleUnpairAll()
                 uri == "/api/pin" && method == Method.POST -> handleSubmitPin(session)
                 uri == "/api/runtime/sessions" && method == Method.GET -> handleGetRuntimeSessions()
+                uri == "/api/encoders" && method == Method.GET -> jsonResponse(mapOf("encoders" to com.alkaidlab.sunshine.service.EncoderCapabilities.encoders))
+                uri == "/api/diagnostics" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().diagnostics())
                 uri == "/api/perf/current" && method == Method.GET -> handleGetPerfCurrent()
                 uri == "/api/logs" && method == Method.GET -> handleGetLogs()
                 uri == "/api/restart" && method == Method.POST -> handleRestart()
@@ -156,28 +164,40 @@ class SunshineApiServer(
             autoRotate = confMap["auto_rotate"] ?: "true",
             autoScale = confMap["auto_scale"] ?: "true",
             addressFamily = confMap["address_family"] ?: "both",
+            maxStreamFps = confMap["max_stream_fps"] ?: "240",
+            repeatFrames = confMap["repeat_frames"] ?: "true",
+            audioBufferMs = confMap["audio_buffer_ms"] ?: "40",
+            wifiLowLatency = confMap["wifi_low_latency"] ?: "true",
             ipv6Address = com.alkaidlab.sunshine.service.SunshineService.currentIpv6
         )
         return jsonResponse(response)
     }
 
-    private fun handleSaveConfig(session: IHTTPSession): Response {
+    private fun handleSaveConfig(session: IHTTPSession): Response = synchronized(configLock) {
         val body = parseBody(session)
         val mapType = object : TypeToken<Map<String, String>>() {}.type
         val incoming: Map<String, String> = gson.fromJson(body, mapType)
-
+            ?: return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                gson.toJson(SimpleStatusResponse("false", error = "Missing configuration")))
+        StreamingSettings.validate(incoming)?.let { error ->
+            return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                gson.toJson(SimpleStatusResponse("false", error = error)))
+        }
         val current = parseProperties(configFile.readText()).toMutableMap()
         current.putAll(incoming)
-
-        val sb = StringBuilder()
-        current.forEach { (k, v) -> sb.append("$k = $v\n") }
-        configFile.writeText(sb.toString())
-
-        // Immediately apply updated config to runtime engine
+        // Atomic replace prevents simultaneous readers from observing a truncated configuration.
+        val atomic = android.util.AtomicFile(configFile)
+        val output = atomic.startWrite()
+        try {
+            output.write(current.entries.joinToString("\n", postfix = "\n") { "${it.key} = ${it.value}" }.toByteArray())
+            atomic.finishWrite(output)
+        } catch (e: Exception) {
+            atomic.failWrite(output)
+            throw e
+        }
         SunshineRuntimeManager.getInstance().reloadConfig(context)
-
-        SunshineLogManager.log("CONFIG", "Configuration updated and applied to runtime engine")
-        return jsonResponse(SimpleStatusResponse("true", "Config saved successfully"))
+        SunshineLogManager.log("CONFIG", "Host streaming settings applied; native startup settings take effect after idle restart")
+        jsonResponse(SimpleStatusResponse("true", "帧率、补帧、音频缓冲与 Wi-Fi 设置已应用；编码模式需空闲重启后生效"))
     }
 
     private fun handleGetApps(): Response {

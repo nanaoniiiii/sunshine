@@ -41,6 +41,7 @@ fun DashboardScreen(
     val config by viewModel.config.collectAsState()
     val sessions by viewModel.runtimeSessions.collectAsState()
     val perf by viewModel.perf.collectAsState()
+    val diagnostics by viewModel.diagnostics.collectAsState()
     val pinRequested by viewModel.pinRequested.collectAsState()
 
     val isMediaProjectionGranted by viewModel.isMediaProjectionGranted.collectAsState()
@@ -351,7 +352,7 @@ fun DashboardScreen(
                         val mins = elapsedSec / 60
                         val secs = elapsedSec % 60
                         val durationText = String.format("%02d:%02d", mins, secs)
-                        val mbpsText = String.format("%.1f Mbps", session.bitrate / 1000.0)
+                        val mbpsText = if (session.bitrate > 0) String.format("%.1f Mbps", session.bitrate / 1000.0) else "码率未上报"
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -393,9 +394,19 @@ fun DashboardScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            MetricItem("实时帧率", String.format("%.1f FPS", perf.fps))
-                            MetricItem("硬编延迟", String.format("%.2f ms", perf.encodeTimeMs))
-                            MetricItem("传输延迟", String.format("%.2f ms", perf.networkLatencyMs))
+                            MetricItem("最高送帧率", String.format("%.1f FPS", perf.fps))
+                            MetricItem("GPU 送帧", String.format("%.2f ms", perf.gpuHandoffMs))
+                            MetricItem("探测 RTT", perf.networkLatencyMs?.let { String.format("%.2f ms", it) } ?: "未测得")
+                        }
+                        diagnostics?.let { info ->
+                            Text(
+                                "GPU P95 ${String.format("%.2f", info.frames.handoffP95Ms)} ms · 音频排队 ${String.format("%.1f", info.audio.queuedMs)} ms",
+                                color = TextSecondary, fontSize = 12.sp
+                            )
+                            Text(
+                                "合并帧 ${info.frames.coalescedFrames} · 慢送帧 ${info.frames.slowHandoffs} · 总发送 ${String.format("%.1f", info.perf.bitrateKbps / 1000.0)} Mbps",
+                                color = TextMuted, fontSize = 11.sp
+                            )
                         }
                     }
                 }
