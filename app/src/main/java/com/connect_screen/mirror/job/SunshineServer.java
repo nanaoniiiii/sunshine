@@ -1,7 +1,7 @@
 package com.connect_screen.mirror.job;
 
 import android.view.Surface;
-import com.alkaidlab.sunshine.service.SunshineRuntimeManager;
+import com.alkaidlab.sunshine.service.SunshineEngineBridge;
 
 public class SunshineServer {
 
@@ -24,27 +24,26 @@ public class SunshineServer {
 
     // Callbacks invoked by libsunshine.so C++ layer
     public static void onPinRequested() {
-        SunshineRuntimeManager.getInstance().onPinRequested();
+        SunshineEngineBridge.pinRequested();
     }
 
     public static void createVirtualDisplay(int width, int height, int fps, int packetDuration, Surface surface, boolean shouldSendAudio) {
-        SunshineMouse.initialize(width, height);
-        SunshineRuntimeManager.getInstance().onStreamStarted(width, height, fps, packetDuration, surface, shouldSendAudio);
+        SunshineEngineBridge.streamStarted(width, height, fps, packetDuration, surface, shouldSendAudio);
     }
 
     public static void stopVirtualDisplay() {
-        SunshineRuntimeManager.getInstance().onStreamStopped();
+        SunshineEngineBridge.streamStopped();
     }
 
     public static void showEncoderError(String error) {
-        SunshineRuntimeManager.getInstance().onEncoderError(error);
+        SunshineEngineBridge.encoderError(error);
     }
 
     public static void onConnectScreenClientDiscovered(String client) {
-        SunshineRuntimeManager.getInstance().onClientDiscovered(client);
+        SunshineEngineBridge.clientDiscovered(client);
     }
 
     public static void setConnectScreenServerUuid(String uuid) {
-        SunshineRuntimeManager.getInstance().setServerUuid(uuid);
+        SunshineEngineBridge.serverUuid(uuid);
     }
 }

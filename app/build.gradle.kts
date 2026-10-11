@@ -7,7 +7,8 @@ android {
     namespace = "com.alkaidlab.sunshine"
     compileSdk = 34
     ndkVersion = "27.2.12479018"
-    if (file("D:/android-sdk-extra/ndk/27.2.12479018").exists()) {
+    if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true) &&
+        file("D:/android-sdk-extra/ndk/27.2.12479018").exists()) {
         ndkPath = "D:/android-sdk-extra/ndk/27.2.12479018"
     }
 
@@ -15,8 +16,9 @@ android {
         applicationId = "com.alkaidlab.sunshine"
         minSdk = 29
         targetSdk = 34
-        versionCode = 20260831
-        versionName = "v2026.823.92135"
+        // Calendar name: vYYYY.MM.DD.N; the independent code increases with each release.
+        versionCode = 20261011
+        versionName = "v2026.10.11.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -62,6 +64,7 @@ android {
     }
 
     buildFeatures {
+        aidl = true
         compose = true
         buildConfig = true
     }
@@ -81,6 +84,7 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
     // Core & Kotlin
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")

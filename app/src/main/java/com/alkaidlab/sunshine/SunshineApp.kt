@@ -18,6 +18,10 @@ class SunshineApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        if (getProcessName().endsWith(":engine")) {
+            com.connect_screen.mirror.job.SunshineMouse.setContext(this)
+            return
+        }
         SunshineRuntimeManager.getInstance().initialize(this)
 
         try {

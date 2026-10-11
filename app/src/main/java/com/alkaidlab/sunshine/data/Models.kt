@@ -1,12 +1,13 @@
 package com.alkaidlab.sunshine.data
 
 import android.view.Surface
+import com.alkaidlab.sunshine.BuildConfig
 import com.google.gson.annotations.SerializedName
 
 data class ConfigResponse(
     val status: String = "true",
     val platform: String = "android",
-    val version: String = "v2026.823.92135",
+    val version: String = BuildConfig.VERSION_NAME,
     @SerializedName("display_devices") val displayDevices: List<DisplayDeviceNode> = emptyList(),
     val adapters: List<AdapterNode> = emptyList(),
     val port: String = "47989",

@@ -22,9 +22,10 @@
 * 实测支持高达 **175 FPS**、10~50 Mbps 动态码率串流，编码耗时低至 **2~3 ms**。
 * 自动协商颜色空间（Rec. 709 / Limited Range），保障画面色彩饱满真实。
 
-### 2. 🔄 零点击自愈无缝重连 (Zero-Click Rebirth Architecture)
+### 2. 🔄 后台引擎恢复与重连
 * 彻底解决原生 C++ 单例在客户端退出后难以重复初始化（Socket 挂起、死锁）的痛点。
-* 会话断开时触发 OS 级进程涅槃与平滑自愈机制（利用 Shizuku 特权 Shell 与 AlarmManager 双保险），在 **1~2 秒内自动重生**，无需在手机端手动重启应用，支持任意次数的断开与立即重连。
+* 原生引擎运行在独立的 `:engine` 进程。所有 Moonlight 会话结束后，仅在后台重建引擎进程，保留应用界面、API、录屏授权和虚拟显示，不主动打开主界面。
+* 单个客户端退出不重启引擎；新连接进入会取消延迟恢复，执行前再次核对原生会话。重复打开应用不会重新创建录屏或中断现有连接。
 
 ### 3. 🎯 像素级自适应触控与手势映射 (Adaptive SunshineMouse Engine)
 * **自动比例计算**：动态检测全面屏（如三星 20:9、19.5:9 等）物理像素尺寸，自动计算 Letterboxing / Pillarboxing 黑边偏移。
@@ -68,6 +69,16 @@
 
 ## 🛠️ 编译与构建 (Build from Source)
 
+### 版本与发布约定
+
+从 `v2026.10.11.1` 开始，版本采用 `v年.月.日.当日序号`，日期按北京时间计算。同日每次发布增加序号；`versionCode` 从 `20261011` 开始独立递增，每次发布加一，确保高于上一版并远离 Android 的整数上限。版本只在 `app/build.gradle.kts` 的 `defaultConfig` 中定义，界面及 API 从 `BuildConfig` 读取。
+
+正式 Release 构建启用 R8 和资源压缩，沿用原发布签名以支持覆盖升级。发布前在两台真实 Android 手机和电脑 Moonlight 上完成断开、重连及多客户端验证，然后上传以下三个包：
+
+* `app-armeabi-v7a-release.apk`：32 位 ARM。
+* `app-arm64-v8a-release.apk`：64 位 ARM。
+* `app-universal-release.apk`：通用包。
+
 ### 要求
 * JDK 17
 * Android SDK (Compile SDK 34, Min SDK 29)
@@ -84,6 +95,17 @@ cd sunshine
 
 # 生成的 APK 位于: app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### 断开与恢复的真机验证
+
+分别在 Android 10 和 Android 14+ 的 ARM 设备检查：
+1. 两个 Moonlight 客户端同时串流，退出其中一个，另一端的画面、音频和输入应继续正常。
+2. 在上述退出前后反复打开 Sunshine，界面应可正常进入，现有串流不应中断。
+3. 全部退出后等待恢复，手机不应弹出 Sunshine 界面；主应用进程 PID 保持不变，只有 `:engine` 进程 PID 改变。
+4. 在退出后的恢复等待期快速重新连接，旧恢复任务不应中断新串流。重复断开、重连并检查音频和不同分辨率下的触控映射。
+5. 重连应复用录屏授权；主动撤销系统录屏授权后，需要在应用内重新授权。
+
+`./gradlew :app:testDebugUnitTest` 覆盖引擎会话身份、重复退出回调、多客户端保护和延迟恢复失效检查。进程、录屏、音频和硬件编码行为需要真机验证。
 
 ---
 

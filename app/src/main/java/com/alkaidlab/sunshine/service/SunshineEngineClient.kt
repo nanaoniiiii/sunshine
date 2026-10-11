@@ -1,0 +1,184 @@
+package com.alkaidlab.sunshine.service
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.RemoteException
+import android.view.MotionEvent
+import android.view.Surface
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+
+/** The host stays alive while Android creates a fresh :engine process after death. */
+class SunshineEngineClient(private val context: Context) {
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var enabled = false
+    @Volatile private var closed = false
+    @Volatile private var generation = 0L
+    @Volatile private var engine: ISunshineEngine? = null
+    private var connection: ServiceConnection? = null
+    private var recovery: Runnable? = null
+    private var serverName = ""
+    private var certPath = ""
+    private var keyPath = ""
+    private var statePath = ""
+
+    fun start(name: String, cert: String, key: String, state: String) {
+        mainHandler.post {
+            if (closed || enabled) return@post
+            serverName = name
+            certPath = cert
+            keyPath = key
+            statePath = state
+            enabled = true
+            bindEngine()
+        }
+    }
+
+    private fun bindEngine() {
+        if (!enabled || connection != null) return
+        val epoch = ++generation
+        val runtime = SunshineRuntimeManager.getInstance()
+        val host = object : ISunshineEngineHost.Stub() {
+            private fun current() = enabled && generation == epoch
+            override fun streamStarted(threadId: Long, width: Int, height: Int, fps: Int,
+                                       packetDuration: Int, surface: Surface, audio: Boolean): IntArray {
+                synchronized(runtime) {
+                    if (!current()) { surface.release(); return intArrayOf(width, height) }
+                    runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId)
+                }
+                mainHandler.post { if (current()) cancelRecovery() }
+                return runtime.getCaptureDimensions(width, height)
+            }
+            override fun streamStopped(threadId: Long, revision: Long) {
+                synchronized(runtime) {
+                    if (!current()) return
+                    runtime.onStreamStopped(threadId)
+                }
+                mainHandler.post {
+                    if (current() && !runtime.isStreaming.value) scheduleRecovery(revision)
+                }
+            }
+            override fun pinRequested() {
+                synchronized(runtime) { if (current()) runtime.onPinRequested() }
+            }
+            override fun clientDiscovered(client: String) {
+                synchronized(runtime) { if (current()) runtime.onClientDiscovered(client) }
+            }
+            override fun serverUuid(uuid: String) {
+                synchronized(runtime) { if (current()) runtime.setServerUuid(uuid) }
+            }
+            override fun encoderError(error: String) {
+                if (current()) SunshineLogManager.log("ENCODER_ERR", error)
+            }
+            override fun motionEvent(event: MotionEvent) {
+                try { if (current()) runtime.injectMotionEvent(event) } finally { event.recycle() }
+            }
+            override fun keyboardEvent(keyCode: Int, down: Boolean, modifiers: Int) {
+                if (current()) runtime.handleKeyboardEvent(keyCode, down, modifiers)
+            }
+            override fun readAudio(count: Int, mode: Int): FloatArray =
+                if (current()) runtime.readAudio(count, mode) else floatArrayOf()
+        }
+        val newConnection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, service: IBinder) {
+                if (!enabled || generation != epoch) return
+                val remote = ISunshineEngine.Stub.asInterface(service)
+                engine = remote
+                scope.launch {
+                    try {
+                        if (!enabled || generation != epoch) return@launch
+                        remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
+                        SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
+                    } catch (e: RemoteException) {
+                        mainHandler.post { disconnected(epoch) }
+                    }
+                }
+            }
+            override fun onServiceDisconnected(name: ComponentName) { disconnected(epoch) }
+            override fun onBindingDied(name: ComponentName) { disconnected(epoch) }
+            override fun onNullBinding(name: ComponentName) { disconnected(epoch) }
+        }
+        connection = newConnection
+        if (!context.bindService(Intent(context, SunshineEngineService::class.java), newConnection,
+                Context.BIND_AUTO_CREATE or Context.BIND_IMPORTANT)) {
+            disconnected(epoch)
+        }
+    }
+
+    private fun disconnected(epoch: Long) {
+        if (generation != epoch) return
+        val runtime = SunshineRuntimeManager.getInstance()
+        synchronized(runtime) {
+            ++generation // Reject late callbacks from the dead process.
+            runtime.onEngineDisconnected()
+        }
+        engine = null
+        cancelRecovery()
+        unbind()
+        if (enabled) mainHandler.postDelayed({ bindEngine() }, 300)
+    }
+
+    private fun unbind() {
+        connection?.let {
+            try { context.unbindService(it) } catch (_: IllegalArgumentException) {}
+        }
+        connection = null
+    }
+
+    fun scheduleRecovery(revision: Long = EngineSessions.MANUAL_RESTART) {
+        cancelRecovery()
+        val epoch = generation
+        recovery = Runnable {
+            recovery = null
+            if (!enabled || generation != epoch || SunshineRuntimeManager.getInstance().isStreaming.value) return@Runnable
+            val remote = engine ?: return@Runnable
+            scope.launch {
+                try {
+                    if (remote.restartIfIdle(revision)) {
+                        SunshineLogManager.log("RECOVERY", "Restarting idle native engine; host and capture stay alive")
+                    }
+                } catch (_: RemoteException) {
+                    // Binding death handles reinitialization after the old process releases its ports.
+                }
+            }
+        }.also { mainHandler.postDelayed(it, 800) }
+    }
+
+    private fun cancelRecovery() {
+        recovery?.let { mainHandler.removeCallbacks(it) }
+        recovery = null
+    }
+
+    fun submitPin(pin: String): Boolean {
+        val remote = engine ?: return false
+        return try { remote.submitPin(pin); true } catch (_: RemoteException) { false }
+    }
+
+    fun startAudio(samplesPerPacket: Int) {
+        val remote = engine ?: return
+        scope.launch {
+            try { remote.startAudio(samplesPerPacket) } catch (_: RemoteException) {}
+        }
+    }
+
+    fun stop() {
+        closed = true
+        enabled = false
+        ++generation
+        cancelRecovery()
+        mainHandler.removeCallbacksAndMessages(null)
+        try { engine?.shutdown() } catch (_: RemoteException) {}
+        engine = null
+        unbind()
+        scope.cancel()
+    }
+}

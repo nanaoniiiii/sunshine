@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.ui.theme.*
 import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 
@@ -75,7 +76,7 @@ fun DashboardScreen(
                     letterSpacing = 2.sp
                 )
                 Text(
-                    text = config?.version ?: "v2026.823.92135 (Android)",
+                    text = config?.version ?: "${BuildConfig.VERSION_NAME} (Android)",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     fontFamily = FontFamily.Monospace

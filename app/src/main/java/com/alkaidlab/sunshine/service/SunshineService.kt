@@ -16,12 +16,12 @@ import androidx.core.app.NotificationCompat
 import com.alkaidlab.sunshine.R
 import com.alkaidlab.sunshine.api.SunshineApiServer
 import com.alkaidlab.sunshine.ui.MainActivity
-import com.connect_screen.mirror.job.SunshineServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import java.io.File
@@ -124,18 +124,10 @@ class SunshineService : Service() {
             return false
         }
 
-        @Volatile
-        var cachedResultData: Intent? = null
-
         fun start(context: Context, resultData: Intent? = null) {
-            if (resultData != null) {
-                cachedResultData = resultData
-            }
             val intent = Intent(context, SunshineService::class.java).apply {
                 action = ACTION_START
-                if (cachedResultData != null) {
-                    putExtra(EXTRA_RESULT_DATA, cachedResultData)
-                }
+                if (resultData != null) putExtra(EXTRA_RESULT_DATA, resultData)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -145,46 +137,46 @@ class SunshineService : Service() {
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, SunshineService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+            context.stopService(Intent(context, SunshineService::class.java))
         }
 
-        fun restart(context: Context) {
-            SunshineRuntimeManager.getInstance().triggerAutoRecovery()
-        }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var apiServer: SunshineApiServer? = null
     private var jmDnsList = mutableListOf<JmDNS>()
-    private var nativeThread: Thread? = null
+    private val engineClient by lazy { SunshineEngineClient(this) }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         SunshineRuntimeManager.getInstance().initialize(this)
+        SunshineRuntimeManager.getInstance().engineClient = engineClient
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        when (intent?.action ?: ACTION_START) {
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, buildNotification("正在初始化推流服务..."))
-                val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) ?: cachedResultData
-                if (resultData != null) {
-                    cachedResultData = resultData
+                val resultData = intent?.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                // Android 14 requires consent before a mediaProjection foreground service.
+                val foregroundType = if (resultData != null || SunshineRuntimeManager.getInstance().getMediaProjection() != null) {
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                } else {
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                }
+                startForeground(NOTIFICATION_ID, buildNotification("正在初始化推流服务..."), foregroundType)
+                if (resultData != null && SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
                     try {
                         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                         val projection = mpm.getMediaProjection(-1, resultData)
                         projection.registerCallback(object : MediaProjection.Callback() {
                             override fun onStop() {
                                 SunshineLogManager.log("MEDIA_PROJ", "MediaProjection stopped by system")
-                                SunshineRuntimeManager.getInstance().onStreamStopped()
+                                SunshineRuntimeManager.getInstance().onProjectionStopped(projection)
                             }
                         }, null)
                         SunshineRuntimeManager.getInstance().setMediaProjection(projection)
@@ -234,29 +226,12 @@ class SunshineService : Service() {
                 // 3. Configure Native Sunshine Engine from sunshine.conf
                 SunshineRuntimeManager.getInstance().reloadConfig(this@SunshineService)
                 val serverName = "Sunshine-${Build.MANUFACTURER}-${Build.MODEL}"
-                SunshineServer.setSunshineName(serverName)
-                SunshineServer.setCertPath(certFile.absolutePath)
-                SunshineServer.setPkeyPath(keyFile.absolutePath)
-                SunshineServer.setFileStatePath(stateFile.absolutePath)
-                if (SunshineRuntimeManager.getInstance().hevcEnabled) {
-                    SunshineServer.enableH265()
-                }
-
                 // 4. Register mDNS advertisement for Moonlight discovery
                 registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6)
 
-                // 5. Start Native Sunshine Server in background thread
-                nativeThread = Thread {
-                    try {
-                        SunshineLogManager.log("NATIVE", "Starting native SunshineServer...")
-                        SunshineServer.start()
-                    } catch (e: Throwable) {
-                        SunshineLogManager.log("NATIVE_ERR", "Native SunshineServer exited: ${e.message}")
-                    }
-                }.apply {
-                    isDaemon = true
-                    start()
-                }
+                // 5. Bind the disposable native engine; the foreground host remains alive.
+                ensureActive()
+                engineClient.start(serverName, certFile.absolutePath, keyFile.absolutePath, stateFile.absolutePath)
 
             } catch (e: Exception) {
                 SunshineLogManager.log("INIT_ERR", "Error initializing SunshineService: ${e.message}")
@@ -414,6 +389,8 @@ class SunshineService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        engineClient.stop()
+        SunshineRuntimeManager.getInstance().engineClient = null
         SunshineRuntimeManager.getInstance().releaseAll()
 
         try {
@@ -424,12 +401,6 @@ class SunshineService : Service() {
         try {
             apiServer?.stop()
         } catch (_: Exception) {}
-
-        try {
-            SunshineLogManager.log("NATIVE", "Calling SunshineServer.exitServer() in onDestroy...")
-            SunshineServer.exitServer()
-        } catch (_: Exception) {}
-
         serviceScope.cancel()
         SunshineLogManager.log("SERVICE", "SunshineService destroyed")
     }

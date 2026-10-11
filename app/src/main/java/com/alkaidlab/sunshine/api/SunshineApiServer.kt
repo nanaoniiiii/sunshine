@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.data.*
 import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
@@ -141,7 +142,7 @@ class SunshineApiServer(
         val response = ConfigResponse(
             status = "true",
             platform = "android",
-            version = "v2026.823.92135",
+            version = BuildConfig.VERSION_NAME,
             displayDevices = devices,
             adapters = adapters,
             port = confMap["port"] ?: "47989",
@@ -315,8 +316,11 @@ class SunshineApiServer(
     }
 
     private fun handleRestart(): Response {
-        SunshineRuntimeManager.getInstance().restart()
-        return jsonResponse(SimpleStatusResponse("true", "Server restarted"))
+        val scheduled = SunshineRuntimeManager.getInstance().restart()
+        return jsonResponse(SimpleStatusResponse(
+            if (scheduled) "true" else "false",
+            if (scheduled) "已请求后台重启；新连接进入时会取消" else "仍有连接或服务未启动，未执行重启"
+        ))
     }
 
     private fun parseBody(session: IHTTPSession): String {

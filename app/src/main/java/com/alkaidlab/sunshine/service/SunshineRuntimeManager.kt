@@ -1,7 +1,5 @@
 package com.alkaidlab.sunshine.service
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.hardware.display.VirtualDisplay
@@ -20,7 +18,6 @@ import android.view.MotionEvent
 import android.view.Surface
 import com.alkaidlab.sunshine.data.PerfResponse
 import com.alkaidlab.sunshine.data.RuntimeSession
-import com.connect_screen.mirror.job.SunshineServer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,9 +40,10 @@ class SunshineRuntimeManager private constructor() {
     }
 
     private var context: Context? = null
-    private var mediaProjection: MediaProjection? = null
+    @Volatile private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var audioRecord: AudioRecord? = null
+    @Volatile private var audioRecord: AudioRecord? = null
+    @Volatile var engineClient: SunshineEngineClient? = null
     private val frameDispatcher = SunshineFrameDispatcher()
 
     // Streaming State
@@ -62,7 +60,6 @@ class SunshineRuntimeManager private constructor() {
     val perfFlow: StateFlow<PerfResponse> = _perfFlow.asStateFlow()
 
     private val activeSessions = CopyOnWriteArrayList<RuntimeSession>()
-    private val activeSessionCount = java.util.concurrent.atomic.AtomicInteger(0)
     private var currentStreamSurface: Surface? = null
     private var streamStartTime: Long = 0
 
@@ -103,20 +100,10 @@ class SunshineRuntimeManager private constructor() {
         com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
         reloadConfig(this.context)
         initShizukuInput()
-        frameDispatcher.setOnSurfaceEvictedListener { evictedSurface ->
-            Handler(Looper.getMainLooper()).post {
-                val evictedSession = activeSessions.find { it.surface == evictedSurface }
-                if (evictedSession != null) {
-                    activeSessions.remove(evictedSession)
-                    _activeSessionsFlow.value = activeSessions.toList()
-                    _perfFlow.value = getPerfSnapshot()
-                    SunshineLogManager.log("STREAM", "Evicted inactive session (${evictedSession.clientName}). Remaining: ${activeSessions.size}")
-                    if (activeSessions.isNotEmpty()) {
-                        val rem = activeSessions.last()
-                        com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(rem.width, rem.height)
-                    }
-                }
-            }
+        frameDispatcher.setOnSurfaceEvictedListener { _ ->
+            // Rendering failure is not proof of native disconnect. Preserve lifecycle identities
+            // until the engine reports stop, so a bad surface cannot trigger a global restart.
+            SunshineLogManager.log("STREAM", "Client surface evicted; awaiting native disconnect")
         }
     }
 
@@ -139,9 +126,6 @@ class SunshineRuntimeManager private constructor() {
                 configuredMinBitrate = props["min_bitrate"]?.toIntOrNull() ?: 5000
                 configuredMaxBitrate = props["max_bitrate"]?.toIntOrNull() ?: 50000
                 lastCodec = if (hevcEnabled) "HEVC (H.265)" else "AVC (H.264)"
-                if (hevcEnabled) {
-                    try { SunshineServer.enableH265() } catch (_: Throwable) {}
-                }
             }
         } catch (e: Exception) {
             SunshineLogManager.log("CONFIG_WARN", "reloadConfig error: ${e.message}")
@@ -224,25 +208,27 @@ class SunshineRuntimeManager private constructor() {
                     }
 
                     // 5. Sync session metadata (peer IP, live per-client bitrate, codec)
-                    if (activeSessions.isNotEmpty()) {
-                        val perClientBitrate = (lastBitrate / activeSessions.size.coerceAtLeast(1)).coerceAtLeast(500)
-                        var changed = false
-                        val updated = activeSessions.mapIndexed { idx, s ->
-                            val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
-                                peerIps.getOrElse(idx) { peerIps.last() }
-                            } else s.clientIp
-                            val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
-                                "Moonlight ($resolvedIp)"
-                            } else s.clientName
-                            if (s.clientIp != resolvedIp || s.clientName != resolvedName || s.bitrate != perClientBitrate || s.codec != lastCodec) {
-                                changed = true
-                                s.copy(clientName = resolvedName, clientIp = resolvedIp, bitrate = perClientBitrate, codec = lastCodec)
-                            } else s
-                        }
-                        if (changed) {
-                            activeSessions.clear()
-                            activeSessions.addAll(updated)
-                            _activeSessionsFlow.value = activeSessions.toList()
+                    synchronized(this@SunshineRuntimeManager) {
+                        if (activeSessions.isNotEmpty()) {
+                            val perClientBitrate = (lastBitrate / activeSessions.size.coerceAtLeast(1)).coerceAtLeast(500)
+                            var changed = false
+                            val updated = activeSessions.mapIndexed { idx, s ->
+                                val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
+                                    peerIps.getOrElse(idx) { peerIps.last() }
+                                } else s.clientIp
+                                val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
+                                    "Moonlight ($resolvedIp)"
+                                } else s.clientName
+                                if (s.clientIp != resolvedIp || s.clientName != resolvedName || s.bitrate != perClientBitrate || s.codec != lastCodec) {
+                                    changed = true
+                                    s.copy(clientName = resolvedName, clientIp = resolvedIp, bitrate = perClientBitrate, codec = lastCodec)
+                                } else s
+                            }
+                            if (changed) {
+                                activeSessions.clear()
+                                activeSessions.addAll(updated)
+                                _activeSessionsFlow.value = activeSessions.toList()
+                            }
                         }
                     }
 
@@ -343,6 +329,10 @@ class SunshineRuntimeManager private constructor() {
 
     fun getMediaProjection(): MediaProjection? = mediaProjection
 
+    fun getCaptureDimensions(width: Int, height: Int): IntArray =
+        if (frameDispatcher.isRunning) intArrayOf(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
+        else intArrayOf(width, height)
+
     fun submitPin(pin: String): Boolean {
         val cleanPin = pin.trim()
         if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
@@ -350,7 +340,7 @@ class SunshineRuntimeManager private constructor() {
             return false
         }
         return try {
-            SunshineServer.submitPin(cleanPin)
+            if (engineClient?.submitPin(cleanPin) != true) return false
             _pinRequested.value = null
             SunshineLogManager.log("PIN", "Native submitPin completed for $cleanPin")
             true
@@ -369,9 +359,10 @@ class SunshineRuntimeManager private constructor() {
         _pinRequested.value = null
     }
 
-    fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface, shouldSendAudio: Boolean) {
-        val callerThreadId = android.os.Process.myTid().toLong()
-        val sessionIndex = activeSessionCount.incrementAndGet()
+    @Synchronized
+    fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface,
+                        shouldSendAudio: Boolean, callerThreadId: Long) {
+        val sessionIndex = activeSessions.size + 1
         reloadConfig()
         val peerIps = detectConnectedPeerIps()
         if (peerIps.isNotEmpty()) {
@@ -412,6 +403,7 @@ class SunshineRuntimeManager private constructor() {
 
         // Create VirtualDisplay feeding frameDispatcher on main thread
         Handler(Looper.getMainLooper()).post {
+            if (activeSessions.none { it.videoThreadId == callerThreadId && it.surface === surface }) return@post
             val mp = mediaProjection
             if (mp != null) {
                 if (!frameDispatcher.isRunning || virtualDisplay == null) {
@@ -451,130 +443,48 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    fun onStreamStopped() {
-        val callerThreadId = android.os.Process.myTid().toLong()
-        val remaining = activeSessionCount.decrementAndGet()
-        SunshineLogManager.log("STREAM", "Native stream stopped for client (tid=$callerThreadId). Remaining active clients: $remaining")
-
-        // Identify the exact disconnecting session by its dedicated native videoThread ID
-        val deadSession = activeSessions.find { it.videoThreadId == callerThreadId }
-            ?: activeSessions.find { session ->
-                val surf = session.surface
-                surf == null || !surf.isValid || !frameDispatcher.hasSurface(surf)
-            }
-
-        if (deadSession != null) {
-            activeSessions.remove(deadSession)
-            // Synchronously unbind & destroy the EGLSurface BEFORE returning to C++ (which immediately calls AMediaCodec_stop)
-            deadSession.surface?.let { surf ->
-                frameDispatcher.removeSurfaceSync(surf)
-            }
-            SunshineLogManager.log("STREAM", "Removed disconnected session (${deadSession.clientName}, tid=$callerThreadId). Remaining sessions: ${activeSessions.size}")
+    @Synchronized
+    fun onStreamStopped(callerThreadId: Long) {
+        val deadSession = activeSessions.find { it.videoThreadId == callerThreadId } ?: return
+        activeSessions.remove(deadSession)
+        deadSession.surface?.let { surface ->
+            // The synchronous Binder callback keeps native AMediaCodec_stop behind EGL teardown.
+            frameDispatcher.removeSurfaceSync(surface)
+            surface.release()
         }
-
-        if (remaining > 0) {
-            if (activeSessions.isNotEmpty()) {
-                val remainingActive = activeSessions.last()
-                com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remainingActive.width, remainingActive.height)
-            }
-            _activeSessionsFlow.value = activeSessions.toList()
-            _perfFlow.value = getPerfSnapshot()
-
-            frameDispatcher.pruneDeadSurfaces()
-
-            SunshineLogManager.log("STREAM", "Other Moonlight clients still connected ($remaining remaining). Stream remains active, bypassing auto-recovery.")
-            return
+        SunshineLogManager.log("STREAM", "Disconnected tid=$callerThreadId; remaining=${activeSessions.size}")
+        val remaining = activeSessions.lastOrNull()
+        if (remaining != null) {
+            com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remaining.width, remaining.height)
+        } else {
+            _isStreaming.value = false
+            stopTelemetryLoop()
+            streamStartTime = 0L
+            // Keep MediaProjection, its one VirtualDisplay, and AudioRecord alive for reconnects.
         }
+        _activeSessionsFlow.value = activeSessions.toList()
+        _perfFlow.value = getPerfSnapshot()
+    }
 
-        // All clients disconnected (remaining <= 0)
-        activeSessionCount.set(0)
-        _isStreaming.value = false
-        stopTelemetryLoop()
-        activeSessions.clear()
-        _activeSessionsFlow.value = emptyList()
-        _perfFlow.value = PerfResponse(active = false)
-        streamStartTime = 0L
+    @Synchronized
+    fun onEngineDisconnected() {
+        activeSessions.toList().forEach { onStreamStopped(it.videoThreadId) }
+        _pinRequested.value = null
+    }
 
+    fun onProjectionStopped(projection: MediaProjection) {
         Handler(Looper.getMainLooper()).post {
-            try {
-                frameDispatcher.clearSurfaces()
-                frameDispatcher.stop()
-                virtualDisplay?.release()
-                virtualDisplay = null
-                currentStreamSurface = null
-                stopAudioCapture()
-                com.connect_screen.mirror.job.SunshineMouse.reset()
-            } catch (e: Exception) {
-                SunshineLogManager.log("STREAM_ERR", "Error tearing down stream: ${e.message}")
-            }
-
-            // Auto-recovery: reset native runtime so client can reconnect seamlessly
-            triggerAutoRecovery()
+            if (mediaProjection !== projection) return@post
+            releaseCapture()
+            SunshineLogManager.log("MEDIA_PROJ", "Capture revoked; waiting for fresh user consent")
         }
     }
 
     fun triggerAutoRecovery() {
-        val ctx = context ?: return
-        SunshineLogManager.log("RECOVERY", "Triggering process restart for clean reconnect...")
-        Handler(Looper.getMainLooper()).postDelayed({
-            restartAppProcess(ctx)
-        }, 800)
+        Handler(Looper.getMainLooper()).post { engineClient?.scheduleRecovery() }
     }
 
-    fun restartAppProcess(ctx: Context) {
-        try {
-            if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                val cmd = "sleep 1 && am start -n ${ctx.packageName}/.ui.MainActivity --ez auto_restart true"
-                val method = Shizuku::class.java.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
-                method.isAccessible = true
-                method.invoke(null, arrayOf("sh", "-c", cmd), null, null)
-                SunshineLogManager.log("RECOVERY", "Scheduled shell restart via Shizuku")
-            }
-        } catch (e: Throwable) {
-            SunshineLogManager.log("RECOVERY_WARN", "Shizuku restart fallback: ${e.message}")
-        }
-
-        try {
-            val pm = ctx.packageManager
-            val launchIntent = pm.getLaunchIntentForPackage(ctx.packageName)
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                launchIntent.putExtra("auto_restart", true)
-                SunshineService.cachedResultData?.let {
-                    launchIntent.putExtra(SunshineService.EXTRA_RESULT_DATA, it)
-                }
-                val pendingIntent = PendingIntent.getActivity(
-                    ctx,
-                    12345,
-                    launchIntent,
-                    PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-                val am = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    am?.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 500, pendingIntent)
-                } else {
-                    am?.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 500, pendingIntent)
-                }
-                ctx.startActivity(launchIntent)
-            }
-        } catch (e: Exception) {
-            SunshineLogManager.log("RECOVERY_ERR", "Failed to schedule restart: ${e.message}")
-        }
-
-        Handler(Looper.getMainLooper()).postDelayed({
-            try { SunshineServer.exitServer() } catch (_: Throwable) {}
-            try {
-                android.os.Process.killProcess(android.os.Process.myPid())
-                System.exit(0)
-            } catch (_: Throwable) {}
-        }, 600)
-    }
-
-    fun onEncoderError(error: String) {
-        SunshineLogManager.log("ENCODER_ERR", "Hardware encoder error: $error")
-        onStreamStopped()
-    }
-
+    @Synchronized
     fun onClientDiscovered(client: String) {
         SunshineLogManager.log("DISCOVERY", "Discovered client: $client")
         lastDiscoveredClient = client
@@ -615,18 +525,27 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    fun restart() {
-        SunshineLogManager.log("RESTART", "Restarting Sunshine runtime")
-        onStreamStopped()
-        SunshineService.restart(context ?: return)
+    fun restart(): Boolean {
+        if (_isStreaming.value || engineClient == null) return false
+        SunshineLogManager.log("RESTART", "Requesting idle engine restart")
+        triggerAutoRecovery()
+        return true
     }
 
     private var isAudioCaptureInitialized = false
 
     // Audio capture via AudioPlaybackCapture
     private fun startAudioCapture(packetDuration: Int = 10) {
+        val ctx = context ?: return
+        if (androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            SunshineLogManager.log("AUDIO_WARN", "Audio permission not granted; streaming video only")
+            return
+        }
+        val duration = if (packetDuration > 0) packetDuration else 10
+        val samplesPerPacket = (duration * 48000) / 1000
         if (isAudioCaptureInitialized && audioRecord != null) {
-            SunshineLogManager.log("AUDIO", "Audio recording already active, reusing existing audio session")
+            engineClient?.startAudio(samplesPerPacket)
             return
         }
         val mp = mediaProjection ?: run {
@@ -662,9 +581,7 @@ class SunshineRuntimeManager private constructor() {
                 record.startRecording()
                 audioRecord = record
                 isAudioCaptureInitialized = true
-                val duration = if (packetDuration > 0) packetDuration else 10
-                val samplesPerPacket = (duration * sampleRate) / 1000
-                SunshineServer.startAudioRecording(record, samplesPerPacket)
+                engineClient?.startAudio(samplesPerPacket)
                 SunshineLogManager.log("AUDIO", "Audio playback capture started: 48000Hz stereo float ($samplesPerPacket samples/pkt)")
             } catch (e: Throwable) {
                 SunshineLogManager.log("AUDIO_ERR", "Failed to start AudioPlaybackCapture: ${e.message}")
@@ -672,29 +589,34 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    private fun stopAudioCapture() {
-        // Keep AudioRecord active across stream disconnections.
-        // If audioRecord is stopped or released while native startAudioRecording thread is alive,
-        // AudioRecord.read() immediately returns -3 (STATE_UNINITIALIZED) in an infinite busy-wait loop at 100% CPU.
-        // Leaving it running keeps AudioRecord.read() blocked in kernel with 0% CPU, ready for reconnecting clients.
-        SunshineLogManager.log("AUDIO", "Stream stopped: keeping AudioRecord alive for seamless client reconnects")
+    fun readAudio(count: Int, mode: Int): FloatArray {
+        // Bound the Binder payload; normal 10ms stereo packets contain 960 floats.
+        val buffer = FloatArray(count.coerceIn(0, 48000))
+        val record = audioRecord ?: return floatArrayOf()
+        val read = try { record.read(buffer, 0, buffer.size, mode) } catch (_: Exception) { 0 }
+        return if (read > 0) buffer.copyOf(read) else floatArrayOf()
     }
 
+    private fun releaseCapture() {
+        frameDispatcher.stop()
+        virtualDisplay?.release()
+        virtualDisplay = null
+        val record = audioRecord
+        audioRecord = null
+        try { record?.stop() } catch (_: Exception) {}
+        try { record?.release() } catch (_: Exception) {}
+        isAudioCaptureInitialized = false
+        val projection = mediaProjection
+        mediaProjection = null
+        try { projection?.stop() } catch (_: Exception) {}
+    }
+
+    @Synchronized
     fun releaseAll() {
-        activeSessionCount.set(0)
-        _isStreaming.value = false
-        activeSessions.clear()
-        streamStartTime = 0L
+        onEngineDisconnected()
+        releaseCapture()
         currentStreamSurface = null
-        try {
-            frameDispatcher.stop()
-            virtualDisplay?.release()
-            virtualDisplay = null
-            audioRecord?.stop()
-            audioRecord?.release()
-            audioRecord = null
-            isAudioCaptureInitialized = false
-        } catch (_: Exception) {}
+        com.connect_screen.mirror.job.SunshineMouse.reset()
     }
 
     fun getLastWidth(): Int = if (lastWidth > 0) lastWidth else 720
@@ -747,6 +669,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun injectMotionEvent(event: MotionEvent) {
+        if (SunshineEngineBridge.injectMotion(event)) return
         if (!isBoundViaShizuku) {
             initShizukuInput()
         }
@@ -772,6 +695,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {
+        if (SunshineEngineBridge.injectKeyboard(keyCode, isDown, modifiers)) return
         if (inputManager == null) {
             initShizukuInput()
         }

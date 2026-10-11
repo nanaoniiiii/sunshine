@@ -284,8 +284,8 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     fun restartServer() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                api.restartServer()
-                _statusMessage.value = "服务正在重启..."
+                val response = api.restartServer()
+                _statusMessage.value = response.body()?.message ?: "重启请求失败"
             } catch (_: Exception) {}
         }
     }

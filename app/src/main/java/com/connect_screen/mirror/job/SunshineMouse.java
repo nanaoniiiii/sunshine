@@ -96,6 +96,12 @@ public class SunshineMouse {
     private static volatile int activeClientWidth = 0;
     private static volatile int activeClientHeight = 0;
 
+    public static void setCaptureDimensions(int width, int height) {
+        virtualDisplayWidth = width;
+        virtualDisplayHeight = height;
+        updateDisplayDimensions();
+    }
+
     public static void setActiveClientDimensions(int width, int height) {
         if (width > 0 && height > 0) {
             activeClientWidth = width;

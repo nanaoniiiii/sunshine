@@ -42,16 +42,15 @@ enum class NavigationTab(val title: String, val icon: ImageVector) {
 class MainActivity : ComponentActivity() {
 
     private val viewModel: SunshineViewModel by viewModels()
+    private var projectionRequestPending = false
 
     private val mediaProjectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        projectionRequestPending = false
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             SunshineService.start(this, result.data!!)
             viewModel.checkSystemPermissions()
-            if (intent?.getBooleanExtra("auto_restart", false) == true) {
-                moveTaskToBack(true)
-            }
         }
     }
 
@@ -77,17 +76,9 @@ class MainActivity : ComponentActivity() {
         generalPermissionsLauncher.launch(permissions.toTypedArray())
 
         ensureAppOpsPermissions()
-        val autoData = intent?.getParcelableExtra<Intent>(SunshineService.EXTRA_RESULT_DATA)
-        if (autoData != null) {
-            SunshineService.start(this, autoData)
-        } else {
-            SunshineService.start(this)
-        }
-
-        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null && autoData == null) {
+        SunshineService.start(this)
+        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
             requestMediaProjection()
-        } else if (intent?.getBooleanExtra("auto_restart", false) == true) {
-            moveTaskToBack(true)
         }
 
         setContent {
@@ -105,14 +96,10 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val autoData = intent?.getParcelableExtra<Intent>(SunshineService.EXTRA_RESULT_DATA)
-        if (autoData != null) {
-            SunshineService.start(this, autoData)
-        }
-        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null && autoData == null) {
+        // Reopening the UI must not recreate capture or restart an active engine.
+        SunshineService.start(this)
+        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
             requestMediaProjection()
-        } else if (intent?.getBooleanExtra("auto_restart", false) == true) {
-            moveTaskToBack(true)
         }
     }
 
@@ -136,6 +123,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestMediaProjection() {
+        if (projectionRequestPending) return
+        projectionRequestPending = true
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
     }
