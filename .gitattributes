@@ -1,0 +1,3 @@
+# Unified patches contain upstream whitespace and blank context lines.
+# Preserve patch syntax across Windows checkouts; check resulting source separately.
+native/patches/*.patch text eol=lf whitespace=-blank-at-eol

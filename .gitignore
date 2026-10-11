@@ -8,6 +8,8 @@
 /captures
 .externalNativeBuild
 .cxx
+/native/.build/
+/native/__pycache__/
 
 # Root debug/test artifacts and local files
 /client.crt

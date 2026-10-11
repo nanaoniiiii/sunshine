@@ -788,7 +788,7 @@ class SunshineRuntimeManager private constructor() {
         try {
             method.invoke(im, event, 0)
         } catch (e: Exception) {
-            SunshineLogManager.log("INJECT_ERR", "injectInputEvent error: ${e.message}")
+            SunshineLogManager.log("INJECT_ERR", "injectInputEvent error: ${(e.cause ?: e).message}")
         }
     }
 
