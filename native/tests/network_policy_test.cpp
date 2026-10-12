@@ -22,6 +22,11 @@ int main() {
     assert(encoding_budget(nominal_budget(7308,20),20)>=7308); // Integer rounding preserves the initial budget.
     assert(pacing_delay_ns(1,1500,1000)==12000000);
     assert(pacing_delay_ns(10,1500,10000)==12000000);
+    assert(keyframe_pacing_kbps(8000,300000,false)==8000);
+    assert(keyframe_pacing_kbps(8000,300000,true)==60000);
+    assert(keyframe_pacing_kbps(8000,1000000,true)==80000);
+    assert(keyframe_pacing_kbps(100000,1000000,true)==100000);
+    assert(keyframe_pacing_kbps(8000,1000,true)==8000);
     NetworkPolicy policy; policy.initialize(10000,20);
     assert(!policy.feedback(*report,60,0)); // Never accept a frame that wasn't sent.
     policy.last_sent_frame=100; policy.has_sent_frame=true; policy.last_sent_at=0;
@@ -38,25 +43,45 @@ int main() {
     assert(policy.react(*report,10000,1000,4000)==0); // Default-off.
     policy.enabled(true,1000);
     assert(policy.react(*report,10000,1000,2000)==0); // Cooldown.
-    int target=policy.react(*report,10000,1000,4000);
+    assert(policy.react(*report,10000,1000,4000)==0); // An isolated recoverable loss is watched.
+    assert(policy.react(*report,10000,1000,4100)==0);
+    int target=policy.react(*report,10000,1000,4300);
     assert(target==8500 && policy.fec==20 && policy.pending_fec==22);
     policy.driver_result(target,false); assert(policy.fec==20 && policy.state==std::string("driver_rejected"));
-    target=policy.react(*report,10000,1000,7000);
+    assert(policy.react(*report,10000,1000,7000)==0);
+    assert(policy.react(*report,10000,1000,7100)==0);
+    target=policy.react(*report,10000,1000,7300);
     policy.driver_result(target,true); assert(policy.fec==22 && nominal_budget(target,policy.fec)<=policy.total_budget);
     policy.last_bad=7000; policy.rtt_at=8000; policy.rtt=1;
     assert(policy.recover(8500,10000,30000)==0); // Stale control feedback.
     policy.rtt_at=30000;
+    policy.observe_queue(0,0,8500,1000,30000);
     target=policy.recover(8500,10000,30000); assert(target>8500 && target<=10000);
     policy.driver_result(target,true); assert(policy.fec==21);
     policy.enabled(false,31000); assert(policy.recover(target,10000,40000)==0);
     assert(policy.propose_fec(35,10000,9500)==0); // Keep floor and total budget.
     report->received_parity=0;
     policy.enabled(true,50000);
-    target=policy.react(*report,10000,1000,53000);
+    assert(policy.react(*report,10000,1000,53000)==0);
+    target=policy.react(*report,10000,1000,53300);
     assert(target==8500 && policy.pending_fec==26); // Unrecoverable block requests stronger FEC.
     policy.driver_result(target,true);
     policy.last_sent_frame=1; policy.last_sent_at=54000; report->frame=UINT32_MAX;
     assert(policy.feedback(*report,60,54000)); // Frame sequence wrap.
+    NetworkPolicy pressure; pressure.initialize(10000,20); pressure.enabled(true,0);
+    assert(pressure.observe_queue(50,4,10000,1000,3000)==0);
+    assert(pressure.observe_queue(50,4,10000,1000,3200)==0);
+    assert(pressure.observe_queue(50,4,10000,1000,3400)==0);
+    auto reduced=pressure.observe_queue(50,4,10000,1000,3600);
+    assert(reduced==9000 && pressure.pending_fec==20); // Queue congestion doesn't raise FEC.
+    pressure.driver_result(reduced,true); pressure.rtt=2; pressure.rtt_at=25000;
+    assert(pressure.recover(9000,10000,25000)==0); // No fresh empty-queue observation.
+    pressure.observe_queue(0,0,9000,1000,25000);
+    assert(pressure.recover(9000,10000,25000)>9000);
+    pressure.enabled(true,30000);
+    assert(pressure.observe_rtt(3,9000,1000,31000)==0);
+    assert(pressure.observe_rtt(160,9000,1000,33000)==0);
+    assert(pressure.observe_rtt(170,9000,1000,34100)==8100);
     configure_video(1000,50000,240);
     auto s=std::make_shared<VideoSession>(); s->negotiated=s->applied=10000; register_video(s);
     assert(control_video(s->id,4,35));

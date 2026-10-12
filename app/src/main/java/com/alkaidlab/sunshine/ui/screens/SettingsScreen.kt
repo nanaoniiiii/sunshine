@@ -24,6 +24,8 @@ fun SettingsScreen(
 ) {
     val config by viewModel.config.collectAsState()
 
+    var encoderH264 by remember { mutableStateOf("auto") }
+    var encoderHevc by remember { mutableStateOf("auto") }
     var hevcEnabled by remember { mutableStateOf(true) }
     var autoRotate by remember { mutableStateOf(true) }
     var autoScale by remember { mutableStateOf(true) }
@@ -39,6 +41,8 @@ fun SettingsScreen(
 
     LaunchedEffect(config) {
         config?.let { c ->
+            encoderH264 = c.encoderH264
+            encoderHevc = c.encoderHevc
             hevcEnabled = c.hevcMode != "disabled"
             autoRotate = c.autoRotate != "false"
             autoScale = c.autoScale != "false"
@@ -72,9 +76,9 @@ fun SettingsScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "参数配置 (sunshine.conf)",
+                    text = "串流设置",
                     color = TextPrimary,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
@@ -89,6 +93,8 @@ fun SettingsScreen(
             Button(
                 onClick = {
                     val map = mapOf(
+                        "encoder_h264" to encoderH264,
+                        "encoder_hevc" to encoderHevc,
                         "hevc_mode" to if (hevcEnabled) "enabled" else "disabled",
                         "auto_rotate" to autoRotate.toString(),
                         "auto_scale" to autoScale.toString(),
@@ -165,8 +171,8 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("HEVC / H.265 硬编", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("开启后优先使用 HEVC 硬件编码器，显著提升高动态画质", color = TextSecondary, fontSize = 11.sp)
+                        Text("HEVC / H.265", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                        Text("允许客户端请求 HEVC；具体编码器由下方选项决定", color = TextSecondary, fontSize = 11.sp)
                     }
                     Switch(
                         checked = hevcEnabled,
@@ -178,6 +184,10 @@ fun SettingsScreen(
                         )
                     )
                 }
+
+                EncoderChoice("H.264 编码器", encoderH264, config?.encoderOptions.orEmpty().filter { it.mime == "video/avc" }) { encoderH264 = it }
+                EncoderChoice("HEVC / H.265 编码器", encoderHevc, config?.encoderOptions.orEmpty().filter { it.mime == "video/hevc" }) { encoderHevc = it }
+                Text("自动先使用系统默认编码器，启动失败后尝试其他编码器。指定编码器失败时会提示切换，不会自动替换。保存后在下次连接生效。", color = TextSecondary, fontSize = 12.sp)
 
                 Divider(color = CardBorder, thickness = 1.dp)
 
@@ -401,5 +411,29 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun EncoderChoice(label: String, selected: String, options: List<com.alkaidlab.sunshine.data.EncoderCapability>, onSelect: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = TextPrimary, fontSize = 14.sp)
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (selected == "auto") "自动（系统默认优先）" else selected,
+                    modifier = Modifier.weight(1f), color = TextPrimary)
+                Icon(Icons.Default.ArrowDropDown, contentDescription = "选择编码器", tint = PrimaryCyan)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(text = { Text("自动（系统默认优先）") }, onClick = { onSelect("auto"); expanded = false })
+                options.distinctBy { it.name }.forEach { option ->
+                    DropdownMenuItem(text = { Column { Text(option.name); Text(if (option.hardware) "硬件编码器" else "软件编码器", fontSize = 11.sp) } },
+                        onClick = { onSelect(option.name); expanded = false })
+                }
+            }
+        }
+        if (selected != "auto" && options.none { it.name == selected })
+            Text("此设备当前未列出该编码器，请切换选项。", color = AccentOrange, fontSize = 12.sp)
     }
 }

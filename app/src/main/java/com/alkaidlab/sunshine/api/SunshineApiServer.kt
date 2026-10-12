@@ -155,7 +155,10 @@ class SunshineApiServer(
             adapters = adapters,
             port = confMap["port"] ?: "47989",
             webPort = confMap["web_port"] ?: "47990",
-            encoder = "AMediaCodec (${Build.HARDWARE} · $codecTag)",
+            encoder = "AMediaCodec · $codecTag",
+            encoderH264 = confMap["encoder_h264"] ?: "auto",
+            encoderHevc = confMap["encoder_hevc"] ?: "auto",
+            encoderOptions = com.alkaidlab.sunshine.service.EncoderCapabilities.encoders,
             channels = confMap["channels"] ?: "2",
             minBitrate = confMap["min_bitrate"] ?: "5000",
             maxBitrate = confMap["max_bitrate"] ?: "50000",
@@ -196,7 +199,7 @@ class SunshineApiServer(
         }
         SunshineRuntimeManager.getInstance().reloadConfig(context)
         SunshineLogManager.log("CONFIG", "Host settings and native bitrate bounds applied; encoder FPS/codec settings apply to new sessions")
-        jsonResponse(SimpleStatusResponse("true", "码率限制、画面调度与缓冲设置已应用；编码器帧率在下次连接生效，编码模式需空闲重启"))
+        jsonResponse(SimpleStatusResponse("true", "码率限制、画面调度与缓冲设置已应用；编码器选项和帧率在下次连接生效，编码模式需空闲重启"))
     }
 
     private fun handleVideoControl(session: IHTTPSession): Response {

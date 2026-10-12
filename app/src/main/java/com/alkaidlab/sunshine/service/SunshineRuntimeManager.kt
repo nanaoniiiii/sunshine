@@ -52,6 +52,15 @@ class SunshineRuntimeManager private constructor() {
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
 
+    private val _encoderError = MutableStateFlow<String?>(null)
+    val encoderError: StateFlow<String?> = _encoderError.asStateFlow()
+    fun reportEncoderError(error: String) { _encoderError.value = error; SunshineLogManager.log("ENCODER_ERR", error) }
+    fun dismissEncoderError() { _encoderError.value = null }
+    @Volatile var encoderH264: String = "auto"
+        private set
+    @Volatile var encoderHevc: String = "auto"
+        private set
+
     private val _pinRequested = MutableStateFlow<String?>(null)
     val pinRequested: StateFlow<String?> = _pinRequested.asStateFlow()
 
@@ -99,11 +108,14 @@ class SunshineRuntimeManager private constructor() {
     private var prevTxTimeMs: Long = 0L
 
     // Shizuku Input injection reflection
+    private var remoteWake: RemoteInputWakeManager? = null
+    fun onRemoteInput() { remoteWake?.onInput(_isStreaming.value) }
     private var inputManager: Any? = null
     private var injectInputMethod: Method? = null
 
     fun initialize(appContext: Context) {
         this.context = appContext.applicationContext
+        remoteWake = RemoteInputWakeManager(appContext.applicationContext, ::injectWakeKey)
         com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
         reloadConfig(this.context)
         initShizukuInput()
@@ -128,6 +140,9 @@ class SunshineRuntimeManager private constructor() {
                         props[parts[0].trim()] = parts[1].trim()
                     }
                 }
+                encoderH264 = props["encoder_h264"] ?: "auto"
+                encoderHevc = props["encoder_hevc"] ?: "auto"
+                engineClient?.configureEncoders(encoderH264, encoderHevc)
                 hevcEnabled = (props["hevc_mode"] ?: "enabled") != "disabled"
                 autoRotateEnabled = (props["auto_rotate"] ?: "true") != "false"
                 autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
@@ -597,7 +612,8 @@ class SunshineRuntimeManager private constructor() {
                 "audio_buffer" to "bounded stereo PCM; drops oldest on overflow; cleared on idle",
                 "wifi_low_latency" to "requested only while streaming; OS/device decides effectiveness"
             ),
-            video = engineClient?.videoSessions().orEmpty()
+            video = engineClient?.videoSessions().orEmpty(),
+            encoderError = _encoderError.value
         )
     }
 
@@ -756,6 +772,7 @@ class SunshineRuntimeManager private constructor() {
     @Synchronized
     fun onShizukuDisconnected() {
         isBoundViaShizuku = false
+        remoteWake?.reset()
         inputManager = null
         injectInputMethod = null
     }
@@ -804,8 +821,24 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
+    private fun injectWakeKey(): Boolean {
+        if (!isBoundViaShizuku) initShizukuInput()
+        if (!isBoundViaShizuku) return false
+        val im = inputManager ?: return false
+        val method = injectInputMethod ?: return false
+        return try {
+            val now = SystemClock.uptimeMillis()
+            listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP).all { action ->
+                val event = KeyEvent(now, now, action, KeyEvent.KEYCODE_WAKEUP, 0, 0,
+                    KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
+                method.invoke(im, event, 0) == true
+            }
+        } catch (_: Exception) { false }
+    }
+
     fun injectMotionEvent(event: MotionEvent) {
         if (SunshineEngineBridge.injectMotion(event)) return
+        onRemoteInput()
         if (!isBoundViaShizuku) {
             initShizukuInput()
         }
@@ -832,6 +865,7 @@ class SunshineRuntimeManager private constructor() {
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {
         if (SunshineEngineBridge.injectKeyboard(keyCode, isDown, modifiers)) return
+        onRemoteInput()
         if (inputManager == null) {
             initShizukuInput()
         }

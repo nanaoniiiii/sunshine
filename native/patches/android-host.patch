@@ -1,8 +1,8 @@
 diff --git a/app-mirror/src/main/cpp/CMakeLists.txt b/app-mirror/src/main/cpp/CMakeLists.txt
-index e741966..5e58dee 100644
+index e741966..72668dd 100644
 --- a/app-mirror/src/main/cpp/CMakeLists.txt
 +++ b/app-mirror/src/main/cpp/CMakeLists.txt
-@@ -51,4 +51,25 @@ target_link_libraries(
+@@ -51,4 +51,31 @@ target_link_libraries(
          crypto
          simple-web-server
          ${Boost_LIBRARIES}
@@ -15,6 +15,12 @@ index e741966..5e58dee 100644
 +
 +option(SUNSHINE_ANDROID_TESTS "Build on-device native audio regression tests" OFF)
 +if(SUNSHINE_ANDROID_TESTS)
++    add_executable(sunshine_queue_test "${SUNSHINE_ANDROID_OVERLAY}/tests/fresh_video_queue_test.cpp")
++    target_compile_features(sunshine_queue_test PRIVATE cxx_std_17)
++    target_compile_options(sunshine_queue_test PRIVATE -UNDEBUG)
++    add_executable(sunshine_encoder_test "${SUNSHINE_ANDROID_OVERLAY}/tests/encoder_selection_test.cpp")
++    target_compile_features(sunshine_encoder_test PRIVATE cxx_std_17)
++    target_compile_options(sunshine_encoder_test PRIVATE -UNDEBUG)
 +    add_executable(sunshine_video_test "${SUNSHINE_ANDROID_OVERLAY}/tests/video_policy_test.cpp")
 +    add_executable(sunshine_network_test "${SUNSHINE_ANDROID_OVERLAY}/tests/network_policy_test.cpp")
 +    target_compile_features(sunshine_network_test PRIVATE cxx_std_17)
@@ -79,6 +85,28 @@ index 4f93965..b9e1cfd 100644
  
      if(CMAKE_VERSION VERSION_LESS "3.24.0")
          FetchContent_Declare(
+diff --git a/app-mirror/src/main/cpp/input.cpp b/app-mirror/src/main/cpp/input.cpp
+index 6b19306..068e1c4 100644
+--- a/app-mirror/src/main/cpp/input.cpp
++++ b/app-mirror/src/main/cpp/input.cpp
+@@ -1550,6 +1550,17 @@ sunshine_callbacks::callJavaOnKeyboard(VKEY_MENU, true, flags);
+     // Print the final input packet
+     input::print((void *) payload);
+ 
++    // Only user input requests display wake. Keepalive/controller telemetry never does.
++    switch (util::endian::little(payload->magic)) {
++      case MOUSE_MOVE_REL_MAGIC_GEN5: case MOUSE_MOVE_ABS_MAGIC:
++      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5: case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
++      case SCROLL_MAGIC_GEN5: case SS_HSCROLL_MAGIC:
++      case KEY_DOWN_EVENT_MAGIC: case KEY_UP_EVENT_MAGIC: case UTF8_TEXT_EVENT_MAGIC:
++      case SS_TOUCH_MAGIC: case SS_PEN_MAGIC:
++        sunshine_callbacks::callJavaOnRemoteInput();
++        break;
++      default: break;
++    }
+     // Send the batched input to the OS
+     switch (util::endian::little(payload->magic)) {
+       case MOUSE_MOVE_REL_MAGIC_GEN5:
 diff --git a/app-mirror/src/main/cpp/platform/common.cpp b/app-mirror/src/main/cpp/platform/common.cpp
 index d221bf9..35718e6 100644
 --- a/app-mirror/src/main/cpp/platform/common.cpp
@@ -148,7 +176,7 @@ index d221bf9..35718e6 100644
      }
  
 diff --git a/app-mirror/src/main/cpp/stream.cpp b/app-mirror/src/main/cpp/stream.cpp
-index 0a514ea..db809cd 100644
+index 0a514ea..25c56da 100644
 --- a/app-mirror/src/main/cpp/stream.cpp
 +++ b/app-mirror/src/main/cpp/stream.cpp
 @@ -34,6 +34,7 @@ extern "C" {
@@ -188,7 +216,7 @@ index 0a514ea..db809cd 100644
  
    void controlBroadcastThread(control_server_t *server) {
      server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
-+      if(session->control.peer) sunshine_callbacks::networkRtt(session,session->control.peer->roundTripTime);
++      if(session->control.peer && session->control.peer->lastReceiveTime && enet_uint32(enet_time_get()-session->control.peer->lastReceiveTime)<=5000) sunshine_callbacks::networkRtt(session,session->control.peer->roundTripTime);
        BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
      });
  
@@ -268,7 +296,19 @@ index 0a514ea..db809cd 100644
        auto type = *(std::uint16_t *) plaintext.data();
        std::string_view next_payload {(char *) plaintext.data() + 4, plaintext.size() - 4};
  
-@@ -1256,8 +1278,6 @@ namespace stream {
+@@ -1234,9 +1256,10 @@ namespace stream {
+     }
+   }
+ 
++  static sunshine_android::FreshVideoQueue<video::packet_t> videoQueue{sunshine_callbacks::videoQueueMetrics};
+   void videoBroadcastThread(udp::socket &sock) {
+     auto shutdown_event = mail::man->event<bool>(mail::broadcast_shutdown);
+-    auto packets = mail::man->queue<video::packet_t>(mail::video_packets);
++    auto* packets = &videoQueue;
+     auto timebase = boost::posix_time::microsec_clock::universal_time();
+ 
+     // Video traffic is sent on this thread
+@@ -1256,16 +1279,18 @@ namespace stream {
        return;
      }
  
@@ -277,7 +317,11 @@ index 0a514ea..db809cd 100644
      while (auto packet = packets->pop()) {
        if (shutdown_event->peek()) {
          break;
-@@ -1266,6 +1286,7 @@ namespace stream {
+       }
+ 
++      auto send_started=std::chrono::steady_clock::now();
++      uint64_t accepted_data=0,accepted_parity=0,accepted_bytes=0,send_errors=0;
++      double fec_ms=0,pacing_ms=0,socket_ms=0;
        frame_network_latency_logger.first_point_now();
  
        auto session = (session_t *) packet->channel_data;
@@ -285,7 +329,7 @@ index 0a514ea..db809cd 100644
        auto lowseq = session->video.lowseq;
  
        std::string_view payload {(char *) packet->data(), packet->data_size()};
-@@ -1308,7 +1329,8 @@ namespace stream {
+@@ -1308,7 +1333,8 @@ namespace stream {
          frame_header.frame_processing_latency = 0;
        }
  
@@ -295,18 +339,22 @@ index 0a514ea..db809cd 100644
  
        // Insert space for packet headers
        auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
-@@ -1371,7 +1393,9 @@ namespace stream {
+@@ -1371,7 +1397,13 @@ namespace stream {
  
        try {
          // Use around 80% of 1Gbps          1Gbps            percent    ms     packet      byte
 -        size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
-+        const int pacing_kbps=network_policy.second;
 +        const size_t wire_packet_bytes=blocksize+(session->video.cipher?sizeof(video_packet_enc_prefix_t):0)+48;
++        const uint64_t estimated_data=(payload.size()+blocksize-1)/blocksize;
++        const uint64_t estimated_packets=(estimated_data*(100+fecPercentage)+99)/100+
++            fec_blocks_needed*uint64_t(session->config.minRequiredFecPackets+1);
++        const int pacing_kbps=sunshine_android::keyframe_pacing_kbps(network_policy.second,
++            estimated_packets*wire_packet_bytes,packet->is_idr());
 +        size_t ratecontrol_packets_in_1ms=std::clamp<size_t>(pacing_kbps/8/wire_packet_bytes,1,16);
  
          // Send less than 64K in a single batch.
          // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
-@@ -1382,9 +1406,10 @@ namespace stream {
+@@ -1382,9 +1414,10 @@ namespace stream {
          // unusually small packet size.
          // Generic Segmentation Offload on Linux can't do more than 64.
          send_batch_size = std::min<size_t>(64, send_batch_size);
@@ -318,7 +366,17 @@ index 0a514ea..db809cd 100644
  
          size_t ratecontrol_frame_packets_sent = 0;
          size_t ratecontrol_group_packets_sent = 0;
-@@ -1435,6 +1460,7 @@ namespace stream {
+@@ -1414,7 +1447,9 @@ namespace stream {
+ 
+           frame_fec_latency_logger.first_point_now();
+           // If video encryption is enabled, we allocate space for the encryption header before each shard
++          auto fec_started=std::chrono::steady_clock::now();
+           auto shards = fec::encode(current_payload, blocksize, fecPercentage, session->config.minRequiredFecPackets, session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
++          fec_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-fec_started).count();
+           frame_fec_latency_logger.second_point_now_and_log();
+ 
+           auto peer_address = session->video.peer.address();
+@@ -1435,6 +1470,7 @@ namespace stream {
  
            // set FEC info now that we know for sure what our percentage will be for this frame
            for (auto x = 0; x < shards.size(); ++x) {
@@ -326,7 +384,7 @@ index 0a514ea..db809cd 100644
              auto *inspect = (video_packet_raw_t *) shards.data(x);
  
              // RTP video timestamps use a 90 KHz clock
-@@ -1481,14 +1507,16 @@ namespace stream {
+@@ -1481,14 +1517,18 @@ namespace stream {
                // to account for the last send_batch() of the previous frame.
                if (ratecontrol_group_packets_sent >= ratecontrol_packets_in_1ms ||
                    ratecontrol_frame_packets_sent == 0) {
@@ -336,6 +394,7 @@ index 0a514ea..db809cd 100644
 +                auto due = ratecontrol_frame_start+std::chrono::nanoseconds(sunshine_android::pacing_delay_ns(ratecontrol_frame_packets_sent,wire_packet_bytes,pacing_kbps));
  
                  auto now = std::chrono::steady_clock::now();
++                auto pacing_started=now;
                  if (now < due) {
 -                  timer->sleep_for(due - now);
 +                  while(now<due && !session->shutdown_event->peek()) {
@@ -343,12 +402,26 @@ index 0a514ea..db809cd 100644
 +                    now=std::chrono::steady_clock::now();
 +                  }
                  }
++                pacing_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-pacing_started).count();
 +                if(session->shutdown_event->peek()) break;
  
                  ratecontrol_group_packets_sent = 0;
                }
-@@ -1502,11 +1530,11 @@ namespace stream {
-               if (!platf::send_batch(batch_info)) {
+@@ -1499,14 +1539,23 @@ namespace stream {
+ 
+               frame_send_batch_latency_logger.first_point_now();
+               // Use a batched send if it's supported on this platform
+-              if (!platf::send_batch(batch_info)) {
++              auto socket_started=std::chrono::steady_clock::now();
++              bool batch_ok=platf::send_batch(batch_info);
++              auto count_accepted=[&](size_t first,size_t count) {
++                size_t data=first<shards.data_shards?std::min(count,size_t(shards.data_shards)-first):0;
++                accepted_data+=data; accepted_parity+=count-data; accepted_bytes+=count*(shards.blocksize+shards.prefixsize);
++              };
++              // send_batch advances offset/count for the accepted prefix.
++              size_t prefix=current_batch_size-batch_info.block_count;
++              count_accepted(next_shard_to_send,prefix);
++              if (!batch_ok) {
                  // Batched send is not available, so send each packet individually
                  BOOST_LOG(verbose) << "Falling back to unbatched send"sv;
 -                for (auto y = 0; y < current_batch_size; y++) {
@@ -362,7 +435,20 @@ index 0a514ea..db809cd 100644
                      shards.blocksize,
                      (uintptr_t) sock.native_handle(),
                      peer_address,
-@@ -1526,9 +1554,7 @@ namespace stream {
+@@ -1514,9 +1563,11 @@ namespace stream {
+                     session->localAddress,
+                   };
+ 
+-                  platf::send(send_info);
++                  if(platf::send(send_info)) count_accepted(batch_info.block_offset+y,1);
++                  else ++send_errors;
+                 }
+               }
++              socket_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-socket_started).count();
+               frame_send_batch_latency_logger.second_point_now_and_log();
+ 
+               ratecontrol_group_packets_sent += current_batch_size;
+@@ -1526,9 +1577,7 @@ namespace stream {
            }
  
            // remember this in case the next frame comes immediately
@@ -373,34 +459,84 @@ index 0a514ea..db809cd 100644
  
            frame_network_latency_logger.second_point_now_and_log();
  
-@@ -1822,7 +1848,7 @@ namespace stream {
+@@ -1544,9 +1593,12 @@ namespace stream {
  
-       currentSessionVideoQueue = mail::man->queue<video::packet_t>(mail::video_packets);
+         session->video.lowseq = lowseq;
+       } catch (const std::exception &e) {
++        ++send_errors;
+         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
+-        std::this_thread::sleep_for(100ms);
+       }
++      sunshine_callbacks::videoSendMetrics(session,accepted_data,accepted_parity,accepted_bytes,send_errors,fec_ms,pacing_ms,socket_ms,
++          std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-send_started).count());
++      if(send_errors) videoQueue.invalidate(session);
+     }
+ 
+     shutdown_event->raise(true);
+@@ -1706,6 +1758,7 @@ namespace stream {
+ 
+     ctx.message_queue_queue = std::make_shared<message_queue_queue_t::element_type>(30);
+ 
++    videoQueue.reset();
+     ctx.video_thread = std::thread {videoBroadcastThread, std::ref(ctx.video_sock)};
+     ctx.audio_thread = std::thread {audioBroadcastThread, std::ref(ctx.audio_sock)};
+     ctx.control_thread = std::thread {controlBroadcastThread, &ctx.control_server};
+@@ -1725,6 +1778,7 @@ namespace stream {
+ 
+     // Minimize delay stopping video/audio threads
+     video_packets->stop();
++    videoQueue.stop();
+     audio_packets->stop();
+ 
+     ctx.message_queue_queue->stop();
+@@ -1802,7 +1856,7 @@ namespace stream {
+     return -1;
+   }
+ 
+-    safe::mail_raw_t::queue_t<video::packet_t> currentSessionVideoQueue;
++
+   void videoThread(session_t *session) {
+ //    auto fg = util::fail_guard([&]() {
+ //      session::stop(*session);
+@@ -1820,21 +1874,22 @@ namespace stream {
+     auto address = session->video.peer.address();
+     session->video.qos = platf::enable_socket_qos(ref->video_sock.native_handle(), address, session->video.peer.port(), platf::qos_data_type_e::video, session->config.videoQosType != 0);
+ 
+-      currentSessionVideoQueue = mail::man->queue<video::packet_t>(mail::video_packets);
++
      BOOST_LOG(debug) << "Start capturing Video"sv;
 -    sunshine_callbacks::captureVideoLoop(session, session->mail, session->config.monitor, session->config.audio);
 +    sunshine_callbacks::captureVideoLoop(session, session->mail, session->config.monitor, session->config.audio,config::stream.fec_percentage);
  //    video::capture(session->mail, session->config.monitor, session);
    }
  
-@@ -1834,6 +1860,7 @@ namespace stream {
+     void postFrame(std::vector<uint8_t> &&frame_data, int64_t frame_index, bool idr, void* channel_data)  {
+-        if(currentSessionVideoQueue) {
++        if(!static_cast<session_t*>(channel_data)->shutdown_event->peek()) {
+             auto packet = std::make_unique<video::packet_raw_generic>(
+                     std::move(frame_data),
+                     frame_index,
                      idr
              );
              packet->channel_data = channel_data;
+-            currentSessionVideoQueue->raise(std::move(packet));
 +            packet->channel_owner=static_cast<session_t*>(channel_data)->shared_from_this();
-             currentSessionVideoQueue->raise(std::move(packet));
++            auto size=packet->data_size(); videoQueue.push(std::move(packet),channel_data,size,idr);
          }
      }
-@@ -1922,6 +1949,9 @@ namespace stream {
+ 
+@@ -1922,6 +1977,10 @@ namespace stream {
        }
  
        BOOST_LOG(debug) << "Session ended"sv;
 +      // Release the broadcast reference on the joining thread. The sender may
 +      // own the last queued packet/session; its destruction must not join itself.
++      videoQueue.remove(&session);
 +      session.broadcast_ref = {};
      }
  
      int start(session_t &session, const std::string &addr_string) {
-@@ -2039,4 +2069,4 @@ namespace stream {
+@@ -2039,4 +2098,4 @@ namespace stream {
        return session;
      }
    }  // namespace session
@@ -408,7 +544,7 @@ index 0a514ea..db809cd 100644
 \ No newline at end of file
 +}  // namespace stream
 diff --git a/app-mirror/src/main/cpp/sunshine.cpp b/app-mirror/src/main/cpp/sunshine.cpp
-index 529c31e..c2f52bf 100644
+index 529c31e..ad39cee 100644
 --- a/app-mirror/src/main/cpp/sunshine.cpp
 +++ b/app-mirror/src/main/cpp/sunshine.cpp
 @@ -1,5 +1,10 @@
@@ -431,7 +567,7 @@ index 529c31e..c2f52bf 100644
  #include "video_colorspace.h"
  
  #include <media/NdkMediaCodec.h>
-@@ -23,9 +28,44 @@ extern "C" {
+@@ -23,9 +28,50 @@ extern "C" {
  
  static std::unique_ptr<logging::deinit_t> deinit;
  static JavaVM* jvm = nullptr;
@@ -444,6 +580,12 @@ index 529c31e..c2f52bf 100644
 +}
 +JNIEXPORT jboolean JNICALL Java_com_connect_1screen_mirror_job_SunshineServer_controlVideo(JNIEnv*, jclass, jlong id, jint operation, jint value) {
 +    return sunshine_android::control_video(id, operation, value);
++}
++
++JNIEXPORT void JNICALL Java_com_connect_1screen_mirror_job_SunshineServer_configureEncoders(JNIEnv* env,jclass,jstring avc,jstring hevc,jobjectArray avc_names,jobjectArray hevc_names) {
++    auto text=[&](jstring value) { if(!value) return std::string("auto"); auto raw=env->GetStringUTFChars(value,nullptr); if(!raw) return std::string("auto"); std::string result(raw); env->ReleaseStringUTFChars(value,raw); return result; };
++    auto list=[&](jobjectArray values) { std::vector<std::string> result; if(values) for(jsize i=0;i<env->GetArrayLength(values);++i) { auto value=(jstring)env->GetObjectArrayElement(values,i); if(value) { result.push_back(text(value)); env->DeleteLocalRef(value); } } return result; };
++    sunshine_android::configure_encoders(text(avc),text(hevc),list(avc_names),list(hevc_names));
 +}
 +
 +// Helpers must not detach the video thread or invalidate its Surface local reference.
@@ -477,7 +619,7 @@ index 529c31e..c2f52bf 100644
  
  // 声明全局变量来存储音频录制状态
  static std::thread audioRecordingThread;
-@@ -51,45 +91,45 @@ Java_com_connect_1screen_mirror_job_SunshineServer_start(JNIEnv *env, jclass cla
+@@ -51,45 +97,45 @@ Java_com_connect_1screen_mirror_job_SunshineServer_start(JNIEnv *env, jclass cla
      } else {
          BOOST_LOG(error) << "无法在启动时找到 SunshineServer 类"sv;
      }
@@ -531,7 +673,7 @@ index 529c31e..c2f52bf 100644
      std::thread httpThread {nvhttp::start};
      rtsp_stream::rtpThread();
      httpThread.join();
-@@ -135,88 +175,64 @@ Java_com_connect_1screen_mirror_job_SunshineServer_cleanup(JNIEnv *env, jclass c
+@@ -135,88 +181,64 @@ Java_com_connect_1screen_mirror_job_SunshineServer_cleanup(JNIEnv *env, jclass c
      if (sunshineServerClass != nullptr) {
          env->DeleteGlobalRef(sunshineServerClass);
          sunshineServerClass = nullptr;
@@ -655,7 +797,7 @@ index 529c31e..c2f52bf 100644
  }
  
  JNIEXPORT void JNICALL
-@@ -244,20 +260,54 @@ Java_com_connect_1screen_mirror_job_SunshineServer_exitServer(JNIEnv *env, jclas
+@@ -244,20 +266,70 @@ Java_com_connect_1screen_mirror_job_SunshineServer_exitServer(JNIEnv *env, jclas
  }
  
  namespace sunshine_callbacks {
@@ -676,7 +818,8 @@ index 529c31e..c2f52bf 100644
 +        std::lock_guard lock(sunshine_android::video_mutex);
 +        for(auto& [id,s]:sunshine_android::video_sessions) if(s->channel==channel) {
 +            auto now=sunshine_android::video_now_ms();
-+            s->network.rtt=milliseconds; s->network.rtt_at=now;
++            auto backoff=s->network.observe_rtt(milliseconds,s->applied,sunshine_android::video_policy.floor(s->negotiated),now,s->desired==s->applied);
++            if(backoff) { s->desired=s->override_kbps=backoff; ++s->revision; }
 +            if(s->desired==s->applied && sunshine_android::VideoClock::now()-s->last_output<std::chrono::seconds(2)) {
 +                int ceiling=sunshine_android::video_policy.ceiling(s->negotiated);
 +                auto target=s->network.recover(s->applied,ceiling,now);
@@ -692,6 +835,21 @@ index 529c31e..c2f52bf 100644
 +            return {s->network.fec,sunshine_android::pacing_budget(std::max(1,std::min(s->network.total_budget,sunshine_android::nominal_budget(s->applied,s->network.fec))))};
 +        }
 +        return {default_fec,sunshine_android::pacing_budget(std::max(1,sunshine_android::nominal_budget(negotiated_kbps,default_fec)))};
++    }
++    void videoQueueMetrics(void* channel,sunshine_android::VideoQueueStats stats,bool idr,double delay) {
++        sunshine_android::record_queue(channel,stats,idr,delay);
++    }
++    void videoSendMetrics(void* channel,uint64_t data,uint64_t parity,uint64_t bytes,uint64_t errors,double fec,double pacing,double send,double total) {
++        sunshine_android::record_send(channel,data,parity,bytes,errors,fec,pacing,send,total);
++    }
++    void callJavaOnRemoteInput() {
++        if (!jvm || !sunshineServerClass) return;
++        ScopedJniAttachment attachment(jvm);
++        auto* env = attachment.env;
++        if (!env) return;
++        auto method = env->GetStaticMethodID(sunshineServerClass, "onRemoteInput", "()V");
++        if (method) env->CallStaticVoidMethod(sunshineServerClass, method);
++        if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
 +    }
      void callJavaOnPinRequested() {
          if (jvm == nullptr) {
@@ -714,7 +872,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -265,7 +315,7 @@ namespace sunshine_callbacks {
+@@ -265,7 +337,7 @@ namespace sunshine_callbacks {
          jmethodID onPinRequestedMethod = env->GetStaticMethodID(sunshineServerClass, "onPinRequested", "()V");
          if (onPinRequestedMethod == nullptr) {
              BOOST_LOG(error) << "找不到 onPinRequested 方法"sv;
@@ -723,7 +881,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -276,7 +326,7 @@ namespace sunshine_callbacks {
+@@ -276,7 +348,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -732,7 +890,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void createVirtualDisplay(JNIEnv *env, jint width, jint height, jint frameRate, jint packetDuration, jobject surface, jboolean shouldMute) {
-@@ -293,7 +343,7 @@ namespace sunshine_callbacks {
+@@ -293,7 +365,7 @@ namespace sunshine_callbacks {
          jmethodID createVirtualDisplayMethod = env->GetStaticMethodID(sunshineServerClass, "createVirtualDisplay", "(IIIILandroid/view/Surface;Z)V");
          if (createVirtualDisplayMethod == nullptr) {
              BOOST_LOG(error) << "找不到 createVirtualDisplay 方法"sv;
@@ -741,7 +899,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -304,13 +354,13 @@ namespace sunshine_callbacks {
+@@ -304,13 +376,13 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -759,7 +917,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -327,7 +377,7 @@ namespace sunshine_callbacks {
+@@ -327,7 +399,7 @@ namespace sunshine_callbacks {
          jmethodID stopVirtualDisplayMethod = env->GetStaticMethodID(sunshineServerClass, "stopVirtualDisplay", "()V");
          if (stopVirtualDisplayMethod == nullptr) {
              BOOST_LOG(error) << "找不到 stopVirtualDisplay 方法"sv;
@@ -768,7 +926,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -338,7 +388,7 @@ namespace sunshine_callbacks {
+@@ -338,7 +410,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -777,7 +935,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void showEncoderError(const char* errorMessage) {
-@@ -347,9 +397,9 @@ namespace sunshine_callbacks {
+@@ -347,9 +419,9 @@ namespace sunshine_callbacks {
              return;
          }
  
@@ -790,7 +948,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -357,7 +407,7 @@ namespace sunshine_callbacks {
+@@ -357,7 +429,7 @@ namespace sunshine_callbacks {
          jmethodID showErrorMethod = env->GetStaticMethodID(sunshineServerClass, "showEncoderError", "(Ljava/lang/String;)V");
          if (showErrorMethod == nullptr) {
              BOOST_LOG(error) << "找不到 showEncoderError 方法"sv;
@@ -799,7 +957,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -370,17 +420,18 @@ namespace sunshine_callbacks {
+@@ -370,17 +442,18 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -824,7 +982,7 @@ index 529c31e..c2f52bf 100644
          auto idr_events = mail->event<bool>(mail::idr);
          // 添加更详细的客户端配置日志
          BOOST_LOG(info) << "客户端请求视频配置:"sv;
-@@ -390,7 +441,7 @@ namespace sunshine_callbacks {
+@@ -390,7 +463,7 @@ namespace sunshine_callbacks {
          BOOST_LOG(info) << "  - 色度采样: "sv << (config.chromaSamplingType == 1 ? "YUV 4:4:4" : "YUV 4:2:0");
          BOOST_LOG(info) << "  - 动态范围: "sv << (config.dynamicRange ? "HDR" : "SDR");
          BOOST_LOG(info) << "  - 编码器色彩空间模式: 0x"sv << std::hex << config.encoderCscMode << std::dec;
@@ -833,7 +991,7 @@ index 529c31e..c2f52bf 100644
          // 获取并记录详细的色彩空间信息
          bool isHdr = false;
          video::sunshine_colorspace_t colorspace = colorspace_from_client_config(config, isHdr);
-@@ -398,16 +449,18 @@ namespace sunshine_callbacks {
+@@ -398,20 +471,22 @@ namespace sunshine_callbacks {
          BOOST_LOG(info) << "  - 色彩空间: "sv << static_cast<int>(colorspace.colorspace);
          BOOST_LOG(info) << "  - 位深度: "sv << colorspace.bit_depth;
          BOOST_LOG(info) << "  - 色彩范围: "sv << (colorspace.full_range ? "Full" : "Limited");
@@ -851,11 +1009,19 @@ index 529c31e..c2f52bf 100644
          AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, config.width);
          AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, config.height);
 -        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_BIT_RATE, config.bitrate * 1000);
+-        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_OPERATING_RATE, encodeFrameRate);
+-        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_CAPTURE_RATE, encodeFrameRate);
+-        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, encodeFrameRate);
+-        AMediaFormat_setInt32(format, "max-fps-to-encoder", encodeFrameRate);
 +        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_BIT_RATE, initialBitrate * 1000);
-         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_OPERATING_RATE, encodeFrameRate);
-         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_CAPTURE_RATE, encodeFrameRate);
-         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, encodeFrameRate);
-@@ -447,7 +500,7 @@ namespace sunshine_callbacks {
++        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_OPERATING_RATE, float(encodeFrameRate));
++        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_CAPTURE_RATE, float(encodeFrameRate));
++        AMediaFormat_setFloat(format, AMEDIAFORMAT_KEY_FRAME_RATE, float(encodeFrameRate));
++        AMediaFormat_setFloat(format, "max-fps-to-encoder", float(encodeFrameRate));
+         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 3); // 关键帧间隔(秒)
+         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, 2130708361); // COLOR_FormatSurface
+         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_LATENCY, 0); // 最低延迟
+@@ -447,7 +522,7 @@ namespace sunshine_callbacks {
          }
  
          // 设置色彩范围
@@ -864,7 +1030,7 @@ index 529c31e..c2f52bf 100644
              colorspace.full_range ? 1 : 2); // 1=FULL, 2=LIMITED
  
          // 设置位深度
-@@ -462,7 +515,7 @@ namespace sunshine_callbacks {
+@@ -462,100 +537,83 @@ namespace sunshine_callbacks {
          AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_STANDARD, &colorStandard);
          AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_RANGE, &colorRange);
          AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_TRANSFER, &colorTransfer);
@@ -873,10 +1039,10 @@ index 529c31e..c2f52bf 100644
          BOOST_LOG(info) << "最终媒体格式颜色配置:"sv;
          BOOST_LOG(info) << "  - COLOR_STANDARD: "sv << colorStandard;
          BOOST_LOG(info) << "  - COLOR_RANGE: "sv << colorRange << (colorRange == 1 ? " (FULL)" : " (LIMITED)");
-@@ -470,22 +523,12 @@ namespace sunshine_callbacks {
+         BOOST_LOG(info) << "  - COLOR_TRANSFER: "sv << colorTransfer;
  
-         // 创建编码器
-         AMediaCodec *codec = AMediaCodec_createEncoderByType(config.videoFormat == 1 ? "video/hevc" : "video/avc");
+-        // 创建编码器
+-        AMediaCodec *codec = AMediaCodec_createEncoderByType(config.videoFormat == 1 ? "video/hevc" : "video/avc");
 -        if (!codec) {
 -           // 创建编码器
 -            AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1920);
@@ -887,76 +1053,89 @@ index 529c31e..c2f52bf 100644
 -            AMediaFormat_setInt32(format, "max-fps-to-encoder", 60);
 -            codec = AMediaCodec_createEncoderByType("video/avc");
 -        }
-         if (!codec) {
-             BOOST_LOG(error) << "无法创建编码器"sv;
-             AMediaFormat_delete(format);
-             return;
-         }
+-        if (!codec) {
+-            BOOST_LOG(error) << "无法创建编码器"sv;
+-            AMediaFormat_delete(format);
+-            return;
+-        }
 -        
-+
-         // 配置编码器
-         media_status_t status = AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
-         if (status != AMEDIA_OK) {
-@@ -496,7 +539,7 @@ namespace sunshine_callbacks {
-             AMediaFormat_delete(format);
-             return;
-         }
+-        // 配置编码器
+-        media_status_t status = AMediaCodec_configure(codec, format, nullptr, nullptr, AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
+-        if (status != AMEDIA_OK) {
+-            std::string errorMsg = "无法配置编码器，错误码: " + std::to_string(status);
+-            BOOST_LOG(error) << errorMsg;
+-            showEncoderError(errorMsg.c_str());
+-            AMediaCodec_delete(codec);
+-            AMediaFormat_delete(format);
+-            return;
+-        }
 -        
-+
-         // 获取输入 Surface
-         ANativeWindow* inputSurface;
-         media_status_t surfaceStatus = AMediaCodec_createInputSurface(codec, &inputSurface);
-@@ -506,7 +549,7 @@ namespace sunshine_callbacks {
-             AMediaFormat_delete(format);
-             return;
-         }
+-        // 获取输入 Surface
+-        ANativeWindow* inputSurface;
+-        media_status_t surfaceStatus = AMediaCodec_createInputSurface(codec, &inputSurface);
+-        if (surfaceStatus != AMEDIA_OK) {
+-            BOOST_LOG(error) << "无法创建输入Surface，错误码: "sv << surfaceStatus;
+-            AMediaCodec_delete(codec);
+-            AMediaFormat_delete(format);
+-            return;
+-        }
 -        
-+
-         // 将 ANativeWindow 转换为 Java Surface 对象并创建虚拟显示
-         if (jvm == nullptr) {
-             BOOST_LOG(error) << "JVM 指针为空，无法创建 Surface"sv;
-@@ -515,12 +558,12 @@ namespace sunshine_callbacks {
-             AMediaFormat_delete(format);
-             return;
-         }
+-        // 将 ANativeWindow 转换为 Java Surface 对象并创建虚拟显示
+-        if (jvm == nullptr) {
+-            BOOST_LOG(error) << "JVM 指针为空，无法创建 Surface"sv;
+-            ANativeWindow_release(inputSurface);
+-            AMediaCodec_delete(codec);
+-            AMediaFormat_delete(format);
+-            return;
+-        }
 -        
-+
-         // 将 ANativeWindow 转换为 Java Surface 对象
-         jobject javaSurface = ANativeWindow_toSurface(env, inputSurface);
-         if (javaSurface == nullptr) {
-             BOOST_LOG(error) << "无法将 ANativeWindow 转换为 Surface"sv;
+-        // 将 ANativeWindow 转换为 Java Surface 对象
+-        jobject javaSurface = ANativeWindow_toSurface(env, inputSurface);
+-        if (javaSurface == nullptr) {
+-            BOOST_LOG(error) << "无法将 ANativeWindow 转换为 Surface"sv;
 -            jvm->DetachCurrentThread();
-+
-             ANativeWindow_release(inputSurface);
-             AMediaCodec_delete(codec);
-             AMediaFormat_delete(format);
-@@ -534,28 +577,58 @@ namespace sunshine_callbacks {
-         } else {
-             BOOST_LOG(info) << "音频配置: 声音将在客户端(Moonlight)播放"sv;
-         }
--        
-+
-         // 调用 createVirtualDisplay 方法，传递 shouldMute 参数
--        createVirtualDisplay(env, config.width, config.height, config.framerate, audioConfig.packetDuration, javaSurface, shouldMute);
--        
-+
-+
-         // 启动编码器
-         status = AMediaCodec_start(codec);
-         if (status != AMEDIA_OK) {
-             BOOST_LOG(error) << "无法启动编码器，错误码: "sv << status;
-             env->DeleteLocalRef(javaSurface);
--            jvm->DetachCurrentThread();
-+
-             ANativeWindow_release(inputSurface);
-             AMediaCodec_delete(codec);
-             AMediaFormat_delete(format);
-             return;
-         }
--        
-+
+-            ANativeWindow_release(inputSurface);
+-            AMediaCodec_delete(codec);
+-            AMediaFormat_delete(format);
+-            return;
+-        }
++        // User selection is immutable for this connection. Auto tries the actual
++        // platform default first, then the remaining enumerated names in order.
++        auto options=sunshine_android::encoder_options(config.videoFormat==1);
++        AMediaCodec* codec=nullptr; ANativeWindow* inputSurface=nullptr; jobject javaSurface=nullptr;
++        auto selected=sunshine_android::select_encoder(options.first,options.second,[&](const std::string& name) {
++            sunshine_android::EncoderAttempt result;
++            auto candidate=name.empty()?AMediaCodec_createEncoderByType(config.videoFormat==1?"video/hevc":"video/avc"):AMediaCodec_createCodecByName(name.c_str());
++            if(!candidate) { result.error="create failed"; return result; }
++            char* actual=nullptr;
++            if(AMediaCodec_getName(candidate,&actual)==AMEDIA_OK && actual) { result.actual=actual; AMediaCodec_releaseName(candidate,actual); }
++            ANativeWindow* surface=nullptr; jobject java=nullptr; bool started=false;
++            auto status=AMediaCodec_configure(candidate,format,nullptr,nullptr,AMEDIACODEC_CONFIGURE_FLAG_ENCODE);
++            std::string stage="configure";
++            if(status==AMEDIA_OK) { stage="input Surface"; status=AMediaCodec_createInputSurface(candidate,&surface); }
++            if(status==AMEDIA_OK && surface) {
++                java=ANativeWindow_toSurface(env,surface);
++                if(env->ExceptionCheck()) env->ExceptionClear();
++                if(!java) { stage="Java Surface"; status=AMEDIA_ERROR_UNKNOWN; }
++            }
++            if(status==AMEDIA_OK && java) { stage="start"; status=AMediaCodec_start(candidate); started=status==AMEDIA_OK; }
++            if(status==AMEDIA_OK && started && java && surface) {
++                codec=candidate; inputSurface=surface; javaSurface=java; result.success=true; return result;
++            }
++            result.error=stage+" failed ("+std::to_string(status)+")";
++            BOOST_LOG(warning) << "Encoder attempt " << (name.empty()?"default":name) << ": " << result.error;
++            if(started) AMediaCodec_stop(candidate);
++            if(java) env->DeleteLocalRef(java);
++            if(surface) ANativeWindow_release(surface);
++            AMediaCodec_delete(candidate); return result;
++        });
++        if(!selected.success) {
++            std::string error="编码器 "+options.first+" 启动失败："+selected.error+"。请在设置中切换编码器选项后重新连接。";
++            showEncoderError(error.c_str()); AMediaFormat_delete(format); return;
++        }
 +        auto video_session = std::make_shared<sunshine_android::VideoSession>();
 +        video_session->channel=channel_data;
++        video_session->encoder_choice=options.first; video_session->encoder_attempts=selected.attempts;
 +        video_session->network.initialize(config.bitrate,fec_percentage);
 +        video_session->tid = gettid();
 +        video_session->negotiated = config.bitrate;
@@ -973,7 +1152,30 @@ index 529c31e..c2f52bf 100644
 +        sunshine_android::register_video(video_session);
 +        auto registry_guard = util::fail_guard([&] { sunshine_android::unregister_video(video_session->id); });
 +        createVirtualDisplay(env, config.width, config.height, config.framerate, audioConfig.packetDuration, javaSurface, true);
-+
+ 
+-        bool shouldMute = true;
+-        if (audioConfig.flags[audio::config_t::HOST_AUDIO]) {
+-            BOOST_LOG(info) << "音频配置: 声音将在主机端(Sunshine服务器)播放"sv;
+-            shouldMute = false;
+-        } else {
+-            BOOST_LOG(info) << "音频配置: 声音将在客户端(Moonlight)播放"sv;
+-        }
+-        
+-        // 调用 createVirtualDisplay 方法，传递 shouldMute 参数
+-        createVirtualDisplay(env, config.width, config.height, config.framerate, audioConfig.packetDuration, javaSurface, shouldMute);
+-        
+-        // 启动编码器
+-        status = AMediaCodec_start(codec);
+-        if (status != AMEDIA_OK) {
+-            BOOST_LOG(error) << "无法启动编码器，错误码: "sv << status;
+-            env->DeleteLocalRef(javaSurface);
+-            jvm->DetachCurrentThread();
+-            ANativeWindow_release(inputSurface);
+-            AMediaCodec_delete(codec);
+-            AMediaFormat_delete(format);
+-            return;
+-        }
+-        
          // 编码循环
          std::vector<uint8_t> codecConfigData;  // 用于存储完整的编解码器配置数据
          int64_t frameIndex = 0;
@@ -996,7 +1198,7 @@ index 529c31e..c2f52bf 100644
              if (idr_events->peek()) {
                  requested_idr_frame = true;
                  idr_events->pop();
-@@ -566,6 +639,7 @@ namespace sunshine_callbacks {
+@@ -566,6 +624,7 @@ namespace sunshine_callbacks {
                  AMediaFormat* params = AMediaFormat_new();
                  AMediaFormat_setInt32(params, "request-sync", 0);
                  media_status_t status = AMediaCodec_setParameters(codec, params);
@@ -1004,7 +1206,7 @@ index 529c31e..c2f52bf 100644
                  if (status != AMEDIA_OK) {
                      BOOST_LOG(warning) << "请求 IDR 帧失败，错误码: "sv << status;
                  } else {
-@@ -573,25 +647,26 @@ namespace sunshine_callbacks {
+@@ -573,25 +632,26 @@ namespace sunshine_callbacks {
                  }
                  AMediaFormat_delete(params);
              }
@@ -1037,7 +1239,7 @@ index 529c31e..c2f52bf 100644
                          // 直接保存整个配置数据
                          codecConfigData.assign(buffer, buffer + bufferSize);
                          BOOST_LOG(info) << "保存完整的编解码器配置数据，大小: "sv << codecConfigData.size();
-@@ -600,16 +675,17 @@ namespace sunshine_callbacks {
+@@ -600,16 +660,17 @@ namespace sunshine_callbacks {
                          bool isKeyFrame = (bufferInfo.flags & AMEDIACODEC_BUFFER_FLAG_KEY_FRAME) != 0;
                          BOOST_LOG(verbose) << "收到" << (isKeyFrame ? "关键帧" : "普通帧") << "，大小: "sv << bufferSize;
                          frameIndex++;
@@ -1058,7 +1260,7 @@ index 529c31e..c2f52bf 100644
                                  // 添加关键帧数据
                                  frameData.insert(frameData.end(), buffer, buffer + bufferSize);
  
-@@ -626,7 +702,11 @@ namespace sunshine_callbacks {
+@@ -626,13 +687,21 @@ namespace sunshine_callbacks {
                          }
                      }
                  }
@@ -1071,7 +1273,26 @@ index 529c31e..c2f52bf 100644
                  // 释放输出缓冲区
                  AMediaCodec_releaseOutputBuffer(codec, outputBufferIndex, false);
              } else if (outputBufferIndex == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
-@@ -652,19 +732,40 @@ namespace sunshine_callbacks {
+                 BOOST_LOG(verbose) << "编码器超时，等待输出缓冲区"sv;
+                 continue;
+             } else if (outputBufferIndex == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
++                auto actual_format=AMediaCodec_getOutputFormat(codec); int32_t actual_latency=-1;
++                if(actual_format) { AMediaFormat_getInt32(actual_format,AMEDIAFORMAT_KEY_LATENCY,&actual_latency); AMediaFormat_delete(actual_format); }
++                { std::lock_guard lock(sunshine_android::video_mutex); video_session->reported_latency=actual_latency; }
++
+                 // 输出格式已更改
+                 AMediaFormat* format = AMediaCodec_getOutputFormat(codec);
+                 BOOST_LOG(info) << "编码器输出格式已更改"sv;
+@@ -645,6 +714,8 @@ namespace sunshine_callbacks {
+             } else {
+                 // 出错
+                 BOOST_LOG(error) << "编码器出错，错误码: "sv << outputBufferIndex;
++                std::string error="编码器 "+video_session->encoder+" 运行失败 ("+std::to_string(outputBufferIndex)+")。请在设置中切换编码器选项后重新连接。";
++                showEncoderError(error.c_str());
+                 break;
+             }
+         }
+@@ -652,19 +723,40 @@ namespace sunshine_callbacks {
          stopVirtualDisplay();
          // 停止编码器
          AMediaCodec_stop(codec);
@@ -1118,7 +1339,7 @@ index 529c31e..c2f52bf 100644
      }
  
      float from_netfloat(netfloat f) {
-@@ -676,15 +777,15 @@ namespace sunshine_callbacks {
+@@ -676,15 +768,15 @@ namespace sunshine_callbacks {
              BOOST_LOG(error) << "JVM 指针为空"sv;
              return;
          }
@@ -1138,7 +1359,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -705,7 +806,7 @@ namespace sunshine_callbacks {
+@@ -705,7 +797,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1147,7 +1368,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void callJavaOnAbsMouseMove(NV_ABS_MOUSE_MOVE_PACKET* packet) {
-@@ -713,15 +814,15 @@ namespace sunshine_callbacks {
+@@ -713,15 +805,15 @@ namespace sunshine_callbacks {
              BOOST_LOG(error) << "JVM 指针为空"sv;
              return;
          }
@@ -1167,7 +1388,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -731,7 +832,7 @@ namespace sunshine_callbacks {
+@@ -731,7 +823,7 @@ namespace sunshine_callbacks {
          float y = util::endian::big(packet->y);
          float width = (float) util::endian::big(packet->width);
          float height = (float) util::endian::big(packet->height);
@@ -1176,7 +1397,7 @@ index 529c31e..c2f52bf 100644
          BOOST_LOG(info) << "调用 Java 处理鼠标移动: "sv << x << ","sv << y << " 在 "sv << width << "*"sv << height << " 范围内";
  
          env->CallStaticVoidMethod(sunshineMouseClass, handleAbsMouseMoveMethod, x, y, width, height);
-@@ -741,25 +842,25 @@ namespace sunshine_callbacks {
+@@ -741,25 +833,25 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1208,7 +1429,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -777,7 +878,7 @@ namespace sunshine_callbacks {
+@@ -777,7 +869,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1217,7 +1438,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void callJavaOnConnectScreenClientDiscovered(std::string connectScreenClient) {
-@@ -785,15 +886,15 @@ namespace sunshine_callbacks {
+@@ -785,15 +877,15 @@ namespace sunshine_callbacks {
              BOOST_LOG(error) << "JVM 指针为空"sv;
              return;
          }
@@ -1237,7 +1458,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -801,7 +902,7 @@ namespace sunshine_callbacks {
+@@ -801,7 +893,7 @@ namespace sunshine_callbacks {
          jmethodID onClientDiscoveredMethod = env->GetStaticMethodID(sunshineServerClass, "onConnectScreenClientDiscovered", "(Ljava/lang/String;)V");
          if (onClientDiscoveredMethod == nullptr) {
              BOOST_LOG(error) << "找不到 onConnectScreenClientDiscovered 方法"sv;
@@ -1246,7 +1467,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -814,7 +915,7 @@ namespace sunshine_callbacks {
+@@ -814,7 +906,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1255,7 +1476,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void callJavaSetConnectScreenServerUuid(std::string uuid) {
-@@ -822,15 +923,15 @@ namespace sunshine_callbacks {
+@@ -822,15 +914,15 @@ namespace sunshine_callbacks {
              BOOST_LOG(error) << "JVM 指针为空"sv;
              return;
          }
@@ -1275,7 +1496,7 @@ index 529c31e..c2f52bf 100644
              BOOST_LOG(error) << "无法附加到 Java 线程"sv;
              return;
          }
-@@ -838,7 +939,7 @@ namespace sunshine_callbacks {
+@@ -838,7 +930,7 @@ namespace sunshine_callbacks {
          jmethodID setServerUuidMethod = env->GetStaticMethodID(sunshineServerClass, "setConnectScreenServerUuid", "(Ljava/lang/String;)V");
          if (setServerUuidMethod == nullptr) {
              BOOST_LOG(error) << "找不到 setConnectScreenServerUuid 方法"sv;
@@ -1284,7 +1505,7 @@ index 529c31e..c2f52bf 100644
              return;
          }
  
-@@ -851,7 +952,7 @@ namespace sunshine_callbacks {
+@@ -851,7 +943,7 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1293,7 +1514,7 @@ index 529c31e..c2f52bf 100644
      }
  
      void callJavaOnKeyboard(uint16_t modcode, bool release, uint8_t flags) {
-@@ -859,21 +960,21 @@ namespace sunshine_callbacks {
+@@ -859,21 +951,21 @@ namespace sunshine_callbacks {
              BOOST_LOG(error) << "JVM 指针为空"sv;
              return;
          }
@@ -1320,7 +1541,7 @@ index 529c31e..c2f52bf 100644
              static_cast<jint>(modcode),
              static_cast<jboolean>(release),
              static_cast<jint>(flags));
-@@ -883,6 +984,6 @@ namespace sunshine_callbacks {
+@@ -883,6 +975,6 @@ namespace sunshine_callbacks {
              env->ExceptionClear();
          }
  
@@ -1331,28 +1552,32 @@ index 529c31e..c2f52bf 100644
 \ No newline at end of file
 +}
 diff --git a/app-mirror/src/main/cpp/sunshine.h b/app-mirror/src/main/cpp/sunshine.h
-index 10b651b..c972ffe 100644
+index 10b651b..6b31c73 100644
 --- a/app-mirror/src/main/cpp/sunshine.h
 +++ b/app-mirror/src/main/cpp/sunshine.h
-@@ -1,10 +1,15 @@
+@@ -1,10 +1,19 @@
  #pragma once
  #include "stream.h"
 -#include "moonlight-common-c/src/input.h"
 +#include "moonlight-common-c/src/Input.h"
 +#include <string_view>
 +#include <utility>
++#include "fresh_video_queue.h"
  
  namespace sunshine_callbacks {
++    void callJavaOnRemoteInput();
      void callJavaOnPinRequested();
 -    void captureVideoLoop(void *channel_data, safe::mail_t mail, const video::config_t& config, const audio::config_t& audioConfig);
 +    void captureVideoLoop(void *channel_data, safe::mail_t mail, const video::config_t& config, const audio::config_t& audioConfig, int fec_percentage);
++    void videoQueueMetrics(void* channel,sunshine_android::VideoQueueStats stats,bool idr,double delay);
++    void videoSendMetrics(void* channel,uint64_t data,uint64_t parity,uint64_t bytes,uint64_t errors,double fec,double pacing,double send,double total);
 +    void networkFeedback(void* channel, std::string_view payload);
 +    void networkRtt(void* channel, int milliseconds);
 +    std::pair<int,int> networkSendPolicy(void* channel, int default_fec, int negotiated_kbps, uint32_t frame);
      void captureAudioLoop(void *channel_data, safe::mail_t mail, const audio::config_t& config);
      void callJavaOnTouch(SS_TOUCH_PACKET* touchPacket);
      void callJavaOnAbsMouseMove(NV_ABS_MOUSE_MOVE_PACKET* packet);
-@@ -12,4 +17,4 @@ namespace sunshine_callbacks {
+@@ -12,4 +21,4 @@ namespace sunshine_callbacks {
      void callJavaOnConnectScreenClientDiscovered(std::string connectScreenClient);
      void callJavaSetConnectScreenServerUuid(std::string uuid);
      void callJavaOnKeyboard(uint16_t modcode, bool release, uint8_t flags);

@@ -234,6 +234,15 @@ fun MainContent(
         }
     }
 
+    val encoderError by viewModel.encoderError.collectAsState()
+    if (encoderError != null) {
+        AlertDialog(onDismissRequest = { viewModel.dismissEncoderError() },
+            title = { Text("编码器启动或运行失败") },
+            text = { Text(encoderError.orEmpty()) },
+            confirmButton = { TextButton(onClick = { viewModel.dismissEncoderError(); selectedTab = NavigationTab.SETTINGS }) { Text("切换编码器") } },
+            dismissButton = { TextButton(onClick = { viewModel.dismissEncoderError() }) { Text("关闭") } })
+    }
+
     val pinRequested by viewModel.pinRequested.collectAsState()
     var pinDialogInput by remember { mutableStateOf("") }
 

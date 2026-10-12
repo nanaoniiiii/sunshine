@@ -13,6 +13,9 @@ data class ConfigResponse(
     val port: String = "47989",
     @SerializedName("web_port") val webPort: String = "47990",
     val encoder: String = "AMediaCodec (Hardware)",
+    @SerializedName("encoder_h264") val encoderH264: String = "auto",
+    @SerializedName("encoder_hevc") val encoderHevc: String = "auto",
+    @SerializedName("encoder_options") val encoderOptions: List<EncoderCapability> = emptyList(),
     @SerializedName("channels") val channels: String = "2",
     @SerializedName("min_bitrate") val minBitrate: String = "5000",
     @SerializedName("max_bitrate") val maxBitrate: String = "50000",
@@ -147,7 +150,8 @@ data class DiagnosticsResponse(
     val audio: AudioDiagnostics,
     val perf: PerfResponse,
     val capabilities: Map<String, String>,
-    val video: List<NativeVideoSession> = emptyList()
+    val video: List<NativeVideoSession> = emptyList(),
+    @SerializedName("encoder_error") val encoderError: String? = null
 )
 
 data class NativeVideoSession(
@@ -184,7 +188,30 @@ data class NativeVideoSession(
     @SerializedName("reported_missing_data_packets") val reportedMissingDataPackets: Long,
     @SerializedName("fec_duplicate_reports") val fecDuplicateReports: Long,
     @SerializedName("fec_rejected_reports") val fecRejectedReports: Long,
-    @SerializedName("fec_changes") val fecChanges: Long
+    @SerializedName("fec_changes") val fecChanges: Long,
+    @SerializedName("encoder_choice") val encoderChoice: String = "auto",
+    @SerializedName("encoder_attempts") val encoderAttempts: Int = 0,
+    @SerializedName("encoder_reported_latency_frames") val encoderReportedLatencyFrames: Int? = null,
+    @SerializedName("queue_frames") val queueFrames: Int = 0,
+    @SerializedName("queue_bytes") val queueBytes: Long = 0,
+    @SerializedName("queue_peak_frames") val queuePeakFrames: Int = 0,
+    @SerializedName("queue_peak_bytes") val queuePeakBytes: Long = 0,
+    @SerializedName("queue_dropped_frames") val queueDroppedFrames: Long = 0,
+    @SerializedName("queue_waiting_idr") val queueWaitingIdr: Boolean = false,
+    @SerializedName("queue_limit_ms") val queueLimitMs: Int = 80,
+    @SerializedName("queue_oldest_age_ms") val queueOldestAgeMs: Double? = null,
+    @SerializedName("queue_delay_p95_ms") val queueDelayP95Ms: Double? = null,
+    @SerializedName("fec_compute_p95_ms") val fecComputeP95Ms: Double? = null,
+    @SerializedName("pacing_wait_p95_ms") val pacingWaitP95Ms: Double? = null,
+    @SerializedName("socket_send_p95_ms") val socketSendP95Ms: Double? = null,
+    @SerializedName("frame_send_p95_ms") val frameSendP95Ms: Double? = null,
+    @SerializedName("sent_data_packets") val sentDataPackets: Long = 0,
+    @SerializedName("sent_parity_packets") val sentParityPackets: Long = 0,
+    @SerializedName("sent_udp_payload_bytes") val sentUdpPayloadBytes: Long = 0,
+    @SerializedName("sent_udp_payload_kbps") val sentUdpPayloadKbps: Double = 0.0,
+    @SerializedName("send_errors") val sendErrors: Long = 0,
+    @SerializedName("actual_parity_ratio") val actualParityRatio: Double? = null,
+    @SerializedName("network_control_updates") val networkControlUpdates: Long = 0
 )
 
 data class EncoderCapability(

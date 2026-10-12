@@ -63,6 +63,9 @@ class SunshineEngineService : Service() {
         override fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
             SunshineServer.configureVideo(minimum, maximum, maxFps)
         }
+        override fun configureEncoders(avc: String, hevc: String, avcNames: Array<out String>, hevcNames: Array<out String>) {
+            SunshineServer.configureEncoders(avc, hevc, avcNames, hevcNames)
+        }
         override fun videoSnapshot(): String = SunshineServer.videoSnapshot()
         override fun controlVideo(sessionId: Long, operation: Int, value: Int): Boolean =
             SunshineServer.controlVideo(sessionId, operation, value)

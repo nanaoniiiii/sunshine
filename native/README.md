@@ -29,8 +29,11 @@ within that commit. APK signing is separate and uses the existing release key.
   frame rates, and UDP batch fallback that retries only the unsent suffix.
 
 The Kotlin host retains its isolated `:engine` process and last-client recovery.
-Desktop-specific display drivers, automatic network bitrate adaptation and
-adaptive FEC are not part of this patch. Manual bitrate control is documented in
+Desktop-specific display drivers are not included. Per-session feedback adaptation
+and adaptive FEC are experimental and default off; see
+[network feedback](../docs/network-feedback.md). Bounded encoded queues, explicit
+encoder selection and remote wake are described in
+[queue and encoder controls](../docs/queue-encoder-controls.md). Manual bitrate control is documented in
 [docs/native-video-controls.md](../docs/native-video-controls.md).
 `patches/openssl-download.patch` enforces the archive hash instead
 of allowing the upstream unchecked download.
@@ -51,12 +54,14 @@ unchanged. The driver refuses unexpected source revisions or patches rather than
 resetting a developer's changes. Never uninstall or clear application data to
 work around an APK signature mismatch.
 
-`--tests` also builds four silent console executables per ABI: packet continuity,
+`--tests` also builds six console executables per ABI: packet continuity,
 mixed durations, joining-client state and surround mapping; and bounded queue,
 silent-source shutdown and independent-client fanout; and video bounds, commands,
 buffer ranges, timestamp windows and partial-batch progress; and network report
 parsing, stale/duplicate rejection, budget arithmetic, adaptation cooldown and
-driver-gated FEC changes. Run them through ADB on a
+driver-gated FEC changes; and encoded queue deadlines, per-client isolation,
+IDR recovery and shutdown; and default-first codec selection, failure traversal
+and explicit no-fallback behavior. Run them through ADB on a
 device supporting that ABI. They produce no audio. Device streaming regression
 uses Douyin when audio validation is requested. The v2026.10.12.2 regression is
 video-only, with both endpoints muted and a silent visual diagnostic activity.

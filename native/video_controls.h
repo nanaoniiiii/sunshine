@@ -1,6 +1,8 @@
 #pragma once
 #include "video_policy.h"
 #include "network_policy.h"
+#include "fresh_video_queue.h"
+#include "encoder_selection.h"
 #include <chrono>
 #include <functional>
 #include <map>
@@ -25,6 +27,13 @@ struct VideoSession {
     std::string codec, encoder;
     std::function<void()> disconnect;
     OutputDelayWindow delay;
+    VideoQueueStats queue;
+    OutputDelayWindow queue_delay, fec_delay, pacing_delay, send_delay, frame_send_delay;
+    uint64_t sent_data=0, sent_parity=0, sent_bytes=0, send_errors=0, interval_sent_bytes=0;
+    double sent_kbps=0;
+    VideoClock::time_point send_interval=VideoClock::now(), last_send=send_interval;
+    std::string encoder_choice="auto";
+    int encoder_attempts=0, reported_latency=-1;
     VideoClock::time_point interval = VideoClock::now(), last_output = interval;
     uint64_t interval_frames = 0, interval_bytes = 0;
     double fps = 0, kbps = 0;
@@ -33,6 +42,15 @@ static std::mutex video_mutex;
 static VideoPolicy video_policy;
 static std::map<uint64_t, std::shared_ptr<VideoSession>> video_sessions;
 static uint32_t next_video_id = 0;
+static std::string encoder_h264="auto", encoder_hevc="auto";
+static std::vector<std::string> candidates_h264, candidates_hevc;
+inline void configure_encoders(std::string avc,std::string hevc,std::vector<std::string> avc_names,std::vector<std::string> hevc_names) {
+    std::lock_guard lock(video_mutex); encoder_h264=std::move(avc); encoder_hevc=std::move(hevc);
+    candidates_h264=std::move(avc_names); candidates_hevc=std::move(hevc_names);
+}
+inline std::pair<std::string,std::vector<std::string>> encoder_options(bool hevc) {
+    std::lock_guard lock(video_mutex); return hevc?std::make_pair(encoder_hevc,candidates_hevc):std::make_pair(encoder_h264,candidates_h264);
+}
 inline int64_t video_now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(VideoClock::now().time_since_epoch()).count(); }
 inline int video_ceiling(const VideoSession& s) {
     return std::min(video_policy.ceiling(s.negotiated),encoding_budget(s.network.total_budget?s.network.total_budget:nominal_budget(s.negotiated,20),s.network.fec));
@@ -118,6 +136,30 @@ inline void record_video_output(const std::shared_ptr<VideoSession>& s, size_t b
     // EGL presentation timestamps and steady_clock use CLOCK_MONOTONIC on Android.
     if (pts > 0) s->delay.add((std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count() - pts) / 1000.0);
 }
+inline void record_queue(void* channel,VideoQueueStats stats,bool idr,double dequeue_ms) {
+    std::lock_guard lock(video_mutex);
+    for(auto& [id,s]:video_sessions) if(s->channel==channel) {
+        if(dequeue_ms>=0) s->queue_delay.add(dequeue_ms);
+        if(stats.revision>s->queue.revision) {
+            s->queue=stats;
+            auto target=s->network.observe_queue(stats.waiting_idr?80:stats.age_ms,stats.frames,s->applied,video_policy.floor(s->negotiated),video_now_ms(),s->desired==s->applied);
+            if(target) { s->desired=s->override_kbps=target; ++s->revision; }
+        }
+        if(idr) { s->pending_idr=true; ++s->idr_requests; }
+        return;
+    }
+}
+inline void record_send(void* channel,uint64_t data,uint64_t parity,uint64_t bytes,uint64_t errors,double fec_ms,double pacing_ms,double send_ms,double frame_ms) {
+    auto now=VideoClock::now(); std::lock_guard lock(video_mutex);
+    for(auto& [id,s]:video_sessions) if(s->channel==channel) {
+        s->sent_data+=data; s->sent_parity+=parity; s->sent_bytes+=bytes; s->send_errors+=errors;
+        s->interval_sent_bytes+=bytes; if(bytes) s->last_send=now;
+        s->fec_delay.add(fec_ms); s->pacing_delay.add(pacing_ms); s->send_delay.add(send_ms); s->frame_send_delay.add(frame_ms);
+        double seconds=std::chrono::duration<double>(now-s->send_interval).count();
+        if(seconds>=1) { s->sent_kbps=s->interval_sent_bytes*8.0/seconds/1000; s->send_interval=now; s->interval_sent_bytes=0; }
+        return;
+    }
+}
 inline std::string video_snapshot() {
     std::lock_guard lock(video_mutex);
     std::ostringstream out;
@@ -151,6 +193,25 @@ inline std::string video_snapshot() {
             << ",\"encoded_fps\":" << (stale ? 0 : s.fps) << ",\"encoded_bitrate_kbps\":" << (stale ? 0 : s.kbps)
             << ",\"submit_to_output_p95_ms\":";
         if (s.delay.count()) out << s.delay.p95(); else out << "null";
+        out << ",\"encoder_choice\":" << json_quote(s.encoder_choice) << ",\"encoder_attempts\":" << s.encoder_attempts
+            << ",\"encoder_reported_latency_frames\":";
+        if(s.reported_latency>=0) out << s.reported_latency; else out << "null";
+        out << ",\"queue_frames\":" << s.queue.frames << ",\"queue_bytes\":" << s.queue.bytes
+            << ",\"queue_peak_frames\":" << s.queue.peak_frames << ",\"queue_peak_bytes\":" << s.queue.peak_bytes
+            << ",\"queue_dropped_frames\":" << s.queue.dropped << ",\"queue_waiting_idr\":" << (s.queue.waiting_idr?"true":"false")
+            << ",\"queue_limit_ms\":" << FreshVideoQueue<std::unique_ptr<int>>::max_age_ms
+            << ",\"queue_oldest_age_ms\":";
+        if(s.network.queue_at>=0) out << (s.queue.frames?s.queue.age_ms+std::max<int64_t>(0,now-s.network.queue_at):0); else out << "null";
+        out << ",\"network_control_updates\":" << s.network.control_updates
+            << ",\"sent_data_packets\":" << s.sent_data << ",\"sent_parity_packets\":" << s.sent_parity
+            << ",\"sent_udp_payload_bytes\":" << s.sent_bytes << ",\"send_errors\":" << s.send_errors
+            << ",\"sent_udp_payload_kbps\":" << (VideoClock::now()-s.last_send>std::chrono::seconds(2)?0:s.sent_kbps)
+            << ",\"actual_parity_ratio\":";
+        if(s.sent_data) out << double(s.sent_parity)/s.sent_data; else out << "null";
+        for(auto item:{std::make_pair("queue_delay_p95_ms",&s.queue_delay),std::make_pair("fec_compute_p95_ms",&s.fec_delay),
+            std::make_pair("pacing_wait_p95_ms",&s.pacing_delay),std::make_pair("socket_send_p95_ms",&s.send_delay),std::make_pair("frame_send_p95_ms",&s.frame_send_delay)}) {
+            out << "," << json_quote(item.first) << ':'; if(item.second->count()) out << item.second->p95(); else out << "null";
+        }
         out << '}';
     }
     out << ']'; return out.str();
