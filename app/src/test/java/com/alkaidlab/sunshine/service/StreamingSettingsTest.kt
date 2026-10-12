@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StreamingSettingsTest {
+    @Test fun encoderChoicesAllowStaleDeviceNamesButRejectMalformedValues() {
+        assertNull(StreamingSettings.validate(mapOf("encoder_h264" to "auto", "encoder_hevc" to "OMX.qcom.video.encoder.hevc")))
+        assertNull(StreamingSettings.validate(mapOf("encoder_h264" to "OMX.device.no-longer-present")))
+        assertNotNull(StreamingSettings.validate(mapOf("encoder_h264" to "")))
+        assertNotNull(StreamingSettings.validate(mapOf("encoder_hevc" to "name\nother")))
+        assertNotNull(StreamingSettings.validate(mapOf("encoder_h264" to "x".repeat(129))))
+    }
     @Test fun oldConfigGetsSafeNewDefaults() {
         assertEquals(StreamingSettings(), StreamingSettings.from(mapOf("hevc_mode" to "enabled")))
     }

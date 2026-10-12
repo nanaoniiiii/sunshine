@@ -21,6 +21,9 @@ data class StreamingSettings(
             }
             if ((properties["min_bitrate"]?.toIntOrNull() ?: 5000) >
                 (properties["max_bitrate"]?.toIntOrNull() ?: 50000)) return "min_bitrate must not exceed max_bitrate"
+            for (key in listOf("encoder_h264", "encoder_hevc")) {
+                properties[key]?.let { if (it.length !in 1..128 || !it.matches(Regex("[A-Za-z0-9_.-]+"))) return "$key must be auto or a codec name" }
+            }
             for (key in listOf("repeat_frames", "wifi_low_latency")) {
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }

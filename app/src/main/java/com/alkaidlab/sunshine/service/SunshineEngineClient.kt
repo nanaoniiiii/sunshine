@@ -77,8 +77,12 @@ class SunshineEngineClient(private val context: Context) {
                 synchronized(runtime) { if (current()) runtime.setServerUuid(uuid) }
             }
             override fun encoderError(error: String) {
-                if (current()) SunshineLogManager.log("ENCODER_ERR", error)
+                if (current()) {
+                    runtime.reportEncoderError(error)
+                    mainHandler.post { if (current() && !runtime.isStreaming.value) scheduleRecovery() }
+                }
             }
+            override fun remoteInput() { if (current()) runtime.onRemoteInput() }
             override fun motionEvent(event: MotionEvent) {
                 try { if (current()) runtime.injectMotionEvent(event) } finally { event.recycle() }
             }
@@ -96,6 +100,9 @@ class SunshineEngineClient(private val context: Context) {
                 scope.launch {
                     try {
                         if (!enabled || generation != epoch) return@launch
+                        remote.configureEncoders(runtime.encoderH264, runtime.encoderHevc,
+                            EncoderCapabilities.encoders.filter { it.mime == "video/avc" }.map { it.name }.distinct().toTypedArray(),
+                            EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray())
                         remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
@@ -169,6 +176,12 @@ class SunshineEngineClient(private val context: Context) {
         scope.launch {
             try { remote.startAudio(samplesPerPacket) } catch (_: RemoteException) {}
         }
+    }
+
+    fun configureEncoders(avc: String, hevc: String) {
+        try { engine?.configureEncoders(avc, hevc,
+            EncoderCapabilities.encoders.filter { it.mime == "video/avc" }.map { it.name }.distinct().toTypedArray(),
+            EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray()) } catch (_: RemoteException) {}
     }
 
     fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {

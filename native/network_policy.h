@@ -30,6 +30,14 @@ inline std::optional<FecReport> parse_fec_report(std::string_view bytes) {
 inline int nominal_budget(int video_kbps, int fec) { return int((int64_t(video_kbps) * (100 + fec) + 99) / 100); }
 inline int encoding_budget(int total_kbps, int fec) { return int(int64_t(total_kbps) * 100 / (100 + fec)); }
 inline int pacing_budget(int video_fec_kbps) { return video_fec_kbps+std::min(500,video_fec_kbps/10); }
+// An oversized IDR paced at the average bitrate can outlive the bounded queue,
+// causing an endless IDR/drop cycle. Allow a bounded recovery burst, targeting
+// 40ms and capped at 80Mbps. Encoder/FEC average budgets remain unchanged.
+inline int keyframe_pacing_kbps(int base, uint64_t wire_bytes, bool idr) {
+    if (!idr) return base;
+    auto burst = int(std::min<uint64_t>(80000, (wire_bytes * 8 + 39) / 40));
+    return std::max(base, burst);
+}
 inline int64_t pacing_delay_ns(uint64_t packets, uint64_t packet_bytes, int kbps) {
     return int64_t(packets * packet_bytes * 8000000ULL / uint64_t(std::max(1, kbps)));
 }
@@ -44,6 +52,11 @@ struct NetworkPolicy {
     int rtt = -1;
     int64_t rtt_at = -1, report_at = -1, last_bad = -1, last_change = -1, last_sent_at = -1;
     const char* state = "disabled";
+    int64_t queue_at=-1, pressure_at=-1, stable_at=-1, loss_window_at=-1, rtt_pressure_at=-1;
+    double queue_age=0;
+    size_t queue_depth=0;
+    int pressure_samples=0, loss_events=0, loss_unrecoverable=0, baseline_rtt=-1;
+    uint64_t control_updates=0;
     void initialize(int negotiated, int initial_fec) {
         fec = base_fec = std::clamp(initial_fec,0,100);
         total_budget = nominal_budget(negotiated, base_fec);
@@ -62,6 +75,8 @@ struct NetworkPolicy {
     }
     void enabled(bool value, int64_t now) {
         adaptive=value; pending_fec=-1; state=value?"waiting_feedback":"disabled"; last_change=now;
+        pressure_at=stable_at=loss_window_at=rtt_pressure_at=-1;
+        pressure_samples=loss_events=loss_unrecoverable=0;
     }
     // Returns a bitrate target; FEC commits only after a successful driver update.
     int propose_fec(int percentage, int current, int floor) {
@@ -70,17 +85,52 @@ struct NetworkPolicy {
         pending_fec=percentage; pending_target=target; return target;
     }
     int react(const FecReport& report,int current,int floor,int64_t now) {
-        if (!adaptive || report.missing_data()==0 || (last_change>=0 && now-last_change<2000) || pending_fec>=0) return 0;
+        if(!adaptive || report.missing_data()==0 || pending_fec>=0 || (last_change>=0 && now-last_change<2000)) return 0;
+        if(loss_window_at<0 || now-loss_window_at>2000) { loss_window_at=now; loss_events=loss_unrecoverable=0; }
+        ++loss_events; loss_unrecoverable+=report.unrecoverable();
+        bool severe=report.unrecoverable() && report.missing_data()*5>=report.data;
+        if(!severe && (now-loss_window_at<200 || (loss_events<3 && loss_unrecoverable<2))) { state="watching_loss"; return 0; }
         int next_fec=std::max(fec,std::min(35,fec+(report.unrecoverable()?5:2)));
         int target=std::max(floor,std::min(current*85/100,encoding_budget(total_budget,next_fec)));
         if (nominal_budget(target,next_fec)>total_budget) next_fec=fec;
         if(target==current && next_fec==fec) { state="floor_limited"; return 0; }
-        pending_fec=next_fec; pending_target=target; last_change=now; state="loss_backoff"; return target;
+        pending_fec=next_fec; pending_target=target; last_change=now; state="loss_backoff";
+        loss_window_at=-1; return target;
+    }
+    int congestion(int current,int floor,int64_t now,const char* reason) {
+        last_bad=now;
+        if(!adaptive || pending_fec>=0 || now-last_change<2000) return 0;
+        int target=std::max(floor,current*90/100);
+        if(target>=current) { state="floor_limited"; return 0; }
+        pending_fec=fec; pending_target=target; last_change=now; state=reason; return target;
+    }
+    int observe_queue(double age,size_t depth,int current,int floor,int64_t now,bool ready=true) {
+        queue_at=now; queue_age=age; queue_depth=depth;
+        if(age>=40 || depth>=3) {
+            stable_at=-1;
+            if(pressure_at<0 || now-pressure_at>2000) { pressure_at=now; pressure_samples=0; }
+            ++pressure_samples;
+            if(now-pressure_at>=500 && pressure_samples>=4 && ready) return congestion(current,floor,now,"queue_backoff");
+        } else if(age<=15 && depth<=1) {
+            if(stable_at<0) stable_at=now;
+            if(now-stable_at>=500) { pressure_at=-1; pressure_samples=0; }
+        } else stable_at=-1;
+        return 0;
+    }
+    int observe_rtt(int value,int current,int floor,int64_t now,bool ready=true) {
+        rtt=value; rtt_at=now;
+        baseline_rtt=baseline_rtt<0?value:std::min(baseline_rtt,value);
+        if(value>std::max(100,baseline_rtt*2+20)) {
+            if(rtt_pressure_at<0) rtt_pressure_at=now;
+            if(now-rtt_pressure_at>=1000 && ready) return congestion(current,floor,now,"rtt_backoff");
+        } else rtt_pressure_at=-1;
+        return 0;
     }
     int recover(int current,int ceiling,int64_t now) {
         // A quiet loss-report channel is not proof of zero video loss. Probe slowly
         // only with a fresh, healthy reliable-control RTT and advancing video output.
-        if (!adaptive || pending_fec>=0 || rtt_at<0 || now-rtt_at>5000 || rtt>100 ||
+        if (!adaptive || pending_fec>=0 || rtt_at<0 || now-rtt_at>5000 || rtt>std::max(100,baseline_rtt*2+20) ||
+            queue_at<0 || now-queue_at>2000 || queue_age>15 || queue_depth>1 ||
             last_bad<0 || now-last_bad<20000 || now-last_change<5000 || (current>=ceiling && fec<=base_fec)) return 0;
         int next_fec=std::max(base_fec,fec-1);
         int target=std::min({ceiling,encoding_budget(total_budget,next_fec),current+std::max(100,current/20)});
@@ -90,7 +140,7 @@ struct NetworkPolicy {
     }
     void driver_result(int target,bool success) {
         if (pending_fec<0 || target!=pending_target) return;
-        if (success) { adaptations+=(fec!=pending_fec); fec=pending_fec; } else state="driver_rejected";
+        if (success) { adaptations+=(fec!=pending_fec); ++control_updates; fec=pending_fec; } else state="driver_rejected";
         pending_fec=-1;
     }
 };

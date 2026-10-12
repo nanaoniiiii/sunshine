@@ -74,6 +74,8 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    val encoderError = runtime.encoderError
+    fun dismissEncoderError() = runtime.dismissEncoderError()
     val pinRequested = runtime.pinRequested
 
     init {
@@ -138,7 +140,7 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
             if (resp.isSuccessful) {
                 _config.value = resp.body()
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) { SunshineLogManager.log("CONFIG_READ_ERR", "Cannot load settings: ${e.message}") }
     }
 
     suspend fun fetchApps() {

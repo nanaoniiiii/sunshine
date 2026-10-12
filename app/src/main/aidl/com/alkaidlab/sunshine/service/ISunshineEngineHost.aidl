@@ -9,6 +9,7 @@ interface ISunshineEngineHost {
     oneway void clientDiscovered(String client);
     oneway void serverUuid(String uuid);
     oneway void encoderError(String error);
+    oneway void remoteInput();
     oneway void motionEvent(in MotionEvent event);
     oneway void keyboardEvent(int keyCode, boolean down, int modifiers);
     float[] readAudio(int count, int mode);

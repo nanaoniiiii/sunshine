@@ -16,6 +16,7 @@ public class SunshineServer {
     public static native void submitPin(String pin);
     public static native void cleanup();
     public static native void configureVideo(int minimum, int maximum, int maxFps);
+    public static native void configureEncoders(String avc, String hevc, String[] avcNames, String[] hevcNames);
     public static native String videoSnapshot();
     public static native boolean controlVideo(long sessionId, int operation, int value);
 
@@ -26,6 +27,8 @@ public class SunshineServer {
     }
 
     // Callbacks invoked by libsunshine.so C++ layer
+    public static void onRemoteInput() { SunshineEngineBridge.remoteInput(); }
+
     public static void onPinRequested() {
         SunshineEngineBridge.pinRequested();
     }
