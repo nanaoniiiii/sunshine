@@ -51,10 +51,12 @@ unchanged. The driver refuses unexpected source revisions or patches rather than
 resetting a developer's changes. Never uninstall or clear application data to
 work around an APK signature mismatch.
 
-`--tests` also builds three silent console executables per ABI: packet continuity,
+`--tests` also builds four silent console executables per ABI: packet continuity,
 mixed durations, joining-client state and surround mapping; and bounded queue,
 silent-source shutdown and independent-client fanout; and video bounds, commands,
-buffer ranges, timestamp windows and partial-batch progress. Run them through ADB on a
+buffer ranges, timestamp windows and partial-batch progress; and network report
+parsing, stale/duplicate rejection, budget arithmetic, adaptation cooldown and
+driver-gated FEC changes. Run them through ADB on a
 device supporting that ABI. They produce no audio. Device streaming regression
 uses Douyin when audio validation is requested. The v2026.10.12.2 regression is
 video-only, with both endpoints muted and a silent visual diagnostic activity.

@@ -590,8 +590,10 @@ class SunshineRuntimeManager private constructor() {
                 "bitrate_kbps" to "aggregate UID TX including audio, FEC and API traffic; not per-client bitrate",
                 "session_codec" to "native negotiated codec and MediaCodec component name",
                 "encoder_latency" to "video.submit_to_output_p95_ms: bounded 256 output samples; EGL submission to output, not end-to-end latency",
-                "dynamic_bitrate" to "per-session manual control within negotiated budget and configured bounds; driver result reported, no automatic network adaptation",
-                "adaptive_fec" to "unavailable: bundled JNI has no FEC setter",
+                "dynamic_bitrate" to "per-session manual and opt-in feedback adaptation within negotiated video/FEC budget; driver result reported",
+                "adaptive_fec" to "opt-in loss-report backoff and cautious control-RTT probe; manual FEC 0..35, increased redundancy waits for encoder acceptance",
+                "fec_feedback" to "best-effort reports for recovered/incomplete blocks, not complete loss coverage or a global loss percentage",
+                "control_rtt" to "per-session reliable ENet control RTT; null after five seconds, not video end-to-end latency",
                 "audio_buffer" to "bounded stereo PCM; drops oldest on overflow; cleared on idle",
                 "wifi_low_latency" to "requested only while streaming; OS/device decides effectiveness"
             ),

@@ -169,7 +169,22 @@ data class NativeVideoSession(
     @SerializedName("invalid_buffers") val invalidBuffers: Long,
     @SerializedName("encoded_fps") val encodedFps: Double,
     @SerializedName("encoded_bitrate_kbps") val encodedBitrateKbps: Double,
-    @SerializedName("submit_to_output_p95_ms") val submitToOutputP95Ms: Double?
+    @SerializedName("submit_to_output_p95_ms") val submitToOutputP95Ms: Double?,
+    @SerializedName("fec_percentage") val fecPercentage: Int,
+    @SerializedName("pending_fec_percentage") val pendingFecPercentage: Int,
+    @SerializedName("nominal_video_fec_budget_kbps") val nominalVideoFecBudgetKbps: Int,
+    @SerializedName("control_ceiling_kbps") val controlCeilingKbps: Int,
+    @SerializedName("adaptive_enabled") val adaptiveEnabled: Boolean,
+    @SerializedName("adaptive_state") val adaptiveState: String,
+    @SerializedName("control_rtt_ms") val controlRttMs: Int?,
+    @SerializedName("fec_report_age_ms") val fecReportAgeMs: Long?,
+    @SerializedName("fec_reports") val fecReports: Long,
+    @SerializedName("fec_recovered_blocks") val fecRecoveredBlocks: Long,
+    @SerializedName("fec_unrecoverable_blocks") val fecUnrecoverableBlocks: Long,
+    @SerializedName("reported_missing_data_packets") val reportedMissingDataPackets: Long,
+    @SerializedName("fec_duplicate_reports") val fecDuplicateReports: Long,
+    @SerializedName("fec_rejected_reports") val fecRejectedReports: Long,
+    @SerializedName("fec_changes") val fecChanges: Long
 )
 
 data class EncoderCapability(
