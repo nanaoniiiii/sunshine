@@ -213,6 +213,8 @@ class SunshineApiServer(
             "bitrate" -> 1
             "keyframe" -> 2
             "disconnect" -> 3
+            "fec" -> 4
+            "adaptive" -> 5
             else -> return error(Response.Status.NOT_FOUND, "Unknown session action")
         }
         var value = 0
@@ -222,9 +224,23 @@ class SunshineApiServer(
                 val raw = objectValue?.asString.orEmpty()
                 raw.toIntOrNull() ?: return error(Response.Status.BAD_REQUEST, "bitrate_kbps must be an integer")
             } catch (_: Exception) { return error(Response.Status.BAD_REQUEST, "Invalid bitrate request") }
-            val ceiling = minOf(runtime.configuredMaxBitrate, native.requestedBitrateKbps)
+            val ceiling = minOf(runtime.configuredMaxBitrate, native.requestedBitrateKbps, native.controlCeilingKbps)
             val floor = minOf(runtime.configuredMinBitrate, ceiling)
             if (value !in floor..ceiling) return error(Response.Status.BAD_REQUEST, "bitrate_kbps must be within $floor..$ceiling")
+        }
+        if (operation == 4 || operation == 5) {
+            value = try {
+                val objectValue=com.google.gson.JsonParser.parseString(parseBody(session)).asJsonObject
+                if (operation==4) {
+                    objectValue["percentage"]?.asString?.toIntOrNull()?.takeIf { it in 0..35 }
+                        ?: return error(Response.Status.BAD_REQUEST,"percentage must be an integer in 0..35")
+                } else {
+                    val enabled=objectValue["enabled"]
+                    if(enabled==null || !enabled.isJsonPrimitive || !enabled.asJsonPrimitive.isBoolean)
+                        return error(Response.Status.BAD_REQUEST,"enabled must be a boolean")
+                    if(enabled.asBoolean) 1 else 0
+                }
+            } catch (_: Exception) { return error(Response.Status.BAD_REQUEST,"Invalid network control request") }
         }
         if (!runtime.controlVideo(id, operation, value)) return error(Response.Status.CONFLICT, "Session or configuration changed; refresh and retry")
         return jsonResponse(SimpleStatusResponse("true", "Request queued; inspect video diagnostics for driver result"))
