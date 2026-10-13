@@ -50,10 +50,10 @@ class SunshineEngineClient(private val context: Context) {
         val host = object : ISunshineEngineHost.Stub() {
             private fun current() = enabled && generation == epoch
             override fun streamStarted(threadId: Long, width: Int, height: Int, fps: Int,
-                                       packetDuration: Int, surface: Surface, audio: Boolean): IntArray {
+                                       packetDuration: Int, surface: Surface, audio: Boolean, appId: Int, clientId: String): IntArray {
                 synchronized(runtime) {
                     if (!current()) { surface.release(); return intArrayOf(width, height) }
-                    runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId)
+                    runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId, appId, clientId)
                 }
                 mainHandler.post { if (current()) cancelRecovery() }
                 return runtime.getCaptureDimensions(width, height)
@@ -67,6 +67,8 @@ class SunshineEngineClient(private val context: Context) {
                     if (current() && !runtime.isStreaming.value) scheduleRecovery(revision)
                 }
             }
+            override fun appCatalog(): String = if (current()) runtime.nativeAppsJson() else "{\"apps\":[]}"
+            override fun prepareApp(appId: Int): Boolean = current() && runtime.prepareApp(appId)
             override fun pinRequested() {
                 synchronized(runtime) { if (current()) runtime.onPinRequested() }
             }

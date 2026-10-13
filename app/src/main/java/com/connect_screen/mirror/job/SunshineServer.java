@@ -27,14 +27,17 @@ public class SunshineServer {
     }
 
     // Callbacks invoked by libsunshine.so C++ layer
+    public static String getAppCatalog() { return SunshineEngineBridge.appCatalog(); }
+    public static boolean prepareApp(int appId) { return SunshineEngineBridge.prepareApp(appId); }
+
     public static void onRemoteInput() { SunshineEngineBridge.remoteInput(); }
 
     public static void onPinRequested() {
         SunshineEngineBridge.pinRequested();
     }
 
-    public static void createVirtualDisplay(int width, int height, int fps, int packetDuration, Surface surface, boolean shouldSendAudio) {
-        SunshineEngineBridge.streamStarted(width, height, fps, packetDuration, surface, shouldSendAudio);
+    public static void createVirtualDisplay(int width, int height, int fps, int packetDuration, Surface surface, boolean shouldSendAudio, int appId, String clientId) {
+        SunshineEngineBridge.streamStarted(width, height, fps, packetDuration, surface, shouldSendAudio, appId, clientId);
     }
 
     public static void stopVirtualDisplay() {

@@ -47,12 +47,14 @@ data class AppItem(
     val cmd: String? = "",
     val output: String? = "",
     @SerializedName("auto-detach") val autoDetach: String? = "true",
-    @SerializedName("wait-all") val waitAll: String? = "true"
+    @SerializedName("wait-all") val waitAll: String? = "true",
+    @SerializedName("single_app") val singleApp: Boolean = false
 )
 
 data class AppsResponse(
     val env: Map<String, String> = emptyMap(),
-    val apps: List<AppItem> = emptyList()
+    val apps: List<AppItem> = emptyList(),
+    @SerializedName("next_id") val nextId: Int = 2
 )
 
 data class ClientItem(
@@ -98,7 +100,10 @@ data class RuntimeSession(
     @Transient val surface: Surface? = null,
     @Transient val videoThreadId: Long = 0L,
     @Transient val audioEnabled: Boolean = false,
-    @SerializedName("session_id") val sessionId: Long? = null
+    @SerializedName("session_id") val sessionId: Long? = null,
+    @SerializedName("app_id") val appId: Int = 1,
+    @SerializedName("client_uuid") val clientUuid: String? = null,
+    @SerializedName("app_name") val appName: String? = null
 )
 
 data class RuntimeSessionsResponse(
@@ -121,10 +126,15 @@ data class FrameTargetDiagnostics(
     val width: Int, val height: Int,
     @SerializedName("requested_fps") val requestedFps: Int,
     @SerializedName("effective_fps") val effectiveFps: Int,
-    @SerializedName("measured_fps") val measuredFps: Double
+    @SerializedName("measured_fps") val measuredFps: Double,
+    @SerializedName("thread_id") val threadId: Long = 0,
+    @SerializedName("gpu_handoff_ms") val gpuHandoffMs: Double? = null,
+    val viewport: List<Int> = emptyList()
 )
 
 data class FrameDiagnostics(
+    @SerializedName("capture_width") val captureWidth: Int = 0,
+    @SerializedName("capture_height") val captureHeight: Int = 0,
     @SerializedName("capture_fps") val captureFps: Double = 0.0,
     @SerializedName("submitted_frames") val submittedFrames: Long = 0,
     @SerializedName("repeated_frames") val repeatedFrames: Long = 0,

@@ -3,6 +3,9 @@ package com.alkaidlab.sunshine.service
 import android.content.Context
 import android.content.Intent
 import android.hardware.display.VirtualDisplay
+import android.hardware.display.DisplayManager
+import android.graphics.Point
+import android.view.Display
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
@@ -26,6 +29,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import rikka.shizuku.Shizuku
 import java.lang.reflect.Method
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 class SunshineRuntimeManager private constructor() {
 
@@ -47,6 +56,72 @@ class SunshineRuntimeManager private constructor() {
     @Volatile private var audioRecord: AudioRecord? = null
     @Volatile var engineClient: SunshineEngineClient? = null
     private val frameDispatcher = SunshineFrameDispatcher()
+    private val captureHandler = Handler(Looper.getMainLooper())
+    private var captureDisplayManager: DisplayManager? = null
+    private val _fullscreenBusy = MutableStateFlow(false)
+    private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
+    private val captureDisplayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY) syncCaptureSize()
+        }
+    }
+
+    private fun displayCaptureSize(fallbackWidth: Int, fallbackHeight: Int): IntArray {
+        val size = Point()
+        captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(size)
+        return if (size.x > 0 && size.y > 0) intArrayOf(size.x, size.y)
+        else intArrayOf(fallbackWidth.coerceAtLeast(1), fallbackHeight.coerceAtLeast(1))
+    }
+
+    /** A low-resolution or differently oriented first client must never shrink later clients. */
+    private fun syncCaptureSize(): Boolean {
+        val display = virtualDisplay ?: return false
+        if (!frameDispatcher.isRunning) return false
+        val size = displayCaptureSize(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
+        if (size[0] == frameDispatcher.sourceWidth && size[1] == frameDispatcher.sourceHeight) return true
+        val oldWidth = frameDispatcher.sourceWidth
+        val oldHeight = frameDispatcher.sourceHeight
+        try {
+            display.surface = null
+            val resizedSurface = frameDispatcher.resizeCaptureSync(size[0], size[1])
+                ?: throw IllegalStateException("Capture surface resize failed")
+            display.resize(size[0], size[1], context?.resources?.displayMetrics?.densityDpi ?: 300)
+            display.surface = resizedSurface
+            SunshineLogManager.log("VD", "Capture resized to ${size[0]}x${size[1]} (display pixels)")
+            return true
+        } catch (e: Exception) {
+            try {
+                display.resize(oldWidth, oldHeight, context?.resources?.displayMetrics?.densityDpi ?: 300)
+                display.surface = frameDispatcher.resizeCaptureSync(oldWidth, oldHeight)
+            } catch (_: Exception) {}
+            SunshineLogManager.log("VD_ERR", "Capture resize failed: ${e.message}")
+            return false
+        }
+    }
+    private var appSessionGuard: AppSessionGuard? = null
+    private fun ensureAppGuard(): AppSessionGuard? {
+        if (appSessionGuard == null) context?.let { ctx ->
+            appSessionGuard = AppSessionGuard(ctx) { threadId ->
+                val video = engineClient?.videoSessions()?.firstOrNull { it.threadId == threadId }
+                video != null && engineClient?.controlVideo(video.sessionId, 3) == true
+            }
+        }
+        return appSessionGuard
+    }
+    fun nativeAppsJson(): String { return try {
+        val ctx = context ?: return "{\"apps\":[]}"
+        com.google.gson.Gson().toJson(AppCatalog.read(java.io.File(ctx.filesDir, "apps.json")))
+    } catch (_: Exception) { "{\"apps\":[]}" } }
+    fun prepareApp(appId: Int): Boolean { return try {
+        val ctx = context ?: return false
+        val app = AppCatalog.read(java.io.File(ctx.filesDir, "apps.json")).apps.firstOrNull { it.id?.toIntOrNull() == appId } ?: return false
+        if (app.singleApp && !PrivilegedShell.available()) return false
+        app.cmd.isNullOrBlank() || launchAppByCommand(app.cmd)
+    } catch (_: Exception) { false } }
+
 
     // Streaming State
     private val _isStreaming = MutableStateFlow(false)
@@ -115,6 +190,10 @@ class SunshineRuntimeManager private constructor() {
 
     fun initialize(appContext: Context) {
         this.context = appContext.applicationContext
+        if (captureDisplayManager == null) {
+            captureDisplayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            captureDisplayManager?.registerDisplayListener(captureDisplayListener, captureHandler)
+        }
         remoteWake = RemoteInputWakeManager(appContext.applicationContext, ::injectWakeKey)
         com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
         reloadConfig(this.context)
@@ -165,26 +244,21 @@ class SunshineRuntimeManager private constructor() {
     fun launchAppByCommand(cmd: String): Boolean {
         val ctx = context ?: return false
         val pkg = cmd.trim()
-        if (pkg.isEmpty()) return false
+        if (!pkg.matches(Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+"))) return false
         return try {
-            val pm = ctx.packageManager
-            val launchIntent = pm.getLaunchIntentForPackage(pkg)
-            if (launchIntent != null) {
-                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                ctx.startActivity(launchIntent)
-                SunshineLogManager.log("APP_LAUNCH", "Launched package: $pkg")
-                true
-            } else if (Shizuku.pingBinder() && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                val method = Shizuku::class.java.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
-                method.isAccessible = true
-                method.invoke(null, arrayOf("sh", "-c", "monkey -p $pkg -c android.intent.category.LAUNCHER 1 || $pkg"), null, null)
-                SunshineLogManager.log("APP_LAUNCH", "Executed command via Shizuku: $pkg")
-                true
+            val intent = ctx.packageManager.getLaunchIntentForPackage(pkg) ?: return false
+            val component = intent.component ?: return false
+            if (PrivilegedShell.available()) {
+                val output = PrivilegedShell.run(arrayOf("am", "start", "-n", component.flattenToString()), 3000) ?: return false
+                if (output.contains("Error:", true) || output.contains("Exception", true)) return false
             } else {
-                false
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(intent)
             }
+            SunshineLogManager.log("APP_LAUNCH", "Launched selected application")
+            true
         } catch (e: Exception) {
-            SunshineLogManager.log("APP_ERR", "Failed to launch $pkg: ${e.message}")
+            SunshineLogManager.log("APP_ERR", "Application could not be opened: ${e.javaClass.simpleName}")
             false
         }
     }
@@ -246,7 +320,7 @@ class SunshineRuntimeManager private constructor() {
                                 val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
                                     peerIps.getOrElse(idx) { peerIps.last() }
                                 } else s.clientIp
-                                val resolvedName = if (s.clientName.startsWith("Moonlight Client") && resolvedIp != "127.0.0.1") {
+                                val resolvedName = if (s.clientName.startsWith("Moonlight Client") && s.clientUuid.isNullOrBlank() && resolvedIp != "127.0.0.1") {
                                     "Moonlight ($resolvedIp)"
                                 } else s.clientName
                                 val video = nativeVideo[s.videoThreadId]
@@ -356,9 +430,7 @@ class SunshineRuntimeManager private constructor() {
 
     fun getMediaProjection(): MediaProjection? = mediaProjection
 
-    fun getCaptureDimensions(width: Int, height: Int): IntArray =
-        if (frameDispatcher.isRunning) intArrayOf(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
-        else intArrayOf(width, height)
+    fun getCaptureDimensions(width: Int, height: Int): IntArray = displayCaptureSize(width, height)
 
     fun submitPin(pin: String): Boolean {
         val cleanPin = pin.trim()
@@ -388,7 +460,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface,
-                        shouldSendAudio: Boolean, callerThreadId: Long) {
+                        shouldSendAudio: Boolean, callerThreadId: Long, appId: Int = 1, clientId: String = "") {
         val sessionIndex = activeSessions.size + 1
         reloadConfig()
         val peerIps = detectConnectedPeerIps()
@@ -396,7 +468,14 @@ class SunshineRuntimeManager private constructor() {
             lastDiscoveredClient = peerIps.last()
         }
         val cIp = peerIps.lastOrNull() ?: lastDiscoveredClient ?: "127.0.0.1"
-        val cName = if (cIp != "127.0.0.1") "Moonlight ($cIp)" else "Moonlight Client #$sessionIndex"
+        val pairedName = try {
+            context?.let { ctx ->
+                val root = com.google.gson.JsonParser.parseString(java.io.File(ctx.filesDir, "sunshine_state.json").readText()).asJsonObject.getAsJsonObject("root")
+                root?.getAsJsonArray("named_devices")?.firstOrNull { it.asJsonObject.get("uuid")?.asString?.equals(clientId, true) == true }
+                    ?.asJsonObject?.get("name")?.asString
+            }
+        } catch (_: Exception) { null }
+        val cName = pairedName ?: if (cIp != "127.0.0.1") "Moonlight ($cIp)" else "Moonlight Client #$sessionIndex"
         SunshineLogManager.log("STREAM", "Stream started ($cName, tid=$callerThreadId): ${width}x$height @ ${fps}fps, packetDuration=${packetDuration}ms, audio=$shouldSendAudio")
 
         lastWidth = width
@@ -415,6 +494,7 @@ class SunshineRuntimeManager private constructor() {
 
         com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(width, height)
 
+        val selectedApp = try { context?.let { AppCatalog.read(java.io.File(it.filesDir, "apps.json")).apps.firstOrNull { app -> app.id?.toIntOrNull() == appId } } } catch (_: Exception) { null }
         val session = RuntimeSession(
             clientName = cName,
             clientIp = cIp,
@@ -426,8 +506,10 @@ class SunshineRuntimeManager private constructor() {
             startTime = System.currentTimeMillis(),
             surface = surface,
             videoThreadId = callerThreadId,
-            audioEnabled = shouldSendAudio
+            audioEnabled = shouldSendAudio,
+            appId = appId, clientUuid = clientId.takeIf { it.isNotBlank() }, appName = selectedApp?.name
         )
+        if (selectedApp?.singleApp == true && !selectedApp.cmd.isNullOrBlank()) ensureAppGuard()?.attach(callerThreadId, selectedApp.cmd)
         activeSessions.add(session)
         _activeSessionsFlow.value = activeSessions.toList()
         _isStreaming.value = true
@@ -441,27 +523,29 @@ class SunshineRuntimeManager private constructor() {
             if (mp != null) {
                 if (!frameDispatcher.isRunning || virtualDisplay == null) {
                     try {
-                        val inputSurface = frameDispatcher.start(width, height)
+                        val captureSize = displayCaptureSize(width, height)
+                        val inputSurface = frameDispatcher.start(captureSize[0], captureSize[1])
                         val densityDpi = context?.resources?.displayMetrics?.densityDpi ?: 300
                         virtualDisplay?.release()
                         virtualDisplay = mp.createVirtualDisplay(
                             "SunshineVirtualDisplay",
-                            width,
-                            height,
+                            captureSize[0],
+                            captureSize[1],
                             densityDpi,
                             android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                             inputSurface,
                             null,
                             null
                         )
-                        SunshineLogManager.log("VD", "VirtualDisplay created feeding SunshineFrameDispatcher (${width}x$height @ ${densityDpi}dpi)")
+                        SunshineLogManager.log("VD", "VirtualDisplay captures ${captureSize[0]}x${captureSize[1]} display pixels; client=${width}x$height @ ${densityDpi}dpi")
                     } catch (e: Exception) {
                         SunshineLogManager.log("VD_ERR", "Error initializing VirtualDisplay/Dispatcher: ${e.message}")
                     }
                 }
 
+                syncCaptureSize()
                 // Register client surface into frame dispatcher with target FPS
-                frameDispatcher.addSurface(surface, width, height, fps)
+                frameDispatcher.addSurface(surface, width, height, fps, callerThreadId)
                 SunshineLogManager.log("VD", "Client ($cName) surface registered into frame dispatcher")
             } else {
                 SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
@@ -478,6 +562,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     fun onStreamStopped(callerThreadId: Long) {
+        appSessionGuard?.detach(callerThreadId)
         val deadSession = activeSessions.find { it.videoThreadId == callerThreadId } ?: return
         activeSessions.remove(deadSession)
         deadSession.surface?.let { surface ->
@@ -493,6 +578,7 @@ class SunshineRuntimeManager private constructor() {
             _isStreaming.value = false
             stopTelemetryLoop()
             streamStartTime = 0L
+            restoreFullscreenIfIdle()
             // Preserve projection/display/recorder, but stop draining audio while idle.
         }
         if (activeSessions.none { it.audioEnabled }) pauseAudioCapture()
@@ -502,6 +588,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     fun onEngineDisconnected() {
+        appSessionGuard?.clear()
         activeSessions.toList().forEach { onStreamStopped(it.videoThreadId) }
         _pinRequested.value = null
         audioPacketFloats = 0
@@ -527,7 +614,7 @@ class SunshineRuntimeManager private constructor() {
         if (activeSessions.isNotEmpty()) {
             val updated = activeSessions.map { s ->
                 if (s.clientName.startsWith("Moonlight Client") || s.clientIp == "127.0.0.1") {
-                    s.copy(clientName = client, clientIp = client)
+                    s.copy(clientName = if (s.clientUuid.isNullOrBlank()) client else s.clientName, clientIp = client)
                 } else s
             }
             activeSessions.clear()
@@ -542,7 +629,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun isClientActive(uuid: String): Boolean {
-        return _isStreaming.value && clientUuid == uuid
+        return activeSessions.any { it.clientUuid?.equals(uuid, true) == true }
     }
 
     fun getActiveSessions(): List<RuntimeSession> {
@@ -555,6 +642,101 @@ class SunshineRuntimeManager private constructor() {
 
     fun controlVideo(sessionId: Long, operation: Int, value: Int = 0): Boolean =
         engineClient?.controlVideo(sessionId, operation, value) == true
+
+    private fun rememberFullscreenDisplay(before: FullscreenDisplay.Snapshot) {
+        val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: error("No host context")
+        if (prefs.contains("original")) return
+        val data = org.json.JSONObject().put("width", before.override?.width ?: 0)
+            .put("height", before.override?.height ?: 0).put("userRotation", before.userRotation)
+            .put("autoRotate", before.autoRotate).put("fixedRotation", before.fixedRotation)
+        check(prefs.edit().putString("original", data.toString()).commit())
+    }
+
+    private fun fullscreenBackend(rememberOriginal: Boolean = false): FullscreenDisplay.Backend {
+        // Some Android versions print valid wm help with exit code -1 (255); mutations still require 0.
+        val help = PrivilegedShell.run(arrayOf("wm", "help"), acceptedExitCodes = setOf(0, 1, 255)).orEmpty()
+        val fixedCommand = if (help.contains("set-fix-to-user-rotation")) "set-fix-to-user-rotation"
+            else if (help.contains("fixed-to-user-rotation")) "fixed-to-user-rotation" else null
+        return object : FullscreenDisplay.Backend {
+            override fun rotation() = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
+            override fun snapshot(): FullscreenDisplay.Snapshot? {
+                val output = PrivilegedShell.run(arrayOf("wm", "size")) ?: return null
+                val windows = PrivilegedShell.run(arrayOf("dumpsys", "window", "displays")) ?: return null
+                val fixed = FullscreenDisplay.parseFixedRotation(windows) ?: return null
+                val resolver = context?.contentResolver ?: return null
+                return FullscreenDisplay.parseOverride(output)?.copy(rotation = rotation(), fixedRotation = fixed,
+                    autoRotate = android.provider.Settings.System.getInt(resolver, "accelerometer_rotation", 0) != 0,
+                    userRotation = android.provider.Settings.System.getInt(resolver, "user_rotation", rotation()))
+                    ?.also { if (rememberOriginal) rememberFullscreenDisplay(it) }
+            }
+            override fun setFixedRotation(enabled: Boolean): Boolean = fixedCommand != null &&
+                PrivilegedShell.run(arrayOf("wm", fixedCommand, if (enabled) "enabled" else "disabled"), 3000) != null
+            override fun setRotation(rotation: Int, autoRotate: Boolean): Boolean =
+                PrivilegedShell.run(if (autoRotate) arrayOf("wm", "set-user-rotation", "free")
+                    else arrayOf("wm", "set-user-rotation", "lock", rotation.toString()), 3000) != null
+            override fun setOverride(size: FullscreenDisplay.Size?) =
+                PrivilegedShell.run(arrayOf("wm", "size", size?.toString() ?: "reset"), 3000) != null
+            override fun awaitDisplay(size: FullscreenDisplay.Size): Boolean {
+                repeat(30) {
+                    val current = displayCaptureSize(0, 0)
+                    if (current[0] == size.width && current[1] == size.height) return true
+                    Thread.sleep(50)
+                }
+                return false
+            }
+            override fun syncCapture(): Boolean {
+                val latch = CountDownLatch(1)
+                var synced = false
+                captureHandler.post {
+                    try { synced = !frameDispatcher.isRunning || virtualDisplay == null || syncCaptureSize() }
+                    finally { latch.countDown() }
+                }
+                return latch.await(6, TimeUnit.SECONDS) && synced
+            }
+        }
+    }
+
+    private fun restoreFullscreenIfIdle() {
+        val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: return
+        if (!prefs.contains("original")) return
+        fullscreenScope.launch {
+            if (activeSessions.isNotEmpty() || !PrivilegedShell.available() || !_fullscreenBusy.compareAndSet(false, true)) return@launch
+            try {
+                if (activeSessions.isNotEmpty()) return@launch
+                val raw = prefs.getString("original", null) ?: return@launch
+                val data = org.json.JSONObject(raw)
+                val size = if (data.getInt("width") > 0 && data.getInt("height") > 0)
+                    FullscreenDisplay.Size(data.getInt("width"), data.getInt("height")) else null
+                val before = FullscreenDisplay.Snapshot(size, 0, autoRotate = data.getBoolean("autoRotate"),
+                    userRotation = data.getInt("userRotation"), fixedRotation = data.getBoolean("fixedRotation"))
+                if (FullscreenDisplay.restore(before, fullscreenBackend())) {
+                    prefs.edit().remove("original").commit()
+                    SunshineLogManager.log("FULLSCREEN", "Restored original display after all clients exited")
+                }
+            } catch (e: Exception) { SunshineLogManager.log("FULLSCREEN_ERR", "Display restore failed: ${e.message}") }
+            finally { _fullscreenBusy.value = false }
+        }
+    }
+
+    suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result = withContext(Dispatchers.IO + NonCancellable) {
+        if (!_fullscreenBusy.compareAndSet(false, true))
+            return@withContext FullscreenDisplay.Result(false, "正在切换全屏，请稍候")
+        try {
+            val native = engineClient?.videoSessions()?.firstOrNull { it.sessionId == sessionId }
+                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
+            val selected = activeSessions.firstOrNull { it.videoThreadId == native.threadId }
+                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
+            if (!PrivilegedShell.available()) return@withContext FullscreenDisplay.Result(false, "修改本机分辨率需要 Shizuku 远程控制权限")
+            if (!frameDispatcher.isRunning || virtualDisplay == null)
+                return@withContext FullscreenDisplay.Result(false, "屏幕采集尚未就绪，请稍后重试")
+            fun isCurrent(): Boolean = activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime } &&
+                engineClient?.videoSessions()?.any { it.sessionId == sessionId } == true
+            val backend = fullscreenBackend(rememberOriginal = true)
+            val result = FullscreenDisplay.apply(FullscreenDisplay.Size(selected.width, selected.height), backend, ::isCurrent)
+            SunshineLogManager.log("FULLSCREEN", "Session $sessionId: ${result.message}")
+            result
+        } finally { _fullscreenBusy.value = false; if (activeSessions.isEmpty()) restoreFullscreenIfIdle() }
+    }
 
     fun getPerfSnapshot(): PerfResponse {
         return if (_isStreaming.value) {
@@ -760,6 +942,8 @@ class SunshineRuntimeManager private constructor() {
     fun releaseAll() {
         onEngineDisconnected()
         releaseCapture()
+        captureDisplayManager?.unregisterDisplayListener(captureDisplayListener)
+        captureDisplayManager = null
         com.connect_screen.mirror.job.SunshineMouse.reset()
     }
 
@@ -779,6 +963,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     fun initShizukuInput() {
+        restoreFullscreenIfIdle()
         try {
             val hasShizuku = try {
                 Shizuku.pingBinder() && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED

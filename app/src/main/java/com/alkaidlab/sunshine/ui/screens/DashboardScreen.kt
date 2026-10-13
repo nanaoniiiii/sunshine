@@ -1,614 +1,213 @@
 package com.alkaidlab.sunshine.ui.screens
 
-import android.widget.Toast
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.alkaidlab.sunshine.BuildConfig
+import com.alkaidlab.sunshine.ui.components.*
 import com.alkaidlab.sunshine.ui.theme.*
 import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DashboardScreen(
-    viewModel: SunshineViewModel,
-    onRequestMediaProjection: () -> Unit,
-    onRequestShizuku: () -> Unit,
-    onRequestBatteryOptimization: () -> Unit
-) {
-    val isRunning by viewModel.isServiceRunning.collectAsState()
+fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -> Unit,
+    onRequestShizuku: () -> Unit, onRequestBatteryOptimization: () -> Unit,
+    onOpenPairing: () -> Unit = {}, onToggleTheme: () -> Unit = {}, darkTheme: Boolean = false) {
+    val running by viewModel.isServiceRunning.collectAsState()
     val ip by viewModel.serviceIp.collectAsState()
-    val vpnIp by viewModel.serviceVpnIp.collectAsState()
+    val vpn by viewModel.serviceVpnIp.collectAsState()
     val ipv6 by viewModel.serviceIpv6.collectAsState()
     val config by viewModel.config.collectAsState()
     val sessions by viewModel.runtimeSessions.collectAsState()
+    val fullscreenBusy by viewModel.fullscreenBusy.collectAsState()
     val perf by viewModel.perf.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
-    val pinRequested by viewModel.pinRequested.collectAsState()
+    val capture by viewModel.isMediaProjectionGranted.collectAsState()
+    val shizuku by viewModel.isShizukuGranted.collectAsState()
+    val audio by viewModel.isAudioRecordGranted.collectAsState()
+    val battery by viewModel.isBatteryOptimizedIgnored.collectAsState()
+    var moreNetwork by rememberSaveable { mutableStateOf(false) }
+    var moreMetrics by rememberSaveable { mutableStateOf(false) }
 
-    val isMediaProjectionGranted by viewModel.isMediaProjectionGranted.collectAsState()
-    val isShizukuGranted by viewModel.isShizukuGranted.collectAsState()
-    val isAudioGranted by viewModel.isAudioRecordGranted.collectAsState()
-    val isBatteryOptimized by viewModel.isBatteryOptimizedIgnored.collectAsState()
-
-    var pinInput by remember { mutableStateOf("") }
-
-    Column(
-        modifier =渐变Modifier(
-            Modifier
-                .fillMaxSize()
-                .background(DarkBg)
-                .verticalScroll(rememberScrollState())
-                .padding(16.dp)
-        ),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        // Top Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column {
-                Text(
-                    text = "SUNSHINE",
-                    color = PrimaryCyan,
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 2.sp
-                )
-                Text(
-                    text = config?.version ?: "${BuildConfig.VERSION_NAME} (Android)",
-                    color = TextSecondary,
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+    LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding,
+        verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        item { PageHeader("Sunshine", "将这台 Android 设备连接到 Moonlight") {
+            FilledTonalIconButton(onClick = onToggleTheme, modifier = Modifier.size(48.dp)) {
+                Icon(if (darkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                    if (darkTheme) "切换为浅色" else "切换为深色", tint = PrimaryCyan)
             }
-
-            // Status Badge
-            Surface(
-                color = if (isRunning) AccentGreen.copy(alpha = 0.15f) else AccentOrange.copy(alpha = 0.15f),
-                shape = RoundedCornerShape(20.dp),
-                border = androidx.compose.foundation.BorderStroke(
-                    1.dp,
-                    if (isRunning) AccentGreen else AccentOrange
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(
-                                color = if (isRunning) AccentGreen else AccentOrange,
-                                shape = CircleShape
-                            )
-                    )
-                    Text(
-                        text = if (isRunning) "服务运行中" else "服务就绪",
-                        color = if (isRunning) AccentGreen else AccentOrange,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-        }
-
-        // Prominent PIN Alert if Moonlight requests pairing
-        if (pinRequested != null) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = AccentOrange.copy(alpha = 0.1f)),
-                border = androidx.compose.foundation.BorderStroke(1.dp, AccentOrange),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(Icons.Default.VpnKey, contentDescription = null, tint = AccentOrange)
-                        Text("Moonlight 客户端请求配对", color = AccentOrange, fontWeight = FontWeight.Bold)
+        } }
+        item {
+            Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
+                Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(if (sessions.isNotEmpty()) "正在串流" else if (running && capture) "准备好连接了" else "准备串流",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.weight(1f))
+                        StatusTag(if (running) "服务运行中" else "服务未运行",
+                            if (running) AccentGreen else AccentOrange)
                     }
-                    Text(
-                        "客户端已发起配对，请输入 Moonlight 屏幕上显示的 4 位 PIN 码以完成连接：",
-                        color = TextSecondary,
-                        fontSize = 13.sp
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = pinInput,
-                            onValueChange = { if (it.length <= 4) pinInput = it },
-                            placeholder = { Text("4位PIN码") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = AccentOrange,
-                                unfocusedBorderColor = CardBorder,
-                                focusedTextColor = TextPrimary,
-                                unfocusedTextColor = TextPrimary
-                            )
-                        )
-                        Button(
-                            onClick = {
-                                if (pinInput.length == 4) {
-                                    viewModel.submitPin(pinInput)
-                                    pinInput = ""
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = AccentOrange),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text("确定配对", color = DarkBg, fontWeight = FontWeight.Bold)
-                        }
+                    Text(if (sessions.isNotEmpty()) "${sessions.size} 个客户端已连接"
+                        else if (capture) "在 Moonlight 中添加下方地址，然后输入配对码。"
+                        else "先允许屏幕录制，再连接 Moonlight。",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyLarge)
+                    if (!capture) PrimaryButton(onClick = onRequestMediaProjection, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(Icons.Default.ScreenShare, null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp)); Text("允许屏幕录制")
+                    } else PrimaryButton(onClick = onOpenPairing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(Icons.Default.AddLink, null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp)); Text("配对新设备")
                     }
                 }
             }
         }
-
-        // Server Information Card
-        Card(
-            colors = CardDefaults.cardColors(containerColor = CardBg),
-            shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "网络与服务节点",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-
-                // LAN IPv4
-                CopyableAddressRow(
-                    title = "局域网 IPv4",
-                    value = ip,
-                    badgeText = "LAN",
-                    badgeColor = PrimaryCyan,
-                    isAvailable = ip != "127.0.0.1"
-                )
-
-                // Tailscale / VPN IP
-                CopyableAddressRow(
-                    title = "Tailscale / 虚拟内网",
-                    value = vpnIp ?: "未开启 / 未检测到虚拟网卡",
-                    badgeText = if (vpnIp != null) "VPN穿透" else null,
-                    badgeColor = AccentOrange,
-                    isAvailable = vpnIp != null
-                )
-
-                // Global Unicast IPv6
-                val displayIpv6 = ipv6 ?: config?.ipv6Address
-                CopyableAddressRow(
-                    title = "全球单播 IPv6",
-                    value = displayIpv6 ?: "未分配公网 IPv6",
-                    badgeText = if (displayIpv6 != null) "公网直连推荐" else null,
-                    badgeColor = AccentGreen,
-                    isAvailable = displayIpv6 != null
-                )
-
-                Surface(
-                    color = PrimaryCyan.copy(alpha = 0.08f),
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryCyan.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Icon(Icons.Default.Info, contentDescription = null, tint = PrimaryCyan, modifier = Modifier.size(14.dp))
-                            Text("Moonlight 跨网直连与多端同屏说明", color = PrimaryCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                        Text(
-                            "• 外网直连：蜂窝移动网络与大部分宽带分配有公网 IPv6，在 Moonlight 中输入上方 [IPv6]:47989 即可端到端低延迟直连，完全无需中继穿透。\n" +
-                            "• 内网穿透：开启 Tailscale 后，可复制上方 100.x.x.x 地址在客户端中连接。\n" +
-                            "• 多端同屏：支持多台 Moonlight 客户端同时连入观战与协同控制，共享手机硬件编码管道，零额外性能损耗。",
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp
-                        )
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    InfoField(label = "推流端口", value = config?.port ?: "47989 (UDP/TCP)")
-                    InfoField(label = "Web 管理端口", value = "${config?.webPort ?: "47990"} (REST API)")
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    InfoField(label = "发现广播", value = "_nvstream._tcp (mDNS)")
-                    InfoField(label = "协议栈族", value = if (config?.addressFamily == "both") "双栈 IPv4+IPv6" else "双栈自适应")
-                }
-
-                Divider(color = CardBorder, thickness = 1.dp)
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("硬件编码器", color = TextSecondary, fontSize = 12.sp)
-                        Text(config?.encoder ?: "AMediaCodec (Hardware)", color = PrimaryCyan, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    }
-
-                    if (!isMediaProjectionGranted) {
-                        Button(
-                            onClick = onRequestMediaProjection,
-                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Icon(Icons.Default.ScreenShare, contentDescription = null, tint = DarkBg, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("授权录屏", color = DarkBg, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
+        item { SectionCard("连接地址", Icons.Default.Wifi) {
+            AddressRow("局域网", ip.takeUnless { it == "127.0.0.1" }, "请连接 Wi-Fi 或以太网")
+            TextButton(onClick = { moreNetwork = !moreNetwork }, contentPadding = PaddingValues(0.dp)) {
+                Text(if (moreNetwork) "收起其他连接方式" else "其他连接方式")
+                Icon(if (moreNetwork) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
             }
-        }
-
-        // Real-time Stream & Performance Card
-        Card(
-            colors = CardDefaults.cardColors(containerColor = CardBg),
-            shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "实时推流监控",
-                        color = TextPrimary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-
-                    Surface(
-                        color = if (sessions.isNotEmpty()) AccentGreen.copy(alpha = 0.15f) else TextMuted.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text(
-                            text = if (sessions.isNotEmpty()) "推流中 (${sessions.size})" else "空闲中",
-                            color = if (sessions.isNotEmpty()) AccentGreen else TextMuted,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                if (sessions.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "当前无活跃 Moonlight 客户端连接\n可在客户端添加 IP: $ip 开启串流",
-                            color = TextMuted,
-                            fontSize = 13.sp,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            lineHeight = 18.sp
-                        )
-                    }
-                } else {
-                    val nowMs = System.currentTimeMillis()
-                    sessions.forEach { session ->
-                        val elapsedSec = ((nowMs - session.startTime) / 1000L).coerceAtLeast(0L)
-                        val mins = elapsedSec / 60
-                        val secs = elapsedSec % 60
-                        val durationText = String.format("%02d:%02d", mins, secs)
-                        val mbpsText = if (session.bitrate > 0) String.format("%.1f Mbps", session.bitrate / 1000.0) else "码率未上报"
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(CardBorder.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(session.clientName, color = TextPrimary, fontWeight = FontWeight.Bold)
-                                Text(session.codec, color = PrimaryCyan, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("画面规格: ${session.width}x${session.height} @ ${session.fps}fps", color = TextSecondary, fontSize = 12.sp)
-                                Text("实时码率: $mbpsText", color = AccentGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = if (session.clientIp != "127.0.0.1") "连接节点: ${session.clientIp}" else "连接节点: 局域网直连",
-                                    color = TextMuted,
-                                    fontSize = 11.sp
-                                )
-                                Text("已推流: $durationText", color = TextMuted, fontSize = 11.sp)
+            if (moreNetwork) {
+                AddressRow("VPN / Tailscale", vpn, "未检测到虚拟网卡")
+                AddressRow("IPv6", ipv6 ?: config?.ipv6Address, "未分配公网 IPv6")
+                Text("跨网连接需要双方网络可达，并允许相应端口通过防火墙。也可使用 Tailscale 地址连接。",
+                    color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("串流端口 ${config?.port ?: "47989"} · 管理端口 ${config?.webPort ?: "47990"}",
+                    style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+        } }
+        item { SectionCard("串流状态", Icons.Default.ShowChart) {
+            if (sessions.isEmpty()) {
+                Text("等待客户端连接", style = MaterialTheme.typography.titleMedium)
+                Text("连接后显示画面规格、送帧率和延迟数据。", color = TextSecondary,
+                    style = MaterialTheme.typography.bodyMedium)
+            } else {
+                sessions.forEach { session ->
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text(session.clientName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            StatusTag(session.codec)
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Text("${session.width} × ${session.height} · ${session.fps} FPS",
+                                color = TextSecondary, modifier = Modifier.weight(1f))
+                            FilledTonalButton(
+                                onClick = { session.sessionId?.let(viewModel::fullscreenSession) },
+                                enabled = !fullscreenBusy && session.sessionId != null,
+                                modifier = Modifier.heightIn(min = 48.dp)) {
+                                Icon(Icons.Default.Fullscreen, null, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("全屏")
                             }
                         }
-                    }
+                        val target = diagnostics?.frames?.targets?.firstOrNull { it.threadId == session.videoThreadId }
+                        val native = diagnostics?.video?.firstOrNull { it.threadId == session.videoThreadId }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("送帧 ${target?.let { "%.1f".format(it.measuredFps) } ?: "—"} FPS", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("GPU送帧 ${target?.gpuHandoffMs?.let { "%.2f".format(it) } ?: "—"} ms", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("RTT ${native?.controlRttMs?.toString() ?: "—"} ms", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("请求 ${native?.requestedBitrateKbps?.takeIf { it > 0 }?.let { "%.1f".format(it / 1000.0) } ?: "—"} Mbps", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                        }
+                        session.appName?.let { Text(it, color = TextSecondary, style = MaterialTheme.typography.bodySmall) }
 
-                    if (perf.active) {
-                        Divider(color = CardBorder, thickness = 1.dp)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            MetricItem("最高送帧率", String.format("%.1f FPS", perf.fps))
-                            MetricItem("GPU 送帧", String.format("%.2f ms", perf.gpuHandoffMs))
-                            MetricItem("探测 RTT", perf.networkLatencyMs?.let { String.format("%.2f ms", it) } ?: "未测得")
-                        }
-                        diagnostics?.let { info ->
-                            Text(
-                                "GPU P95 ${String.format("%.2f", info.frames.handoffP95Ms)} ms · 音频排队 ${String.format("%.1f", info.audio.queuedMs)} ms",
-                                color = TextSecondary, fontSize = 12.sp
-                            )
-                            Text(
-                                "合并帧 ${info.frames.coalescedFrames} · 慢送帧 ${info.frames.slowHandoffs} · 总发送 ${String.format("%.1f", info.perf.bitrateKbps / 1000.0)} Mbps",
-                                color = TextMuted, fontSize = 11.sp
-                            )
-                        }
                     }
                 }
-            }
-        }
-
-        // System Permissions & Privileges Card
-        Card(
-            colors = CardDefaults.cardColors(containerColor = CardBg),
-            shape = RoundedCornerShape(16.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "系统权限与特权注入",
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
-
-                PermissionRow(
-                    icon = Icons.Default.ScreenShare,
-                    title = "屏幕录制 (MediaProjection)",
-                    desc = "用于系统虚拟屏幕创建与画面捕获",
-                    granted = isMediaProjectionGranted,
-                    actionText = if (!isMediaProjectionGranted) "授权" else null,
-                    onAction = onRequestMediaProjection
-                )
-
-                PermissionRow(
-                    icon = Icons.Default.TouchApp,
-                    title = "Shizuku 特权注入",
-                    desc = "免 Root 注入触控、鼠标移动与虚拟按键",
-                    granted = isShizukuGranted,
-                    actionText = if (!isShizukuGranted) "连接" else null,
-                    onAction = onRequestShizuku
-                )
-
-                PermissionRow(
-                    icon = Icons.Default.Mic,
-                    title = "音频内录 (AudioPlaybackCapture)",
-                    desc = "捕获手机媒体音频并编码推流",
-                    granted = isAudioGranted,
-                    actionText = null,
-                    onAction = {}
-                )
-
-                PermissionRow(
-                    icon = Icons.Default.BatteryChargingFull,
-                    title = "后台保活 (忽略电池优化)",
-                    desc = "防止息屏推流时系统杀死进程",
-                    granted = isBatteryOptimized,
-                    actionText = if (!isBatteryOptimized) "设置" else null,
-                    onAction = onRequestBatteryOptimization
-                )
-            }
-        }
-    }
-}
-
-private fun 渐变Modifier(modifier: Modifier): Modifier = modifier
-
-@Composable
-fun InfoField(label: String, value: String) {
-    Column {
-        Text(text = label, color = TextSecondary, fontSize = 11.sp)
-        Text(text = value, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-    }
-}
-
-@Composable
-fun MetricItem(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, color = TextSecondary, fontSize = 11.sp)
-        Text(value, color = PrimaryCyan, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    }
-}
-
-@Composable
-fun PermissionRow(
-    icon: ImageVector,
-    title: String,
-    desc: String,
-    granted: Boolean,
-    actionText: String?,
-    onAction: () -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (granted) AccentGreen else TextMuted,
-                modifier = Modifier.size(20.dp)
-            )
-            Column {
-                Text(title, color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                Text(desc, color = TextSecondary, fontSize = 11.sp)
-            }
-        }
-
-        if (actionText != null) {
-            TextButton(
-                onClick = onAction,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Text(actionText, color = PrimaryCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
-        } else {
-            Icon(
-                imageVector = if (granted) Icons.Default.CheckCircle else Icons.Default.Cancel,
-                contentDescription = null,
-                tint = if (granted) AccentGreen else TextMuted,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-    }
-}
-
-@Composable
-fun CopyableAddressRow(
-    title: String,
-    value: String,
-    badgeText: String? = null,
-    badgeColor: Color = PrimaryCyan,
-    isAvailable: Boolean = true
-) {
-    val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
-
-    Surface(
-        color = CardBorder.copy(alpha = 0.35f),
-        shape = RoundedCornerShape(10.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, CardBorder),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(text = title, color = TextSecondary, fontSize = 11.sp)
-                    if (badgeText != null) {
-                        Surface(
-                            color = badgeColor.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = badgeText,
-                                color = badgeColor,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
+                TextButton(onClick = { moreMetrics = !moreMetrics }, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (moreMetrics) "收起诊断数据" else "查看诊断数据")
+                    Icon(if (moreMetrics) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+                }
+                if (moreMetrics) diagnostics?.let { d ->
+                    Text("各路 RTT 来自各自的串流控制通道，不包含画面捕获、编码和显示耗时。",
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Text("ICMP 探测 RTT：" + (perf.networkLatencyMs?.let { "%.1f ms".format(it) }
+                        ?: if (perf.networkProbeIp == null) "未取得可用的客户端地址或回应" else "未取得新回应，样本已过期"),
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    d.frames.targets.forEachIndexed { index, target ->
+                        Text("第 ${index + 1} 路 · ${target.width} × ${target.height} · 实际送帧 ${"%.1f".format(target.measuredFps)} FPS · 上限 ${target.effectiveFps} FPS",
+                            color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text("各路送帧合计 ${"%.1f".format(d.frames.targets.sumOf { it.measuredFps })} 帧/秒",
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Text("GPU P95 ${"%.2f".format(d.frames.handoffP95Ms)} ms · 合并帧 ${d.frames.coalescedFrames}",
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Text("音频排队 ${"%.1f".format(d.audio.queuedMs)} ms · 总发送 ${"%.1f".format(d.perf.bitrateKbps / 1000.0)} Mbps",
+                        color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    d.video.forEach { v ->
+                        Text(v.encoder, style = MaterialTheme.typography.bodyMedium)
+                        Text("发送队列 ${v.queueFrames} 帧 · 丢弃 ${v.queueDroppedFrames} 帧 · FEC ${v.fecPercentage}%",
+                            color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                        Text("编码→输出 P95 ${v.submitToOutputP95Ms?.let { "%.1f".format(it) } ?: "—"} ms · 发送 P95 ${v.frameSendP95Ms?.let { "%.1f".format(it) } ?: "—"} ms",
+                            color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = value,
-                    color = if (isAvailable) TextPrimary else TextMuted,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace
-                )
             }
+        } }
+        item { SectionCard("设备准备", Icons.Default.VerifiedUser) {
+            PermissionRow("屏幕录制", "捕获并传输设备画面", capture, onRequestMediaProjection)
+            Divider(color = CardBorder)
+            PermissionRow("远程控制", "连接 Shizuku 后支持触控与按键", shizuku, onRequestShizuku)
+            Divider(color = CardBorder)
+            PermissionRow("后台运行", "允许 Sunshine 忽略电池优化", battery, onRequestBatteryOptimization)
+            Divider(color = CardBorder)
+            PermissionRow("音频录制", "用于传输应用媒体声音", audio, null)
+        } }
+        item { Text(BuildConfig.VERSION_NAME, color = TextSecondary, style = MaterialTheme.typography.bodySmall) }
+    }
+}
 
-            if (isAvailable) {
-                IconButton(
-                    onClick = {
-                        clipboardManager.setText(AnnotatedString(value))
-                        Toast.makeText(context, "已复制 $title: $value", Toast.LENGTH_SHORT).show()
-                    },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.ContentCopy,
-                        contentDescription = "复制",
-                        tint = PrimaryCyan,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
+@Composable
+private fun AddressRow(title: String, value: String?, unavailable: String) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(value) { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Text(value ?: unavailable, style = MaterialTheme.typography.titleMedium,
+                fontFamily = if (value != null) FontFamily.Monospace else FontFamily.Default)
         }
+        if (value != null) IconButton(onClick = { clipboard.setText(AnnotatedString(value)); copied = true }) {
+            Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                if (copied) "已复制$title 地址" else "复制$title 地址", tint = PrimaryCyan)
+        }
+    }
+}
+
+@Composable
+private fun Metric(label: String, value: String, unit: String, modifier: Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+        Text(value, style = MaterialTheme.typography.titleLarge, fontFamily = FontFamily.Monospace)
+        Text(unit, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun PermissionRow(title: String, description: String, granted: Boolean, onAction: (() -> Unit)?) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(if (granted) Icons.Default.CheckCircleOutline else Icons.Default.RadioButtonUnchecked,
+            null, tint = if (granted) AccentGreen else AccentOrange, modifier = Modifier.size(22.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(description, color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
+        if (granted) Text("已就绪", color = AccentGreen, style = MaterialTheme.typography.labelMedium)
+        else if (onAction != null) TextButton(onClick = onAction) { Text("设置") }
+        else Text("未授权", color = AccentOrange, style = MaterialTheme.typography.labelMedium)
     }
 }

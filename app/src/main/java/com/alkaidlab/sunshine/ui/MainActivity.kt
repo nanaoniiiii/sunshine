@@ -8,16 +8,21 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import com.alkaidlab.sunshine.ui.components.PinField
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,11 +37,10 @@ import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 import rikka.shizuku.Shizuku
 
 enum class NavigationTab(val title: String, val icon: ImageVector) {
-    DASHBOARD("仪表盘", Icons.Default.Dashboard),
-    PAIRING("配对设备", Icons.Default.VpnKey),
+    DASHBOARD("首页", Icons.Default.Dashboard),
+    PAIRING("设备", Icons.Default.VpnKey),
     APPS("应用", Icons.Default.Apps),
-    SETTINGS("设置", Icons.Default.Tune),
-    LOGS("日志", Icons.Default.Terminal)
+    SETTINGS("设置", Icons.Default.Tune)
 }
 
 class MainActivity : ComponentActivity() {
@@ -91,9 +95,17 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            SunshineTheme {
+            val systemDark = isSystemInDarkTheme()
+            val themePreferences = remember { getSharedPreferences("appearance", Context.MODE_PRIVATE) }
+            var themeOverride by rememberSaveable { mutableStateOf<Boolean?>(
+                when (themePreferences.getString("theme", "system")) { "dark" -> true; "light" -> false; else -> null }) }
+            val darkTheme = themeOverride ?: systemDark
+            SunshineTheme(darkTheme = darkTheme) {
                 MainContent(
                     viewModel = viewModel,
+                    darkTheme = darkTheme,
+                    onToggleTheme = { themeOverride = !darkTheme; themePreferences.edit().putString("theme", if (!darkTheme) "dark" else "light").apply() },
+                    onFollowSystemTheme = { themeOverride = null; themePreferences.edit().putString("theme", "system").apply() },
                     onRequestMediaProjection = { requestMediaProjection() },
                     onRequestShizuku = { requestShizukuPermission() },
                     onRequestBatteryOptimization = { requestIgnoreBatteryOptimization() }
@@ -175,61 +187,60 @@ fun MainContent(
     viewModel: SunshineViewModel,
     onRequestMediaProjection: () -> Unit,
     onRequestShizuku: () -> Unit,
-    onRequestBatteryOptimization: () -> Unit
+    onRequestBatteryOptimization: () -> Unit,
+    darkTheme: Boolean = false,
+    onToggleTheme: () -> Unit = {},
+    onFollowSystemTheme: () -> Unit = {}
 ) {
-    var selectedTab by remember { mutableStateOf(NavigationTab.DASHBOARD) }
+    var selectedTab by rememberSaveable { mutableStateOf(NavigationTab.DASHBOARD) }
+    var showLogs by rememberSaveable { mutableStateOf(false) }
+    BackHandler(enabled = selectedTab == NavigationTab.SETTINGS && showLogs) { showLogs = false }
     val statusMessage by viewModel.statusMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-
+    val pageStates = rememberSaveableStateHolder()
     LaunchedEffect(statusMessage) {
         statusMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearStatusMessage()
         }
     }
-
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = {
-            NavigationBar(
-                containerColor = DarkBg,
-                tonalElevation = 8.dp
-            ) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= 840.dp
+        Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }, bottomBar = {
+            if (!wide) NavigationBar(containerColor = CardBg, tonalElevation = 0.dp) {
                 NavigationTab.values().forEach { tab ->
-                    NavigationBarItem(
-                        icon = { Icon(tab.icon, contentDescription = tab.title) },
-                        label = { Text(tab.title, fontSize = 11.sp) },
-                        selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
+                    NavigationBarItem(selected = selectedTab == tab, onClick = { selectedTab = tab; showLogs = false },
+                        icon = { Icon(tab.icon, null) }, label = { Text(tab.title) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = DarkBg,
-                            selectedTextColor = PrimaryCyan,
-                            indicatorColor = PrimaryCyan,
-                            unselectedIconColor = TextSecondary,
-                            unselectedTextColor = TextSecondary
-                        )
-                    )
+                            selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            selectedTextColor = PrimaryCyan, indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                            unselectedIconColor = TextSecondary, unselectedTextColor = TextSecondary))
                 }
             }
-        }
-    ) { innerPadding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(DarkBg)
-        ) {
-            when (selectedTab) {
-                NavigationTab.DASHBOARD -> DashboardScreen(
-                    viewModel = viewModel,
-                    onRequestMediaProjection = onRequestMediaProjection,
-                    onRequestShizuku = onRequestShizuku,
-                    onRequestBatteryOptimization = onRequestBatteryOptimization
-                )
-                NavigationTab.PAIRING -> PairingScreen(viewModel = viewModel)
-                NavigationTab.APPS -> AppsScreen(viewModel = viewModel)
-                NavigationTab.SETTINGS -> SettingsScreen(viewModel = viewModel)
-                NavigationTab.LOGS -> LogsScreen(viewModel = viewModel)
+        }) { padding ->
+            Row(Modifier.fillMaxSize().padding(padding)) {
+                if (wide) NavigationRail(containerColor = CardBg) {
+                    Spacer(Modifier.height(24.dp))
+                    NavigationTab.values().forEach { tab ->
+                        NavigationRailItem(selected = selectedTab == tab, onClick = { selectedTab = tab; showLogs = false },
+                            icon = { Icon(tab.icon, null) }, label = { Text(tab.title) },
+                            modifier = Modifier.padding(vertical = 4.dp))
+                    }
+                }
+                Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                    Box(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
+                        pageStates.SaveableStateProvider(if (selectedTab == NavigationTab.SETTINGS && showLogs) "logs" else selectedTab.name) {
+                            when (selectedTab) {
+                                NavigationTab.DASHBOARD -> DashboardScreen(viewModel, onRequestMediaProjection,
+                                    onRequestShizuku, onRequestBatteryOptimization, onOpenPairing = { selectedTab = NavigationTab.PAIRING }, onToggleTheme = onToggleTheme, darkTheme = darkTheme)
+                                NavigationTab.PAIRING -> PairingScreen(viewModel)
+                                NavigationTab.APPS -> AppsScreen(viewModel)
+                                NavigationTab.SETTINGS -> if (showLogs) LogsScreen(viewModel, onBack = { showLogs = false })
+                                    else SettingsScreen(viewModel, onOpenLogs = { showLogs = true }, onFollowSystemTheme = onFollowSystemTheme)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -265,33 +276,23 @@ fun MainContent(
                         color = TextSecondary,
                         fontSize = 13.sp
                     )
-                    OutlinedTextField(
-                        value = pinDialogInput,
-                        onValueChange = { if (it.length <= 4) pinDialogInput = it },
-                        placeholder = { Text("4 位 PIN 码") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = PrimaryCyan,
-                            unfocusedBorderColor = CardBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        )
-                    )
+                    PinField(pinDialogInput, { pinDialogInput = it }, Modifier.fillMaxWidth()) {
+                        viewModel.submitPin(pinDialogInput)
+                        pinDialogInput = ""
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (pinDialogInput.isNotBlank()) {
+                        if (pinDialogInput.length == 4) {
                             viewModel.submitPin(pinDialogInput)
                             pinDialogInput = ""
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryCyan),
-                    shape = RoundedCornerShape(8.dp)
+                    enabled = pinDialogInput.length == 4
                 ) {
-                    Text("确认配对", color = DarkBg, fontWeight = FontWeight.Bold)
+                    Text("确认配对")
                 }
             },
             dismissButton = {

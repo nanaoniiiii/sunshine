@@ -6,6 +6,7 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.data.*
+import com.alkaidlab.sunshine.service.AppCatalog
 import com.alkaidlab.sunshine.service.StreamingSettings
 import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
@@ -212,6 +213,11 @@ class SunshineApiServer(
         val runtime = SunshineRuntimeManager.getInstance()
         val native = runtime.diagnostics().video.find { it.sessionId == id }
             ?: return error(Response.Status.NOT_FOUND, "Session is no longer active")
+        if (parts[1] == "fullscreen") {
+            val result = kotlinx.coroutines.runBlocking { runtime.fullscreenSession(id) }
+            return if (result.applied) jsonResponse(SimpleStatusResponse("true", result.message))
+            else error(Response.Status.CONFLICT, result.message)
+        }
         val operation = when (parts[1]) {
             "bitrate" -> 1
             "keyframe" -> 2
@@ -249,38 +255,17 @@ class SunshineApiServer(
         return jsonResponse(SimpleStatusResponse("true", "Request queued; inspect video diagnostics for driver result"))
     }
 
-    private fun handleGetApps(): Response {
-        val text = appsFile.readText()
-        val apps = gson.fromJson(text, AppsResponse::class.java)
-        return jsonResponse(apps)
-    }
+    private fun handleGetApps(): Response = jsonResponse(AppCatalog.read(appsFile))
 
     private fun handleSaveApp(session: IHTTPSession): Response {
-        val body = parseBody(session)
-        val item = gson.fromJson(body, AppItem::class.java)
-
-        val text = appsFile.readText()
-        val current = gson.fromJson(text, AppsResponse::class.java)
-        val list = current.apps.toMutableList()
-
-        val existingIndex = list.indexOfFirst { it.name == item.name }
-        if (existingIndex >= 0) {
-            list[existingIndex] = item
-        } else {
-            list.add(item)
-        }
-
-        val updated = current.copy(apps = list)
-        appsFile.writeText(gson.toJson(updated))
+        val item = gson.fromJson(parseBody(session), AppItem::class.java)
+        if (item.name.isBlank()) return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Application name is required")
+        AppCatalog.save(appsFile, item)
         return jsonResponse(SimpleStatusResponse("true", "App saved"))
     }
 
     private fun handleDeleteApp(idOrName: String): Response {
-        val text = appsFile.readText()
-        val current = gson.fromJson(text, AppsResponse::class.java)
-        val list = current.apps.filterNot { it.name == idOrName || it.id == idOrName }
-        val updated = current.copy(apps = list)
-        appsFile.writeText(gson.toJson(updated))
+        AppCatalog.delete(appsFile, idOrName)
         return jsonResponse(SimpleStatusResponse("true", "App deleted"))
     }
 
@@ -290,16 +275,12 @@ class SunshineApiServer(
         val root = (rootMap["root"] as? Map<*, *>) ?: emptyMap<String, Any>()
         val rawDevices = (root["named_devices"] as? List<*>) ?: emptyList<Any>()
         val runtime = SunshineRuntimeManager.getInstance()
-        val activeSessions = runtime.getActiveSessions()
-        val activeCount = activeSessions.size
-        val totalDevices = rawDevices.size
 
-        val clients = rawDevices.mapIndexedNotNull { idx, item ->
+        val clients = rawDevices.mapNotNull { item ->
             if (item is Map<*, *>) {
                 val name = item["name"]?.toString() ?: "Unknown"
                 val uuid = item["uuid"]?.toString() ?: ""
-                val isRecentActive = activeCount > 0 && idx >= (totalDevices - activeCount).coerceAtLeast(0)
-                ClientItem(name = name, uuid = uuid, active = runtime.isClientActive(uuid) || isRecentActive)
+                ClientItem(name = name, uuid = uuid, active = runtime.isClientActive(uuid))
             } else null
         }
         return jsonResponse(ClientsResponse("true", clients))

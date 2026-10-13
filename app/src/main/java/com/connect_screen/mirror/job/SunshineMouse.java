@@ -65,6 +65,11 @@ public class SunshineMouse {
                     if (size.x > 0 && size.y > 0) {
                         defaultDisplayWidth = size.x;
                         defaultDisplayHeight = size.y;
+                        // Capture now follows the current display, including rotation.
+                        if (virtualDisplayWidth > 0 && virtualDisplayHeight > 0) {
+                            virtualDisplayWidth = size.x;
+                            virtualDisplayHeight = size.y;
+                        }
                         Log.i(TAG, "Queried real physical display: " + (int)defaultDisplayWidth + "x" + (int)defaultDisplayHeight);
                     }
                 }
@@ -132,6 +137,7 @@ public class SunshineMouse {
      * pixel of the VirtualDisplay.
      */
     public static Point unletterboxClientCoords(float rawNormX, float rawNormY, float clientW, float clientH) {
+        updateDisplayDimensions();
         float vdW = (virtualDisplayWidth > 0) ? virtualDisplayWidth : 1920f;
         float vdH = (virtualDisplayHeight > 0) ? virtualDisplayHeight : 1080f;
 

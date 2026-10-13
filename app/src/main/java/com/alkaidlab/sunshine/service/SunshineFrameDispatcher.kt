@@ -27,9 +27,12 @@ class SunshineFrameDispatcher {
         val height: Int,
         val requestedFps: Int,
         val pacer: FramePacer,
+        val threadId: Long = 0,
         var lastTextureVersion: Long = -1,
         var lastPresentationNs: Long = 0,
         var telemetryFrames: Int = 0,
+        var telemetryHandoffNs: Long = 0,
+        @Volatile var measuredHandoffMs: Double? = null,
         @Volatile var measuredFps: Double = 0.0,
         var failureCount: Int = 0
     )
@@ -144,7 +147,11 @@ class SunshineFrameDispatcher {
             val nowNs = System.nanoTime()
             val elapsedSec = (nowNs - windowStartNs) / 1_000_000_000.0
             if (elapsedSec >= 0.25) {
-                clientTargets.forEach { it.measuredFps = it.telemetryFrames / elapsedSec; it.telemetryFrames = 0 }
+                clientTargets.forEach {
+                    it.measuredFps = it.telemetryFrames / elapsedSec
+                    it.measuredHandoffMs = if (it.telemetryFrames > 0) it.telemetryHandoffNs / it.telemetryFrames / 1_000_000.0 else null
+                    it.telemetryFrames = 0; it.telemetryHandoffNs = 0
+                }
                 latestMeasuredFps = clientTargets.maxOfOrNull { it.measuredFps } ?: 0.0
                 latestCaptureFps = windowCaptures / elapsedSec
                 latestEncodeTimeMs = if (windowSubmissions > 0) windowHandoffNs / windowSubmissions / 1_000_000.0 else 0.0
@@ -161,6 +168,8 @@ class SunshineFrameDispatcher {
         val sorted = handoffSamples.take(handoffSampleCount).sorted()
         val p95 = sorted.getOrNull(((sorted.size * 95 + 99) / 100 - 1).coerceAtLeast(0)) ?: 0L
         com.alkaidlab.sunshine.data.FrameDiagnostics(
+            captureWidth = sourceWidth,
+            captureHeight = sourceHeight,
             captureFps = latestCaptureFps,
             submittedFrames = totalSubmitted,
             repeatedFrames = totalRepeated,
@@ -171,7 +180,11 @@ class SunshineFrameDispatcher {
             handoffMaxMs = (sorted.lastOrNull() ?: 0L) / 1_000_000.0,
             captureAgeMs = if (lastCaptureNs == 0L) null else (System.nanoTime() - lastCaptureNs) / 1_000_000.0,
             targets = clientTargets.map { com.alkaidlab.sunshine.data.FrameTargetDiagnostics(
-                it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps) }
+                it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps,
+                it.threadId, it.measuredHandoffMs,
+                CaptureGeometry.fit(sourceWidth, sourceHeight, it.width, it.height).let { vp ->
+                    listOf(vp.x, vp.y, vp.width, vp.height)
+                }) }
         )
     }
 
@@ -214,6 +227,7 @@ class SunshineFrameDispatcher {
                 target.lastTextureVersion = textureVersion
                 synchronized(telemetryLock) {
                     target.telemetryFrames++
+                    target.telemetryHandoffNs += elapsedNs
                     windowSubmissions++
                     windowHandoffNs += elapsedNs
                     totalSubmitted++
@@ -312,7 +326,41 @@ class SunshineFrameDispatcher {
         return inputSurface ?: throw IllegalStateException("Input surface is null")
     }
 
-    fun addSurface(surface: Surface, width: Int, height: Int, fps: Int = 60) {
+    /** Resize the producer without recreating MediaProjection or any encoder surfaces. */
+    fun resizeCaptureSync(width: Int, height: Int): Surface? {
+        val handler = glHandler ?: return null
+        val latch = CountDownLatch(1)
+        var resizedSurface: Surface? = null
+        val resize = Runnable {
+            try {
+                if (isRunning && width > 0 && height > 0) {
+                    // Some OEM producers keep the old buffer geometry after VD.resize().
+                    // The caller detaches the producer first; encoder targets stay alive.
+                    handler.removeCallbacks(framePumpRunnable)
+                    handler.removeCallbacks(latchFrameRunnable)
+                    frameScheduled = false
+                    pendingTexture = false
+                    hasDrawnAnyTexture = false
+                    inputSurface?.release()
+                    surfaceTexture?.release()
+                    sourceWidth = width
+                    sourceHeight = height
+                    initSurfaceTexture(width, height)
+                    resizedSurface = inputSurface
+                }
+            } catch (t: Throwable) {
+                SunshineLogManager.log("DISPATCHER_ERR", "Capture resize failed: ${t.message}")
+            } finally { latch.countDown() }
+        }
+        if (!handler.post(resize)) return null
+        if (!latch.await(3, TimeUnit.SECONDS)) {
+            handler.removeCallbacks(resize)
+            return null
+        }
+        return resizedSurface
+    }
+
+    fun addSurface(surface: Surface, width: Int, height: Int, fps: Int = 60, threadId: Long = 0) {
         val handler = glHandler ?: return
         handler.post {
             if (!isRunning) return@post
@@ -329,7 +377,7 @@ class SunshineFrameDispatcher {
                 }
                 val requestedFps = if (fps > 0) fps.coerceAtMost(240) else 60
                 clientTargets.add(ClientTarget(surface, null, width, height, requestedFps,
-                    FramePacer(minOf(requestedFps, settings.maxFps))))
+                    FramePacer(minOf(requestedFps, settings.maxFps)), threadId))
                 SunshineLogManager.log("DISPATCHER", "Added ${width}x$height @ ${requestedFps}fps encoder; active=${clientTargets.size}")
             }
             // A new client is immediately due, including when the captured screen is static.
@@ -595,7 +643,7 @@ class SunshineFrameDispatcher {
 
         val handler = glHandler ?: return
         st.setOnFrameAvailableListener({
-            if (isRunning && !pendingTexture) {
+            if (isRunning && surfaceTexture === st && !pendingTexture) {
                 pendingTexture = true
                 handler.post(latchFrameRunnable)
             }
@@ -645,31 +693,12 @@ class SunshineFrameDispatcher {
         return try {
             val targetW = target.width
             val targetH = target.height
-            val vdW = sourceWidth
-            val vdH = sourceHeight
-
-            var vpX = 0
-            var vpY = 0
-            var vpW = targetW
-            var vpH = targetH
-
-            if (vdW > 0 && vdH > 0 && targetW > 0 && targetH > 0) {
-                val targetAspect = targetW.toFloat() / targetH.toFloat()
-                val sourceAspect = vdW.toFloat() / vdH.toFloat()
-                if (Math.abs(targetAspect - sourceAspect) > 0.01f) {
-                    if (targetAspect > sourceAspect) {
-                        vpW = (targetH * sourceAspect).toInt()
-                        vpX = (targetW - vpW) / 2
-                    } else {
-                        vpH = (targetW / sourceAspect).toInt()
-                        vpY = (targetH - vpH) / 2
-                    }
-                    GLES20.glClearColor(0f, 0f, 0f, 1f)
-                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                }
-            }
-
-            GLES20.glViewport(vpX, vpY, vpW, vpH)
+            val viewport = CaptureGeometry.fit(sourceWidth, sourceHeight, targetW, targetH)
+            // Clear every frame: rotation/resize may expose pixels from an older viewport.
+            GLES20.glViewport(0, 0, targetW, targetH)
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glViewport(viewport.x, viewport.y, viewport.width, viewport.height)
             GLES20.glUseProgram(programId)
 
             GLES20.glUniformMatrix4fv(uTextureMatrixHandle, 1, false, texMatrix, 0)

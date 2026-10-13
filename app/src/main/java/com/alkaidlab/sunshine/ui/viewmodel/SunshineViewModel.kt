@@ -17,8 +17,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 
 class SunshineViewModel(application: Application) : AndroidViewModel(application) {
@@ -42,14 +44,56 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     // Real Data Models
     private val _config = MutableStateFlow<ConfigResponse?>(null)
     val config: StateFlow<ConfigResponse?> = _config.asStateFlow()
+    private val _settingsDraft = MutableStateFlow<SettingsDraft?>(null)
+    val settingsDraft = _settingsDraft.asStateFlow()
+    private val _configSaving = MutableStateFlow(false)
+    val configSaving = _configSaving.asStateFlow()
+
+    fun editSetting(key: String, value: String) {
+        if (!_configSaving.value) _settingsDraft.update { it?.withValue(key, value) }
+    }
+
+    fun discardSettingsDraft() {
+        if (!_configSaving.value) _config.value?.let { _settingsDraft.value = SettingsDraft.from(it) }
+    }
 
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
     val apps: StateFlow<List<AppItem>> = _apps.asStateFlow()
+
+    data class InstalledApp(val label: String, val packageName: String)
+    private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
+    val installedApps = _installedApps.asStateFlow()
+    private val _appsLoading = MutableStateFlow(false)
+    val appsLoading = _appsLoading.asStateFlow()
+    private val _installedAppsError = MutableStateFlow<String?>(null)
+    val installedAppsError = _installedAppsError.asStateFlow()
+    private val _appSaving = MutableStateFlow(false)
+    val appSaving = _appSaving.asStateFlow()
+    fun loadInstalledApps() {
+        if (!_appsLoading.compareAndSet(false, true)) return
+        _installedAppsError.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val pm = getApplication<Application>().packageManager
+                val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                _installedApps.value = pm.queryIntentActivities(intent, 0).map {
+                    InstalledApp(it.loadLabel(pm).toString(), it.activityInfo.packageName)
+                }.distinctBy { it.packageName }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+            } catch (_: Exception) { _installedAppsError.value = "无法读取本机应用列表，请重试" }
+            finally { _appsLoading.value = false }
+        }
+    }
 
     private val _clients = MutableStateFlow<List<ClientItem>>(emptyList())
     val clients: StateFlow<List<ClientItem>> = _clients.asStateFlow()
 
     val runtimeSessions: StateFlow<List<RuntimeSession>> = runtime.activeSessionsFlow
+    val fullscreenBusy = runtime.fullscreenBusy
+    fun fullscreenSession(sessionId: Long) {
+        viewModelScope.launch {
+            _statusMessage.value = runtime.fullscreenSession(sessionId).message
+        }
+    }
 
     val perf: StateFlow<PerfResponse> = runtime.perfFlow
     private val _diagnostics = MutableStateFlow<DiagnosticsResponse?>(null)
@@ -134,13 +178,19 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    suspend fun fetchConfig() {
+    suspend fun fetchConfig(): ConfigResponse? {
         try {
             val resp = api.getConfig()
             if (resp.isSuccessful) {
-                _config.value = resp.body()
+                resp.body()?.let { current ->
+                    val previous = _config.value
+                    _settingsDraft.update { SettingsDraft.reconcile(it, previous, current) }
+                    _config.value = current
+                    return current
+                }
             }
         } catch (e: Exception) { SunshineLogManager.log("CONFIG_READ_ERR", "Cannot load settings: ${e.message}") }
+        return null
     }
 
     suspend fun fetchApps() {
@@ -187,31 +237,39 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun saveConfig(map: Map<String, String>) {
+        if (!_configSaving.compareAndSet(false, true)) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val resp = api.saveConfig(map)
                 if (resp.isSuccessful) {
                     _statusMessage.value = resp.body()?.message ?: "配置保存成功"
-                    fetchConfig()
+                    val confirmed = fetchConfig()
+                    // Inputs are disabled during save. Reconcile to the confirmed server values.
+                    confirmed?.let { _settingsDraft.value = SettingsDraft.from(it) }
                 } else {
                     _statusMessage.value = "保存失败: ${resp.errorBody()?.string() ?: resp.message()}"
                 }
             } catch (e: Exception) {
                 _statusMessage.value = "保存异常: ${e.message}"
+            } finally {
+                _configSaving.value = false
             }
         }
     }
 
-    fun addApp(appItem: AppItem) {
+    fun addApp(appItem: AppItem, onSaved: (Boolean) -> Unit = {}) {
+        if (!_appSaving.compareAndSet(false, true)) return
         viewModelScope.launch(Dispatchers.IO) {
+            var saved = false
             try {
                 val resp = api.saveApp(appItem)
-                if (resp.isSuccessful) {
-                    _statusMessage.value = "应用添加成功"
-                    fetchApps()
-                }
-            } catch (e: Exception) {
-                _statusMessage.value = "添加应用失败: ${e.message}"
+                saved = resp.isSuccessful
+                if (saved) { _statusMessage.value = "应用入口已保存"; fetchApps() }
+                else _statusMessage.value = "保存应用失败，请重试"
+            } catch (_: Exception) { _statusMessage.value = "无法保存应用，请确认服务运行后重试" }
+            finally {
+                _appSaving.value = false
+                withContext(Dispatchers.Main) { onSaved(saved) }
             }
         }
     }

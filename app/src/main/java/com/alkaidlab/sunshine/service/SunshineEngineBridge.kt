@@ -14,12 +14,12 @@ object SunshineEngineBridge {
     @Volatile var host: ISunshineEngineHost? = null
 
     @JvmStatic fun streamStarted(width: Int, height: Int, fps: Int, packetDuration: Int,
-                                 surface: Surface, audio: Boolean) {
+                                 surface: Surface, audio: Boolean, appId: Int, clientId: String) {
         synchronized(lock) {
             val threadId = Process.myTid().toLong()
             sessions.started(threadId)
             clientDimensions[threadId] = width to height
-            val capture = host?.streamStarted(threadId, width, height, fps, packetDuration, surface, audio)
+            val capture = host?.streamStarted(threadId, width, height, fps, packetDuration, surface, audio, appId, clientId)
             SunshineMouse.setCaptureDimensions(capture?.getOrNull(0) ?: width, capture?.getOrNull(1) ?: height)
             SunshineMouse.setActiveClientDimensions(width, height)
         }
@@ -36,6 +36,9 @@ object SunshineEngineBridge {
             host?.streamStopped(threadId, revision)
         }
     }
+
+    @JvmStatic fun appCatalog(): String = host?.appCatalog() ?: "{\"apps\":[]}"
+    @JvmStatic fun prepareApp(appId: Int): Boolean = host?.prepareApp(appId) == true
 
     @JvmStatic fun pinRequested() { host?.pinRequested() }
     @JvmStatic fun clientDiscovered(client: String) { host?.clientDiscovered(client) }
