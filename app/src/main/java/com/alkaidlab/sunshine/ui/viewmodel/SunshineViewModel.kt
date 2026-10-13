@@ -13,6 +13,8 @@ import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 import com.alkaidlab.sunshine.service.SunshineService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +23,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import rikka.shizuku.Shizuku
 
 class SunshineViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,13 +52,68 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     val settingsDraft = _settingsDraft.asStateFlow()
     private val _configSaving = MutableStateFlow(false)
     val configSaving = _configSaving.asStateFlow()
+    private val _settingsSaveError = MutableStateFlow<String?>(null)
+    val settingsSaveError = _settingsSaveError.asStateFlow()
+    private val settingsAutosave = SettingsAutosave()
+    private val settingsChanges = Channel<Unit>(Channel.CONFLATED)
+    private val configMutex = Mutex()
 
     fun editSetting(key: String, value: String) {
-        if (!_configSaving.value) _settingsDraft.update { it?.withValue(key, value) }
+        applySettingsSnapshot(settingsAutosave.edit(key, value))
+        _settingsSaveError.value = null
+        if (key !in SettingsAutosave.numericKeys) settingsChanges.trySend(Unit)
     }
 
-    fun discardSettingsDraft() {
-        if (!_configSaving.value) _config.value?.let { _settingsDraft.value = SettingsDraft.from(it) }
+    fun finishSettingEdit(key: String) {
+        settingsAutosave.finishEdit(key)
+        settingsChanges.trySend(Unit)
+    }
+
+    fun retrySettingsSave() {
+        settingsChanges.trySend(Unit)
+    }
+
+    private fun applySettingsSnapshot(snapshot: SettingsAutosave.Snapshot) {
+        _config.value = snapshot.confirmed
+        _settingsDraft.value = snapshot.draft
+        if (!settingsAutosave.hasUnsavedEdits()) _settingsSaveError.value = null
+    }
+
+    private fun startSettingsAutosave() {
+        viewModelScope.launch {
+            while (isActive) {
+                settingsChanges.receive()
+                persistSettings()
+            }
+        }
+    }
+
+    private suspend fun persistSettings(): Boolean = configMutex.withLock {
+        val batch = settingsAutosave.nextBatch() ?: return@withLock true
+        _configSaving.value = true
+        try {
+            val response = api.saveConfig(batch.values)
+            if (!response.isSuccessful || response.body()?.status != "true") {
+                _settingsSaveError.value = "自动保存失败，当前输入已保留。请重试。"
+                return@withLock false
+            }
+            val confirmed = api.getConfig().takeIf { it.isSuccessful }?.body()
+            if (confirmed == null) {
+                _settingsSaveError.value = "设置已提交，暂时无法确认保存结果。请重试。"
+                return@withLock false
+            }
+            applySettingsSnapshot(settingsAutosave.acknowledged(batch, confirmed))
+            _settingsSaveError.value = null
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            SunshineLogManager.log("CONFIG_SAVE_ERR", "Cannot save settings: ${error.message}")
+            _settingsSaveError.value = "自动保存失败，当前输入已保留。请确认服务运行后重试。"
+            false
+        } finally {
+            _configSaving.value = false
+        }
     }
 
     private val _apps = MutableStateFlow<List<AppItem>>(emptyList())
@@ -123,6 +182,7 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     val pinRequested = runtime.pinRequested
 
     init {
+        startSettingsAutosave()
         startPolling()
     }
 
@@ -178,19 +238,20 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    suspend fun fetchConfig(): ConfigResponse? {
+    suspend fun fetchConfig(): ConfigResponse? = configMutex.withLock {
         try {
             val resp = api.getConfig()
             if (resp.isSuccessful) {
                 resp.body()?.let { current ->
-                    val previous = _config.value
-                    _settingsDraft.update { SettingsDraft.reconcile(it, previous, current) }
-                    _config.value = current
-                    return current
+                    withContext(Dispatchers.Main) {
+                        applySettingsSnapshot(settingsAutosave.refreshed(current))
+                    }
+                    return@withLock current
                 }
             }
-        } catch (e: Exception) { SunshineLogManager.log("CONFIG_READ_ERR", "Cannot load settings: ${e.message}") }
-        return null
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (e: Exception) { SunshineLogManager.log("CONFIG_READ_ERR", "Cannot load settings: ${e.message}") }
+        null
     }
 
     suspend fun fetchApps() {
@@ -234,27 +295,6 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
 
     fun dismissPinRequest() {
         runtime.dismissPinRequest()
-    }
-
-    fun saveConfig(map: Map<String, String>) {
-        if (!_configSaving.compareAndSet(false, true)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val resp = api.saveConfig(map)
-                if (resp.isSuccessful) {
-                    _statusMessage.value = resp.body()?.message ?: "配置保存成功"
-                    val confirmed = fetchConfig()
-                    // Inputs are disabled during save. Reconcile to the confirmed server values.
-                    confirmed?.let { _settingsDraft.value = SettingsDraft.from(it) }
-                } else {
-                    _statusMessage.value = "保存失败: ${resp.errorBody()?.string() ?: resp.message()}"
-                }
-            } catch (e: Exception) {
-                _statusMessage.value = "保存异常: ${e.message}"
-            } finally {
-                _configSaving.value = false
-            }
-        }
     }
 
     fun addApp(appItem: AppItem, onSaved: (Boolean) -> Unit = {}) {
@@ -347,7 +387,11 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun restartServer() {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
+            if (!persistSettings() || settingsAutosave.hasUnsavedEdits()) {
+                _statusMessage.value = "请先修正未保存的设置或重试自动保存"
+                return@launch
+            }
             try {
                 val response = api.restartServer()
                 _statusMessage.value = response.body()?.message ?: "重启请求失败"

@@ -3,18 +3,30 @@ package com.alkaidlab.sunshine.ui.screens
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.alkaidlab.sunshine.data.EncoderCapability
 import com.alkaidlab.sunshine.ui.components.*
 import com.alkaidlab.sunshine.ui.theme.*
-import com.alkaidlab.sunshine.ui.viewmodel.*
+import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 
 @Composable
 fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, onFollowSystemTheme: () -> Unit = {},
@@ -22,50 +34,68 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
     val config by viewModel.config.collectAsState()
     val draft by viewModel.settingsDraft.collectAsState()
     val saving by viewModel.configSaving.collectAsState()
+    val saveError by viewModel.settingsSaveError.collectAsState()
     var advanced by rememberSaveable { mutableStateOf(false) }
     var restart by remember { mutableStateOf(false) }
-    var discard by remember { mutableStateOf(false) }
     val current = draft
     val errors = current?.errors().orEmpty()
-    val dirty = current != null && config != null && current != SettingsDraft.from(config!!)
+    val focusManager = LocalFocusManager.current
+    var focusedInputBounds by remember { mutableStateOf<Rect?>(null) }
+    var pageOrigin by remember { mutableStateOf(Offset.Zero) }
     fun edit(key: String, value: String) = viewModel.editSetting(key, value)
+    @Composable fun number(label: String, hint: String, key: String) {
+        NumberSetting(label, hint, current?.get(key).orEmpty(), errors[key], onChange = { edit(key, it) },
+            onCommit = { viewModel.finishSettingEdit(key) }, onFocusBounds = { focusedInputBounds = it })
+    }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().onGloballyPositioned { pageOrigin = it.boundsInRoot().topLeft }
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                focusedInputBounds?.let { bounds ->
+                    if (!bounds.contains(down.position + pageOrigin)) focusManager.clearFocus()
+                }
+            }
+        }) {
         LazyColumn(Modifier.weight(1f), contentPadding = PagePadding,
             verticalArrangement = Arrangement.spacedBy(20.dp)) {
             item { PageHeader("设置", "调整画面、编码器与连接策略") }
+            if (saveError != null) item { SectionCard("设置未保存", Icons.Default.ErrorOutline) {
+                Text(saveError.orEmpty(), color = AccentRed, style = MaterialTheme.typography.bodyMedium)
+                TextButton(onClick = { viewModel.retrySettingsSave() }, enabled = !saving) { Text("重试") }
+            } }
             if (current == null) item { SectionCard {
                 Text("正在读取设备设置…", color = TextSecondary)
                 TextButton(onClick = { viewModel.fetchAll() }) { Text("重新读取") }
             } } else {
                 item { SectionCard("视频编码", Icons.Default.Memory) {
-                    EncoderChoice("H.264 编码器", current["encoder_h264"], config?.encoderOptions.orEmpty().filter { it.mime == "video/avc" }, !saving) { edit("encoder_h264", it) }
-                    EncoderChoice("H.265 / HEVC 编码器", current["encoder_hevc"], config?.encoderOptions.orEmpty().filter { it.mime == "video/hevc" }, !saving) { edit("encoder_hevc", it) }
+                    EncoderChoice("H.264 编码器", current["encoder_h264"], config?.encoderOptions.orEmpty().filter { it.mime == "video/avc" }, true) { edit("encoder_h264", it) }
+                    EncoderChoice("H.265 / HEVC 编码器", current["encoder_hevc"], config?.encoderOptions.orEmpty().filter { it.mime == "video/hevc" }, true) { edit("encoder_hevc", it) }
                     Text("自动：优先使用系统默认编码器，启动失败后尝试其他编码器。指定编码器失败时提示切换。",
                         style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
-                    SettingSwitch("允许 HEVC", "客户端可以请求 H.265 编码", current["hevc_mode"] != "disabled", !saving) { edit("hevc_mode", if (it) "enabled" else "disabled") }
+                    SettingSwitch("允许 HEVC", "客户端可以请求 H.265 编码", current["hevc_mode"] != "disabled") { edit("hevc_mode", if (it) "enabled" else "disabled") }
                 } }
                 item { SectionCard("画面与流畅度", Icons.Default.SlowMotionVideo) {
-                    NumberSetting("帧率上限", "FPS · 15–240", current["max_stream_fps"], errors["max_stream_fps"], !saving) { edit("max_stream_fps", it) }
-                    SettingSwitch("自动旋转", "跟随设备横竖屏方向", current.checked("auto_rotate"), !saving) { edit("auto_rotate", it.toString()) }
-                    SettingSwitch("自动缩放", "匹配客户端请求的分辨率", current.checked("auto_scale"), !saving) { edit("auto_scale", it.toString()) }
-                    SettingSwitch("静态画面持续补帧", "关闭可减少静止画面的送帧；遇到停顿时请开启", current.checked("repeat_frames"), !saving) { edit("repeat_frames", it.toString()) }
+                    number("帧率上限", "FPS · 15–240", "max_stream_fps")
+                    SettingSwitch("自动旋转", "跟随设备横竖屏方向", current.checked("auto_rotate"), true) { edit("auto_rotate", it.toString()) }
+                    SettingSwitch("自动缩放", "匹配客户端请求的分辨率", current.checked("auto_scale"), true) { edit("auto_scale", it.toString()) }
+                    SettingSwitch("静态画面持续补帧", "关闭可减少静止画面的送帧；遇到停顿时请开启", current.checked("repeat_frames"), true) { edit("repeat_frames", it.toString()) }
                 } }
                 item { SectionCard("码率与缓冲", Icons.Default.Speed) {
-                    NumberSetting("最小码率", "Kbps · 1000–150000", current["min_bitrate"], errors["min_bitrate"], !saving) { edit("min_bitrate", it) }
-                    NumberSetting("最大码率", "Kbps · 1000–150000", current["max_bitrate"], errors["max_bitrate"], !saving) { edit("max_bitrate", it) }
-                    NumberSetting("音频缓冲", "ms · 20–100", current["audio_buffer_ms"], errors["audio_buffer_ms"], !saving) { edit("audio_buffer_ms", it) }
-                    SettingSwitch("Wi-Fi 低延迟模式", "连接期间请求低延迟模式，可能增加耗电", current.checked("wifi_low_latency"), !saving) { edit("wifi_low_latency", it.toString()) }
+                    number("最小码率", "Kbps · 1000–150000", "min_bitrate")
+                    number("最大码率", "Kbps · 1000–150000", "max_bitrate")
+                    number("音频缓冲", "ms · 20–100", "audio_buffer_ms")
+                    SettingSwitch("Wi-Fi 低延迟模式", "连接期间请求低延迟模式，可能增加耗电", current.checked("wifi_low_latency"), true) { edit("wifi_low_latency", it.toString()) }
                 } }
                 item { SectionCard("网络与服务", Icons.Default.SettingsEthernet) {
-                    SettingSwitch("IPv4 + IPv6 双栈", "允许通过可达的 IPv6 地址连接", current["address_family"] == "both", !saving) { edit("address_family", if (it) "both" else "ipv4") }
+                    SettingSwitch("IPv4 + IPv6 双栈", "允许通过可达的 IPv6 地址连接", current["address_family"] == "both", true) { edit("address_family", if (it) "both" else "ipv4") }
                     TextButton(onClick = { advanced = !advanced }, contentPadding = PaddingValues(0.dp)) {
                         Text(if (advanced) "收起高级选项" else "高级选项")
                         Icon(if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
                     }
                     if (advanced) {
-                        NumberSetting("串流端口", "更改后需要重启服务", current["port"], errors["port"], !saving) { edit("port", it) }
-                        NumberSetting("管理端口", "更改后需要重启服务", current["web_port"], errors["web_port"], !saving) { edit("web_port", it) }
+                        number("串流端口", "更改后需要重启服务", "port")
+                        number("管理端口", "更改后需要重启服务", "web_port")
                         OutlinedButton(onClick = { restart = true }, enabled = !saving, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                             Icon(Icons.Default.RestartAlt, null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp)); Text("重启服务")
@@ -90,39 +120,31 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                 } }
                 item { AboutSection() }
         }
-        Surface(color = CardBg, tonalElevation = 1.dp, shadowElevation = 2.dp) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(if (saving) "正在保存…" else if (dirty) "有未保存的更改" else "已与设备设置同步",
-                    color = if (dirty) AccentOrange else TextSecondary, style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = { discard = true }, enabled = dirty && !saving, modifier = Modifier.heightIn(min = 48.dp)) { Text("重置") }
-                    PrimaryButton(onClick = { current?.let { viewModel.saveConfig(it.values) } },
-                        enabled = dirty && errors.isEmpty() && !saving, modifier = Modifier.weight(1f).heightIn(min = 48.dp)) {
-                        if (saving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp)); Text("保存更改")
-                    }
-                }
-                if (errors.isNotEmpty()) Text("请先修正上方的输入错误", color = AccentRed, style = MaterialTheme.typography.bodySmall)
-            }
-        }
     }
-    if (discard) AlertDialog(onDismissRequest = { discard = false }, title = { Text("放弃未保存的更改？") },
-        text = { Text("将恢复为设备当前保存的设置。") },
-        confirmButton = { TextButton(onClick = { viewModel.discardSettingsDraft(); discard = false }) { Text("放弃更改") } },
-        dismissButton = { TextButton(onClick = { discard = false }) { Text("继续编辑") } })
     if (restart) AlertDialog(onDismissRequest = { restart = false }, title = { Text("重启 Sunshine 服务？") },
-        text = { Text("正在连接的客户端会断开。请先保存需要生效的设置。") },
+        text = { Text("正在连接的客户端会断开。重启后应用当前设置。") },
         confirmButton = { TextButton(onClick = { viewModel.restartServer(); restart = false }) { Text("重启") } },
         dismissButton = { TextButton(onClick = { restart = false }) { Text("取消") } })
 }
 
 @Composable
-private fun NumberSetting(label: String, hint: String, value: String, error: String?, enabled: Boolean, onChange: (String) -> Unit) {
-    OutlinedTextField(value, onChange, modifier = Modifier.fillMaxWidth(), label = { Text(label) },
-        singleLine = true, enabled = enabled, isError = error != null,
-        supportingText = { Text(error ?: hint) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+private fun NumberSetting(label: String, hint: String, value: String, error: String?, onChange: (String) -> Unit,
+    onCommit: () -> Unit, onFocusBounds: (Rect?) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    var focused by remember { mutableStateOf(false) }
+    var bounds by remember { mutableStateOf(Rect.Zero) }
+    DisposableEffect(Unit) {
+        onDispose { if (focused) { onFocusBounds(null); onCommit() } }
+    }
+    OutlinedTextField(value, onChange, modifier = Modifier.fillMaxWidth()
+        .onGloballyPositioned { bounds = it.boundsInRoot(); if (focused) onFocusBounds(bounds) }
+        .onFocusChanged { state ->
+            if (state.isFocused) { focused = true; onFocusBounds(bounds) }
+            else if (focused) { focused = false; onFocusBounds(null); onCommit() }
+        }, label = { Text(label) },
+        singleLine = true, isError = error != null,
+        supportingText = { Text(error ?: hint) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
         shape = MaterialTheme.shapes.small)
 }
 
