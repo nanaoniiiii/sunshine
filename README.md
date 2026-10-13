@@ -1,125 +1,101 @@
-# Sunshine for Android 📱⚡
+# Sunshine for Android
 
-<div align="center">
+把 Android 手机或平板作为串流主机，在 Moonlight 上接收画面与声音，并远程操作。
 
-![Android](https://img.shields.io/badge/Android-10%2B%20(API%2029--34)-green?logo=android&logoColor=white)
-![Kotlin](https://img.shields.io/badge/Kotlin-1.9.22-purple?logo=kotlin&logoColor=white)
-![Compose](https://img.shields.io/badge/Jetpack-Compose-blue?logo=jetpackcompose&logoColor=white)
-![Hardware Encoder](https://img.shields.io/badge/Encoder-AMediaCodec%20(Qualcomm%2FMediaTek)-orange)
-![Performance](https://img.shields.io/badge/Streaming-175%20FPS%20Ultra--Low%20Latency-brightgreen)
-![Privilege](https://img.shields.io/badge/Input-Shizuku%20(Root--Free)-teal)
+[![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](https://github.com/nanaoniiiii/sunshine/releases)
+[![Release](https://img.shields.io/github/v/release/nanaoniiiii/sunshine)](https://github.com/nanaoniiiii/sunshine/releases/latest)
+[![Website](https://img.shields.io/badge/官网-nanaoni.tech-335BCC)](https://nanaoni.tech)
+[![Shizuku](https://img.shields.io/badge/远程输入-Shizuku-6750A4)](https://github.com/RikkaApps/Shizuku)
 
-**运行在 Android 设备上的高性能 Sunshine 串流服务端，支持 Moonlight 客户端进行超低延迟、高帧率远程桌面与游戏控制。**
+**[访问官网](https://nanaoni.tech) · [下载安装包](https://github.com/nanaoniiiii/sunshine/releases/latest) · [常见问题](docs/faq.md) · [反馈问题](https://github.com/nanaoniiiii/sunshine/issues)**
 
-</div>
+作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。官网中的交互设备为模拟演示；下面的 Android 页面与 Moonlight 接收画面来自实际设备截图。
 
----
+## 实机与官网
 
-## 🌟 核心特性 (Key Features)
+<table>
+  <tr><th>Sunshine 主机 · OPPO Android 11</th><th>常见问题 · 设置 → 维护</th><th>官网 · nanaoni.tech</th></tr>
+  <tr>
+    <td><img src="docs/images/sunshine-device.png" alt="OPPO 真机上的 Sunshine 主页面，服务运行中" width="280"></td>
+    <td><img src="docs/images/faq-device.png" alt="真机上的常见问题页面" width="280"></td>
+    <td><a href="https://nanaoni.tech"><img src="docs/images/website.png" alt="Sunshine 官网首屏实景" width="280"></a></td>
+  </tr>
+</table>
 
-### 1. 🚀 硬件级视频加速与超高帧率 (Hardware Video Encoding)
-* 深度集成 **AMediaCodec (Qualcomm / MediaTek)** 硬件编码器，原生支持 **HEVC (H.265)** 与 **H.264** 硬件推流。
-* 实测支持高达 **175 FPS**、10~50 Mbps 动态码率串流，编码耗时低至 **2~3 ms**。
-* 自动协商颜色空间（Rec. 709 / Limited Range），保障画面色彩饱满真实。
+<details>
+<summary>查看 Moonlight 接收画面与关于栏</summary>
 
-### 2. 🔄 后台引擎恢复与重连
-* 彻底解决原生 C++ 单例在客户端退出后难以重复初始化（Socket 挂起、死锁）的痛点。
-* 原生引擎运行在独立的 `:engine` 进程。所有 Moonlight 会话结束后，仅在后台重建引擎进程，保留应用界面、API、录屏授权和虚拟显示，不主动打开主界面。
-* 单个客户端退出不重启引擎；新连接进入会取消延迟恢复，执行前再次核对原生会话。重复打开应用不会重新创建录屏或中断现有连接。
+<table>
+  <tr><th>Moonlight 客户端 · 三星 Android 13</th><th>项目介绍、作者与链接</th></tr>
+  <tr>
+    <td><img src="docs/images/moonlight-device.png" alt="三星 Moonlight 客户端接收 1440×3168 竖屏像素测试图，v2026.10.14.1 实测" width="320"></td>
+    <td><img src="docs/images/about-device.png" alt="设置中的关于栏，显示版本、作者、官网和仓库入口" width="320"></td>
+  </tr>
+</table>
 
-### 3. 🎯 像素级自适应触控与手势映射 (Adaptive SunshineMouse Engine)
-* **自动比例计算**：动态检测全面屏（如三星 20:9、19.5:9 等）物理像素尺寸，自动计算 Letterboxing / Pillarboxing 黑边偏移。
-* **横竖屏自适应**：无论手机竖屏还是横屏，自动重映射坐标视口。
-* **手势与拖拽优化**：针对 Moonlight 触控协议重写 `bufferedMove` 缓冲区与 Pointer 追踪，精准支持单指点按、连续长按拖拽、多指缩放与手势操作。
+Moonlight 图来自 v2026.10.14.1 的竖屏串流验证，设备、配置与限制见[验证记录](docs/validation/v2026.10.14.1.md)。主页、常见问题及关于栏图来自 v2026.10.14.2。
 
-### 4. 🛡️ Shizuku 免 Root 特权注入 (Root-Free Privileged Injection)
-* 集成 **Shizuku API**，免 Root 获取系统级 `injectInputEvent` 权限，支持高精度触摸、鼠标移动和虚拟键盘按键事件。
-* 自动授予免弹窗录屏特权（`PROJECT_MEDIA allow`）以及系统省电优化白名单（`deviceidle whitelist`），彻底杜绝系统后台杀进程或冻结（如三星 One UI `FreecessController`）。
+</details>
 
-### 5. 🔊 AudioPlaybackCapture 音频内录
-* 原生调用 Android 10+ 媒体内录通道（`AudioPlaybackCaptureConfiguration`），以 48 kHz 立体声 PCM 实时录制媒体音频并进行低延迟 Opus 编码推流。
+## 项目能力
 
-### 6. 🎨 现代化 Material 3 Jetpack Compose UI
-* **仪表盘 (Dashboard)**：一览当前服务运行状态、局域网 IP、推流端口、硬件编码器、权限状态以及实时 FPS / 码率监控。
-* **设备配对 (Pairing)**：客户端请求 PIN 码时自动弹出交互窗口，亦可在配对管理界面输入 PIN 码一键配对。
-* **应用管理 (Apps)**：配置和管理客户端可见的推流桌面与应用快捷方式。
-* **日志面板 (Logs)**：内置实时日志滚动查看器，方便排查连接与推流状态。
+- **硬件编码**：通过 Android AMediaCodec 提供 H.264 / HEVC 编码，设置中可选择系统默认或指定编码器。可用分辨率、帧率与编码能力取决于设备。
+- **显示与全屏**：默认使用主机当前显示尺寸采集；可在主页按某一路连接的请求分辨率切换全屏，最后一路退出后恢复保存的显示设置。不同宽高比的连接共用主机画布。
+- **远程输入**：通过 Shizuku 代理触控、鼠标和键盘操作，免 Root 使用仍受系统与厂商权限限制。
+- **音频内录**：Android 10+ AudioPlaybackCapture 与 Opus 推流；来源应用是否允许捕获会影响声音输出。
+- **设备与应用**：Moonlight PIN 配对、连接状态、桌面和应用入口管理。
+- **服务恢复与诊断**：独立引擎进程、最后一路退出后的延迟恢复、有限长度音视频队列、每连接诊断及运行日志。
+- **应用内帮助**：“设置 → 维护 → 常见问题”包含全屏、横屏、Shizuku、配对和品牌差异；“关于”提供官网、作者和仓库入口。帮助无需联网即可阅读，外部链接需要联网。
 
----
+## 快速开始
 
-## 📲 快速开始 (Quick Start)
+1. 准备 Android 10 或以上手机／平板，以及能运行 Moonlight 的电脑、手机或其他客户端，两端接入同一可互通的局域网。
+2. 在 [Releases](https://github.com/nanaoniiiii/sunshine/releases/latest) 下载 APK：多数现代手机选 `arm64-v8a`；32 位 ARM 选 `armeabi-v7a`；不确定时选 `universal`。
+3. 安装并启动 [Shizuku](https://github.com/RikkaApps/Shizuku/releases)，按[官方手册](https://shizuku.rikka.app/zh-hans/guide/setup/)完成无线调试或电脑 USB 启动。免 Root 重启手机后需重新启动，配对通常无需重做。
+4. 打开 Sunshine，在主页授予 Shizuku 及提示的录屏、录音、通知权限，确认服务运行，记下主机 IP。
+5. 在 Moonlight 添加该 IP，点击主机，在 Sunshine 弹窗或“设备”页输入 **Moonlight 显示的 4 位 PIN**，然后选择桌面或应用开始串流。
 
-### 准备环境
-1. 运行 Android 10 (API 29) 及以上系统的 Android 手机 / 平板（推荐骁龙处理平台）。
-2. （强烈建议）安装并激活 [Shizuku](https://shizuku.rikka.app/)，用于免 Root 触控注入与全自动自愈重连。
+系统无线调试配对用于启动 Shizuku，Moonlight PIN 配对用于连接 Sunshine，是两个独立流程。
 
-### 安装与运行
-1. 前往本仓库 [Releases](../../releases) 页面下载最新的 `Sunshine-Android.apk`。
-2. 安装后打开应用，授予基础通知与录音权限。
-3. 若已启动 Shizuku，应用将自动完成免 Root 特权激活，仪表盘中的系统权限将全部点亮为绿色勾选状态。
-4. 在仪表盘确认**服务运行中**（显示手机局域网 IP 与 47989 端口）。
+## 常见问题
 
-### 客户端连接 (Moonlight)
-1. 在同一局域网下的 PC、笔记本或另一台手机上启动 **Moonlight Game Streaming**。
-2. 添加手机的局域网 IP 地址（例如 `192.168.31.150`）。
-3. 首次连接时，在手机端弹出的输入框中输入 Moonlight 屏幕上的 4 位 PIN 码完成配对。
-4. 点击 **Desktop** 应用，即可开启超低延迟高帧率串流！
+- **无法全屏、竖屏只有中央小块**：核对客户端实际请求宽高、屏幕方向、交换宽高、刘海区域和视频缩放选项，修改分辨率后重新连接。Sunshine 主页“全屏”按钮只能调整主机画布。[详细步骤](docs/faq.md#moonlight-画面不全屏或竖屏变成小块)
+- **横屏异常**：尝试 Sunshine“自动旋转”与系统方向开关；找不到系统选项时退出全部串流以恢复。部分桌面本身不支持横屏。[详细步骤](docs/faq.md#横屏异常方向锁定或退出后恢复)
+- **Shizuku 已启动但权限不足、授权后掉权**：核对应用授权、后台限制及厂商开关，必要时从官方 GitHub 或 Google Play 更新或尝试兼容版本。[品牌设置与排查](docs/faq.md)
 
----
+“填充”可能裁切，“拉伸”可能变形；同时连接不同比例的客户端时可能留边。更新 Shizuku 不能保证解决全部厂商限制。具体设置名称以本机系统版本为准。
 
-## 🛠️ 编译与构建 (Build from Source)
+## 从源码构建
 
-### 串流节奏、缓冲和诊断
+应用使用 Kotlin、Jetpack Compose / Material 3 与原生 Android 串流引擎。需要 JDK 17、Android SDK 34；最低 SDK 29。仓库包含两种 ARM ABI 的原生库。
 
-新增每客户端独立帧率调度、最新纹理合并、静态画面补帧开关、有限长度音频缓冲，以及仅在串流期间持有的 CPU/Wi-Fi 低延迟资源。设置页可配置帧率上限、音频缓冲和 Wi-Fi 模式；`/api/diagnostics` 提供送帧/缓冲诊断，`/api/encoders` 查询设备编码器能力。
-
-GPU 送帧耗时与 ICMP RTT 分开显示，未知值不再用默认数值代替。原生引擎现可按固定来源重新构建，修复了多客户端竞争音频队列；构建步骤见 [原生构建说明](native/README.md)。自适应 FEC、动态码率与实际编码延迟反馈仍需对应实现和 JNI 接口。参考项目对比、能力边界及真机测试见 [后端优化说明](docs/backend-optimization.md)。
-
-### 版本与发布约定
-
-从 `v2026.10.11.1` 开始，版本采用 `v年.月.日.当日序号`，日期按北京时间计算。同日每次发布增加序号；`versionCode` 从 `20261011` 开始独立递增，每次发布加一，确保高于上一版并远离 Android 的整数上限。版本只在 `app/build.gradle.kts` 的 `defaultConfig` 中定义，界面及 API 从 `BuildConfig` 读取。
-
-正式 Release 构建启用 R8 和资源压缩，沿用原发布签名以支持覆盖升级。发布前在两台真实 Android 手机和电脑 Moonlight 上完成断开、重连及多客户端验证，然后上传以下三个包：
-
-* `app-armeabi-v7a-release.apk`：32 位 ARM。
-* `app-arm64-v8a-release.apk`：64 位 ARM。
-* `app-universal-release.apk`：通用包。
-
-### 要求
-* JDK 17
-* Android SDK (Compile SDK 34, Min SDK 29)
-* NDK 27.2+ (`27.2.12479018`)
-
-### 构建命令
-```bash
-# 克隆仓库
+```powershell
 git clone https://github.com/nanaoniiiii/sunshine.git
 cd sunshine
-
-# 编译 Debug APK
-./gradlew assembleDebug
-
-# 生成的 APK 位于: app/build/outputs/apk/debug/app-debug.apk
+./gradlew.bat :app:assembleRelease :app:testDebugUnitTest :app:lintRelease
 ```
 
-### 断开与恢复的真机验证
+macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`。当前发布构建启用 R8 和资源压缩，并沿用项目现有签名配置；其他环境自行构建的签名可能不同。
 
-分别在 Android 10 和 Android 14+ 的 ARM 设备检查：
-1. 两个 Moonlight 客户端同时串流，退出其中一个，另一端的画面、音频和输入应继续正常。
-2. 在上述退出前后反复打开 Sunshine，界面应可正常进入，现有串流不应中断。
-3. 全部退出后等待恢复，手机不应弹出 Sunshine 界面；主应用进程 PID 保持不变，只有 `:engine` 进程 PID 改变。
-4. 在退出后的恢复等待期快速重新连接，旧恢复任务不应中断新串流。重复断开、重连并检查音频和不同分辨率下的触控映射。
-5. 重连应复用录屏授权；主动撤销系统录屏授权后，需要在应用内重新授权。
+需要重新构建原生引擎时，请先阅读[原生构建说明](native/README.md)。`native/sources.lock.json` 固定上游和依赖版本；`native/patches/android-host.patch` 保存 Android 主机修改。
 
-`./gradlew :app:testDebugUnitTest` 覆盖引擎会话身份、重复退出回调、多客户端保护和延迟恢复失效检查。进程、录屏、音频和硬件编码行为需要真机验证。
+## 工程记录
 
----
+- [v2026.10.14.2：帮助、关于与仓库更新](docs/validation/v2026.10.14.2.md)
+- [v2026.10.14.1：默认竖屏、按连接全屏与退出恢复](docs/validation/v2026.10.14.1.md)
+- [后端优化与能力边界](docs/backend-optimization.md)
+- [原生视频控制](docs/native-video-controls.md)
+- [网络反馈](docs/network-feedback.md)
+- [队列、编码器与远程唤醒](docs/queue-encoder-controls.md)
 
-## 📜 开源协议与致谢 (License & Acknowledgements)
+单元测试覆盖会话恢复、设置校验、采集几何及全屏恢复等逻辑。音视频、输入、OEM 权限和长期稳定性仍需要设备验证；实验性反馈自适应与 FEC 默认关闭。
 
-本项目参考并集成以下优秀的开源项目：
-* [Sunshine](https://github.com/LizardByte/Sunshine) - 自托管 GameStream 服务端
-* [Moonlight](https://github.com/moonlight-stream) - GameStream 客户端协议实现
-* [Shizuku](https://github.com/RikkaApps/Shizuku) - Android 免 Root 权限代理
-* [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) - 轻量级嵌入式 HTTP 服务
-* [JmDNS](https://github.com/jmdns/jmdns) - mDNS 零配置网络发现
+## 开源来源与致谢
+
+- [Sunshine](https://github.com/LizardByte/Sunshine)：GameStream 服务端。
+- [kumu-ze/connect-screen.com](https://github.com/kumu-ze/connect-screen.com)：Android 原生移植来源；其 GPLv3 许可保存在 [native/LICENSE.upstream](native/LICENSE.upstream)。
+- [Moonlight](https://github.com/moonlight-stream)：串流客户端与协议生态。
+- [Shizuku](https://github.com/RikkaApps/Shizuku)：Android 权限代理。
+- [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) 与 [JmDNS](https://github.com/jmdns/jmdns)：HTTP 服务与网络发现。
+
+各组件遵循各自的开源许可。

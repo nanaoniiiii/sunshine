@@ -17,7 +17,8 @@ import com.alkaidlab.sunshine.ui.theme.*
 import com.alkaidlab.sunshine.ui.viewmodel.*
 
 @Composable
-fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, onFollowSystemTheme: () -> Unit = {}) {
+fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, onFollowSystemTheme: () -> Unit = {},
+    onOpenFaq: () -> Unit = {}) {
     val config by viewModel.config.collectAsState()
     val draft by viewModel.settingsDraft.collectAsState()
     val saving by viewModel.configSaving.collectAsState()
@@ -74,14 +75,20 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                 item { SectionCard("外观", Icons.Default.Palette) {
                     TextButton(onClick = onFollowSystemTheme) { Text("恢复跟随系统外观") }
                 } }
+            }
                 item { SectionCard("维护", Icons.Default.Build) {
+                    TextButton(onClick = onOpenFaq, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(Icons.Default.HelpOutline, null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(12.dp)); Text("常见问题", modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                        Icon(Icons.Default.ChevronRight, null)
+                    }
                     TextButton(onClick = onOpenLogs, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.Terminal, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(12.dp)); Text("运行日志", modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
                         Icon(Icons.Default.ChevronRight, null)
                     }
                 } }
-            }
+                item { AboutSection() }
         }
         Surface(color = CardBg, tonalElevation = 1.dp, shadowElevation = 2.dp) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),

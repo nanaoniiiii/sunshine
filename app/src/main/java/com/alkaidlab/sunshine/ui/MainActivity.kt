@@ -193,8 +193,8 @@ fun MainContent(
     onFollowSystemTheme: () -> Unit = {}
 ) {
     var selectedTab by rememberSaveable { mutableStateOf(NavigationTab.DASHBOARD) }
-    var showLogs by rememberSaveable { mutableStateOf(false) }
-    BackHandler(enabled = selectedTab == NavigationTab.SETTINGS && showLogs) { showLogs = false }
+    var settingsPage by rememberSaveable { mutableStateOf("settings") }
+    BackHandler(enabled = selectedTab == NavigationTab.SETTINGS && settingsPage != "settings") { settingsPage = "settings" }
     val statusMessage by viewModel.statusMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val pageStates = rememberSaveableStateHolder()
@@ -209,7 +209,7 @@ fun MainContent(
         Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }, bottomBar = {
             if (!wide) NavigationBar(containerColor = CardBg, tonalElevation = 0.dp) {
                 NavigationTab.values().forEach { tab ->
-                    NavigationBarItem(selected = selectedTab == tab, onClick = { selectedTab = tab; showLogs = false },
+                    NavigationBarItem(selected = selectedTab == tab, onClick = { selectedTab = tab; settingsPage = "settings" },
                         icon = { Icon(tab.icon, null) }, label = { Text(tab.title) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -222,21 +222,25 @@ fun MainContent(
                 if (wide) NavigationRail(containerColor = CardBg) {
                     Spacer(Modifier.height(24.dp))
                     NavigationTab.values().forEach { tab ->
-                        NavigationRailItem(selected = selectedTab == tab, onClick = { selectedTab = tab; showLogs = false },
+                        NavigationRailItem(selected = selectedTab == tab, onClick = { selectedTab = tab; settingsPage = "settings" },
                             icon = { Icon(tab.icon, null) }, label = { Text(tab.title) },
                             modifier = Modifier.padding(vertical = 4.dp))
                     }
                 }
                 Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
                     Box(Modifier.widthIn(max = 760.dp).fillMaxSize()) {
-                        pageStates.SaveableStateProvider(if (selectedTab == NavigationTab.SETTINGS && showLogs) "logs" else selectedTab.name) {
+                        pageStates.SaveableStateProvider(if (selectedTab == NavigationTab.SETTINGS) settingsPage else selectedTab.name) {
                             when (selectedTab) {
                                 NavigationTab.DASHBOARD -> DashboardScreen(viewModel, onRequestMediaProjection,
                                     onRequestShizuku, onRequestBatteryOptimization, onOpenPairing = { selectedTab = NavigationTab.PAIRING }, onToggleTheme = onToggleTheme, darkTheme = darkTheme)
                                 NavigationTab.PAIRING -> PairingScreen(viewModel)
                                 NavigationTab.APPS -> AppsScreen(viewModel)
-                                NavigationTab.SETTINGS -> if (showLogs) LogsScreen(viewModel, onBack = { showLogs = false })
-                                    else SettingsScreen(viewModel, onOpenLogs = { showLogs = true }, onFollowSystemTheme = onFollowSystemTheme)
+                                NavigationTab.SETTINGS -> when (settingsPage) {
+                                    "logs" -> LogsScreen(viewModel, onBack = { settingsPage = "settings" })
+                                    "faq" -> FaqScreen(onBack = { settingsPage = "settings" })
+                                    else -> SettingsScreen(viewModel, onOpenLogs = { settingsPage = "logs" },
+                                        onOpenFaq = { settingsPage = "faq" }, onFollowSystemTheme = onFollowSystemTheme)
+                                }
                             }
                         }
                     }
