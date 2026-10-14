@@ -35,6 +35,8 @@ struct VideoSession {
     std::string encoder_choice="auto";
     int encoder_attempts=0, reported_latency=-1;
     int profile_idc=-1, level_idc=-1;
+    int canvas_width=0, canvas_height=0;
+    uint64_t canvas_reconfigurations=0;
     VideoClock::time_point interval = VideoClock::now(), last_output = interval;
     uint64_t interval_frames = 0, interval_bytes = 0;
     double fps = 0, kbps = 0;
@@ -199,6 +201,7 @@ inline std::string video_snapshot() {
         if(s.reported_latency>=0) out << s.reported_latency; else out << "null";
         out << ",\"codec_profile_idc\":";if(s.profile_idc>=0)out << s.profile_idc;else out << "null";
         out << ",\"codec_level_idc\":";if(s.level_idc>=0)out << s.level_idc;else out << "null";
+        out << ",\"encoded_width\":" << s.canvas_width << ",\"encoded_height\":" << s.canvas_height << ",\"canvas_reconfigurations\":" << s.canvas_reconfigurations;
         out << ",\"queue_frames\":" << s.queue.frames << ",\"queue_bytes\":" << s.queue.bytes
             << ",\"queue_peak_frames\":" << s.queue.peak_frames << ",\"queue_peak_bytes\":" << s.queue.peak_bytes
             << ",\"queue_dropped_frames\":" << s.queue.dropped << ",\"queue_waiting_idr\":" << (s.queue.waiting_idr?"true":"false")

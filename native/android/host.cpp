@@ -146,6 +146,17 @@ void stream_started(JNIEnv* env,int w,int h,int fps,int audio_ms,jobject surface
     env->DeleteLocalRef(text);
 }
 void stream_stopped(JNIEnv*) {call_void("stopVirtualDisplay","()V");}
+bool stream_paused() {
+    Jvm java;if(!java.env)return false;
+    auto method=java.env->GetStaticMethodID(bridge,"pauseVirtualDisplay","()Z");
+    bool result=method&&java.env->CallStaticBooleanMethod(bridge,method);
+    if(java.env->ExceptionCheck()){java.env->ExceptionClear();return false;}return result;
+}
+bool stream_resized(JNIEnv* env,int width,int height,jobject surface) {
+    auto method=env->GetStaticMethodID(bridge,"resizeVirtualDisplay","(IILandroid/view/Surface;)Z");
+    bool result=method&&env->CallStaticBooleanMethod(bridge,method,width,height,surface);
+    if(env->ExceptionCheck()){env->ExceptionClear();return false;}return result;
+}
 void input_event(const char* name,const char* signature,jvalue* args) {
     input_activity();Jvm java;if(!java.env || !input_bridge)return;
     auto method=java.env->GetStaticMethodID(input_bridge,name,signature);
@@ -227,6 +238,7 @@ extern "C" JNIEXPORT void JNICALL JNI_NAME(setSunshineName)(JNIEnv* e,jclass,jst
 extern "C" JNIEXPORT void JNICALL JNI_NAME(enableH265)(JNIEnv*,jclass){video::active_hevc_mode=2;config::video.hevc_mode=2;}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(submitPin)(JNIEnv* e,jclass,jstring p){nvhttp::pin(android_host::string(e,p));}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureVideo)(JNIEnv*,jclass,jint a,jint b,jint c){android_host::configure_video(a,b,c);}
+extern "C" JNIEXPORT void JNICALL JNI_NAME(configureCanvas)(JNIEnv*,jclass,jint width,jint height,jboolean follow){android_host::configure_canvas(width,height,follow);}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureEncoders)(JNIEnv* e,jclass,jstring a,jstring b,jobjectArray c,jobjectArray d){android_host::configure_encoders(e,a,b,c,d);}
 extern "C" JNIEXPORT jstring JNICALL JNI_NAME(videoSnapshot)(JNIEnv* e,jclass){return e->NewStringUTF(android_host::video_snapshot().c_str());}
 extern "C" JNIEXPORT jboolean JNICALL JNI_NAME(controlVideo)(JNIEnv*,jclass,jlong id,jint op,jint value){return android_host::video_control(id,op,value);}

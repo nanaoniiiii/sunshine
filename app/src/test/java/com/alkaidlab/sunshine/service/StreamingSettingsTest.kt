@@ -19,7 +19,7 @@ class StreamingSettingsTest {
         for (values in listOf(
             mapOf("max_stream_fps" to "0"), mapOf("max_stream_fps" to "500"),
             mapOf("audio_buffer_ms" to "5000"), mapOf("audio_buffer_ms" to "bad"),
-            mapOf("repeat_frames" to "yes"), mapOf("wifi_low_latency" to "1")
+            mapOf("repeat_frames" to "yes"), mapOf("wifi_low_latency" to "1"), mapOf("rotation_compat" to "yes")
         )) assertNotNull(StreamingSettings.validate(values))
         assertNull(StreamingSettings.validate(mapOf("max_stream_fps" to "120", "audio_buffer_ms" to "20")))
     }

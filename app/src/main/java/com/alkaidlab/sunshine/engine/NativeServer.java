@@ -24,6 +24,7 @@ public final class NativeServer {
     public static native void submitPin(String pin);
     public static native void cleanup();
     public static native void configureVideo(int minimum, int maximum, int maxFps);
+    public static native void configureCanvas(int width, int height, boolean followOrientation);
     public static native void configureEncoders(String avc, String hevc, String[] avcNames, String[] hevcNames);
     public static native String videoSnapshot();
     public static native boolean controlVideo(long sessionId, int operation, int value);
@@ -54,6 +55,10 @@ public final class NativeServer {
         SunshineEngineBridge.streamStarted(width, height, fps, audioMs, surface, audio, appId, clientId);
     }
     public static void stopVirtualDisplay() { SunshineEngineBridge.streamStopped(); }
+    public static boolean pauseVirtualDisplay() { return SunshineEngineBridge.streamPaused(); }
+    public static boolean resizeVirtualDisplay(int width, int height, Surface surface) {
+        return SunshineEngineBridge.streamResized(width, height, surface);
+    }
     public static void showEncoderError(String message) { SunshineEngineBridge.encoderError(message); }
     public static void onClientPaired(String client) { SunshineEngineBridge.clientDiscovered(client); }
     public static void onServerUuid(String uuid) { SunshineEngineBridge.serverUuid(uuid); }

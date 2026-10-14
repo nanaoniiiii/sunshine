@@ -91,6 +91,9 @@ class SunshineEngineClient(private val context: Context) {
             override fun keyboardEvent(keyCode: Int, down: Boolean, modifiers: Int) {
                 if (current()) runtime.handleKeyboardEvent(keyCode, down, modifiers)
             }
+            override fun streamPaused(threadId: Long): Boolean = current() && runtime.pauseStreamSurface(threadId)
+            override fun streamResized(threadId: Long, width: Int, height: Int, surface: Surface): Boolean =
+                current() && runtime.resizeStreamSurface(threadId, width, height, surface)
             override fun readAudio(count: Int, mode: Int): FloatArray =
                 if (current()) runtime.readAudio(count, mode) else floatArrayOf()
         }
@@ -106,6 +109,8 @@ class SunshineEngineClient(private val context: Context) {
                             EncoderCapabilities.encoders.filter { it.mime == "video/avc" }.map { it.name }.distinct().toTypedArray(),
                             EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray())
                         remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
+                        val capture = runtime.getCaptureDimensions(1, 1)
+                        remote.configureCanvas(capture[0], capture[1], runtime.autoRotateEnabled && !runtime.rotationCompatEnabled, runtime.rotationCompatEnabled)
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
@@ -188,6 +193,9 @@ class SunshineEngineClient(private val context: Context) {
 
     fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
         try { engine?.configureVideo(minimum, maximum, maxFps) } catch (_: RemoteException) {}
+    }
+    fun configureCanvas(width: Int, height: Int, follow: Boolean, compat: Boolean) {
+        try { engine?.configureCanvas(width, height, follow && !compat, compat) } catch (_: RemoteException) {}
     }
 
     fun videoSessions(): List<com.alkaidlab.sunshine.data.NativeVideoSession> = try {

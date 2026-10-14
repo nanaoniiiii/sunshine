@@ -36,6 +36,16 @@ object SunshineEngineBridge {
             host?.streamStopped(threadId, revision)
         }
     }
+    @JvmStatic fun streamPaused(): Boolean = synchronized(lock) {
+        host?.streamPaused(Process.myTid().toLong()) == true
+    }
+    @JvmStatic fun streamResized(width: Int, height: Int, surface: Surface): Boolean = synchronized(lock) {
+        val threadId = Process.myTid().toLong()
+        if (host?.streamResized(threadId, width, height, surface) != true) return@synchronized false
+        clientDimensions[threadId] = width to height
+        InputBroker.setActiveClientDimensions(width, height)
+        true
+    }
 
     @JvmStatic fun appCatalog(): String = host?.appCatalog() ?: "{\"apps\":[]}"
     @JvmStatic fun prepareApp(appId: Int): Boolean = host?.prepareApp(appId) == true

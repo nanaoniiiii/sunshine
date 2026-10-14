@@ -61,6 +61,11 @@ class SunshineFrameDispatcher {
 
     private val vertexBuffer: FloatBuffer
     private val texCoordBuffer: FloatBuffer
+    private val clockwiseCoords = coordinates(floatArrayOf(1f, 0f, 1f, 1f, 0f, 0f, 0f, 1f))
+    private val counterclockwiseCoords = coordinates(floatArrayOf(0f, 1f, 0f, 0f, 1f, 1f, 1f, 0f))
+    private fun coordinates(values: FloatArray): FloatBuffer = ByteBuffer.allocateDirect(values.size * 4)
+        .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(values); position(0) }
+    @Volatile var sourceRotation: Int = 0
 
     @Volatile
     var isRunning: Boolean = false
@@ -182,7 +187,8 @@ class SunshineFrameDispatcher {
             targets = clientTargets.map { com.alkaidlab.sunshine.data.FrameTargetDiagnostics(
                 it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps,
                 it.threadId, it.measuredHandoffMs,
-                CaptureGeometry.fit(sourceWidth, sourceHeight, it.width, it.height).let { vp ->
+                CaptureGeometry.orientedFit(sourceWidth, sourceHeight, it.width, it.height,
+                    CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, it.width, it.height, sourceRotation, settings.rotationCompat)).let { vp ->
                     listOf(vp.x, vp.y, vp.width, vp.height)
                 }) }
         )
@@ -693,7 +699,9 @@ class SunshineFrameDispatcher {
         return try {
             val targetW = target.width
             val targetH = target.height
-            val viewport = CaptureGeometry.fit(sourceWidth, sourceHeight, targetW, targetH)
+            val turn = CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, targetW, targetH, sourceRotation, settings.rotationCompat)
+            val viewport = CaptureGeometry.orientedFit(sourceWidth, sourceHeight, targetW, targetH, turn)
+            val textureCoords = when (turn) { 1 -> clockwiseCoords; 3 -> counterclockwiseCoords; else -> texCoordBuffer }
             // Clear every frame: rotation/resize may expose pixels from an older viewport.
             GLES20.glViewport(0, 0, targetW, targetH)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -707,7 +715,7 @@ class SunshineFrameDispatcher {
             GLES20.glVertexAttribPointer(aPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
 
             GLES20.glEnableVertexAttribArray(aTexCoordHandle)
-            GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoordBuffer)
+            GLES20.glVertexAttribPointer(aTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, textureCoords)
 
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)

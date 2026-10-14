@@ -4,6 +4,7 @@
 #include "globals.h"
 #include "logging.h"
 #include "config.h"
+#include "canvas_policy.h"
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
 #include <android/native_window_jni.h>
@@ -14,6 +15,12 @@
 namespace {
 using namespace sunshine_android;
 FreshVideoQueue<video::packet_t> packets(record_queue);
+int source_width=0,source_height=0;
+bool follow_orientation=true;
+std::pair<int,int> canvas_for(int width,int height) {
+    std::lock_guard lock(video_mutex);
+    return oriented_canvas(width,height,source_width,source_height,follow_orientation);
+}
 std::string java_string(JNIEnv* env,jstring s) {
     if(!s)return {};
     auto text=env->GetStringUTFChars(s,nullptr);std::string value=text?text:"";
@@ -27,6 +34,10 @@ std::vector<std::string> names(JNIEnv* env,jobjectArray source) {
 }
 }
 namespace android_host {
+void configure_canvas(int width,int height,bool follow) {
+    std::lock_guard lock(sunshine_android::video_mutex);
+    source_width=width;source_height=height;follow_orientation=follow;
+}
 std::string video_snapshot(){return sunshine_android::video_snapshot();}
 bool video_control(int64_t id,int op,int value){return sunshine_android::control_video(id,op,value);}
 void configure_video(int min,int max,int fps){sunshine_android::configure_video(min,max,fps);}
@@ -93,14 +104,16 @@ void capture(safe::mail_t mail,config_t config,void* channel) {
     if(selection.first.empty()||selection.first=="auto") { options.push_back("");options.insert(options.end(),selection.second.begin(),selection.second.end()); }
     else options.push_back(selection.first);
     int attempts=0;
+    auto canvas=canvas_for(config.width,config.height);
+    auto start_codec=[&]() {
     for(const auto& candidate:options) {
         ++attempts;
         codec=candidate.empty()?AMediaCodec_createEncoderByType(mime):AMediaCodec_createCodecByName(candidate.c_str());
         if(!codec)continue;
         auto format=AMediaFormat_new();
         AMediaFormat_setString(format,"mime",mime);
-        AMediaFormat_setInt32(format,"width",config.width);
-        AMediaFormat_setInt32(format,"height",config.height);
+        AMediaFormat_setInt32(format,"width",canvas.first);
+        AMediaFormat_setInt32(format,"height",canvas.second);
         AMediaFormat_setInt32(format,"bitrate",bitrate*1000);
         AMediaFormat_setInt32(format,"frame-rate",fps);
         AMediaFormat_setInt32(format,"i-frame-interval",1);
@@ -122,33 +135,58 @@ void capture(safe::mail_t mail,config_t config,void* channel) {
         AMediaFormat_delete(format);
         if(result==AMEDIA_OK)result=AMediaCodec_createInputSurface(codec,&window);
         if(result==AMEDIA_OK)result=AMediaCodec_start(codec);
-        if(result==AMEDIA_OK)break;
+        if(result==AMEDIA_OK)return true;
         if(window){ANativeWindow_release(window);window=nullptr;}
         AMediaCodec_delete(codec);codec=nullptr;
     }
-    if(!codec||!window){android_host::report_error("无法启动所选硬件编码器，请切换编码器");mail->event<bool>(mail::shutdown)->raise(true);return;}
-    auto surface=ANativeWindow_toSurface(java.env,window);
+    return false;
+    };
+    auto release_codec=[&]() {
+        if(codec){AMediaCodec_stop(codec);AMediaCodec_delete(codec);codec=nullptr;}
+        if(window){ANativeWindow_release(window);window=nullptr;}
+    };
+    if(!start_codec()){android_host::report_error("无法启动所选硬件编码器，请切换编码器");mail->event<bool>(mail::shutdown)->raise(true);return;}
+    jobject surface=ANativeWindow_toSurface(java.env,window);
     if(!surface){AMediaCodec_stop(codec);AMediaCodec_delete(codec);ANativeWindow_release(window);return;}
     auto stats=std::make_shared<VideoSession>();
     stats->channel=channel;stats->tid=syscall(SYS_gettid);stats->negotiated=config.bitrate;
     stats->configured_fps=fps;stats->requested_fps=config.framerate;stats->codec=mime;
     stats->applied=bitrate;stats->encoder_choice=selection.first;stats->encoder_attempts=attempts;
+    stats->canvas_width=canvas.first;stats->canvas_height=canvas.second;
     stats->network.initialize(config.bitrate,config::stream.fec_percentage);
     char* codec_name=nullptr;
     if(AMediaCodec_getName(codec,&codec_name)==AMEDIA_OK&&codec_name){stats->encoder=codec_name;AMediaCodec_releaseName(codec,codec_name);}
     auto shutdown=mail->event<bool>(mail::shutdown);
     stats->disconnect=[shutdown]{shutdown->raise(true);};
     register_video(stats);
-    android_host::stream_started(java.env,config.width,config.height,fps,config.audioPacketMs,surface,config.appid,config.clientId);
+    android_host::stream_started(java.env,canvas.first,canvas.second,fps,config.audioPacketMs,surface,config.appid,config.clientId);
     android_host::client_discovered(config.clientAddress);
-    input::touch_port_t viewport;
-    viewport.offset_x=viewport.offset_y=0;viewport.width=viewport.env_width=config.width;viewport.height=viewport.env_height=config.height;
-    viewport.client_offsetX=viewport.client_offsetY=0;viewport.scalar_inv=1;
-    mail->event<input::touch_port_t>(mail::touch_port)->raise(viewport);
+    auto update_input=[&]() {
+        input::touch_port_t viewport;
+        viewport.offset_x=viewport.offset_y=0;viewport.width=viewport.env_width=canvas.first;viewport.height=viewport.env_height=canvas.second;
+        viewport.client_offsetX=viewport.client_offsetY=0;viewport.scalar_inv=1;
+        mail->event<input::touch_port_t>(mail::touch_port)->raise(viewport);
+    };
+    update_input();
     auto idr=mail->event<bool>(mail::idr);
     std::vector<uint8_t> configuration;
     int64_t index=1;
     while(!shutdown->peek()&&!android_host::stopping) {
+        auto next_canvas=canvas_for(config.width,config.height);
+        if(next_canvas!=canvas) {
+            // Detach EGL synchronously before the owning thread stops its codec.
+            // This changes only the surface; session, audio and RTP numbering survive.
+            if(!android_host::stream_paused())break;
+            java.env->DeleteLocalRef(surface);surface=nullptr;
+            release_codec();packets.invalidate(channel);configuration.clear();
+            canvas=next_canvas;
+            {std::lock_guard lock(video_mutex);bitrate=stats->applied;}
+            if(!start_codec()) {android_host::report_error("旋转后无法重新启动编码器，请切换编码器");shutdown->raise(true);break;}
+            surface=ANativeWindow_toSurface(java.env,window);
+            if(!surface||!android_host::stream_resized(java.env,canvas.first,canvas.second,surface)) {shutdown->raise(true);break;}
+            update_input();
+            {std::lock_guard lock(video_mutex);stats->canvas_width=canvas.first;stats->canvas_height=canvas.second;++stats->canvas_reconfigurations;stats->encoder_attempts=attempts;}
+        }
         auto command=take_video_command(stats);
         if(command.bitrate) {
             auto params=AMediaFormat_new();AMediaFormat_setInt32(params,"video-bitrate",command.bitrate*1000);
@@ -206,7 +244,7 @@ void capture(safe::mail_t mail,config_t config,void* channel) {
     android_host::stream_stopped(java.env);
     android_host::remove_video_channel(channel);
     unregister_video(stats->id);
-    java.env->DeleteLocalRef(surface);
-    AMediaCodec_stop(codec);AMediaCodec_delete(codec);ANativeWindow_release(window);
+    if(surface)java.env->DeleteLocalRef(surface);
+    release_codec();
 }
 }

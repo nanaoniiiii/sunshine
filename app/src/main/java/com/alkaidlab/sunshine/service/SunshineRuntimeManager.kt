@@ -70,6 +70,12 @@ class SunshineRuntimeManager private constructor() {
     }
 
     private fun displayCaptureSize(fallbackWidth: Int, fallbackHeight: Int): IntArray {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val manager = context?.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
+            val bounds = manager?.maximumWindowMetrics?.bounds
+            if (bounds != null && bounds.width() > 0 && bounds.height() > 0)
+                return intArrayOf(bounds.width(), bounds.height())
+        }
         val size = Point()
         captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(size)
         return if (size.x > 0 && size.y > 0) intArrayOf(size.x, size.y)
@@ -80,8 +86,12 @@ class SunshineRuntimeManager private constructor() {
     private fun syncCaptureSize(): Boolean {
         val display = virtualDisplay ?: return false
         if (!frameDispatcher.isRunning) return false
+        frameDispatcher.sourceRotation = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
         val size = displayCaptureSize(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
-        if (size[0] == frameDispatcher.sourceWidth && size[1] == frameDispatcher.sourceHeight) return true
+        if (size[0] == frameDispatcher.sourceWidth && size[1] == frameDispatcher.sourceHeight) {
+            engineClient?.configureCanvas(size[0], size[1], autoRotateEnabled, rotationCompatEnabled)
+            return true
+        }
         val oldWidth = frameDispatcher.sourceWidth
         val oldHeight = frameDispatcher.sourceHeight
         try {
@@ -90,6 +100,7 @@ class SunshineRuntimeManager private constructor() {
                 ?: throw IllegalStateException("Capture surface resize failed")
             display.resize(size[0], size[1], context?.resources?.displayMetrics?.densityDpi ?: 300)
             display.surface = resizedSurface
+            engineClient?.configureCanvas(size[0], size[1], autoRotateEnabled, rotationCompatEnabled)
             SunshineLogManager.log("VD", "Capture resized to ${size[0]}x${size[1]} (display pixels)")
             return true
         } catch (e: Exception) {
@@ -165,6 +176,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Volatile var hevcEnabled: Boolean = true
         private set
+    @Volatile var rotationCompatEnabled: Boolean = false
     @Volatile var autoRotateEnabled: Boolean = true
         private set
     @Volatile var autoScaleEnabled: Boolean = true
@@ -224,6 +236,10 @@ class SunshineRuntimeManager private constructor() {
                 engineClient?.configureEncoders(encoderH264, encoderHevc)
                 hevcEnabled = (props["hevc_mode"] ?: "enabled") != "disabled"
                 autoRotateEnabled = (props["auto_rotate"] ?: "true") != "false"
+                rotationCompatEnabled = props["rotation_compat"] == "true"
+                val capture = if (frameDispatcher.isRunning) intArrayOf(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
+                    else displayCaptureSize(1, 1)
+                engineClient?.configureCanvas(capture[0], capture[1], autoRotateEnabled, rotationCompatEnabled)
                 autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
                 configuredMaxBitrate = (props["max_bitrate"]?.toIntOrNull() ?: 50000).coerceIn(1000, 150000)
                 configuredMinBitrate = (props["min_bitrate"]?.toIntOrNull() ?: 5000).coerceIn(1000, configuredMaxBitrate)
@@ -558,6 +574,30 @@ class SunshineRuntimeManager private constructor() {
                 SunshineLogManager.log("AUDIO", "Client requested no audio")
             }
         }
+    }
+
+    @Synchronized
+    fun pauseStreamSurface(callerThreadId: Long): Boolean {
+        val session = activeSessions.find { it.videoThreadId == callerThreadId } ?: return false
+        session.surface?.let { frameDispatcher.removeSurfaceSync(it) }
+        val index = activeSessions.indexOf(session)
+        activeSessions[index] = session.copy(surface = null)
+        _activeSessionsFlow.value = activeSessions.toList()
+        return true
+    }
+
+    @Synchronized
+    fun resizeStreamSurface(callerThreadId: Long, width: Int, height: Int, surface: Surface): Boolean {
+        val session = activeSessions.find { it.videoThreadId == callerThreadId } ?: return false
+        if (width <= 0 || height <= 0 || !surface.isValid) return false
+        session.surface?.let { frameDispatcher.removeSurfaceSync(it) }
+        activeSessions[activeSessions.indexOf(session)] = session.copy(width = width, height = height, surface = surface)
+        frameDispatcher.addSurface(surface, width, height, session.fps, callerThreadId)
+        lastWidth = width
+        lastHeight = height
+        _activeSessionsFlow.value = activeSessions.toList()
+        SunshineLogManager.log("CANVAS", "Encoder canvas resized to ${width}x$height")
+        return true
     }
 
     @Synchronized

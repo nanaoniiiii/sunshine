@@ -14,5 +14,7 @@ interface ISunshineEngineHost {
     oneway void remoteInput();
     oneway void motionEvent(in MotionEvent event);
     oneway void keyboardEvent(int keyCode, boolean down, int modifiers);
+    boolean streamPaused(long threadId);
+    boolean streamResized(long threadId, int width, int height, in Surface surface);
     float[] readAudio(int count, int mode);
 }

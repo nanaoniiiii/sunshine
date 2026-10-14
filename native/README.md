@@ -14,7 +14,14 @@ RTP packetization and FEC. Opus is compiled from its official source.
 
 Existing pairing credentials and device names are migrated in place; the
 first engine start preserves a `.before-official` state backup. The input
-worker runs serially to preserve key and modifier order. Each audio client
+worker runs serially to preserve key and modifier order. With automatic rotation,
+each encoder canvas follows the current display orientation. The encoder's surface
+is detached, reconfigured and rebound on its owning thread while the session,
+RTP sequence, pairing and audio remain active. New parameter sets accompany the
+first keyframe, and input coordinates use the updated canvas.
+For fixed-aspect Android receivers, rotation compatibility keeps the negotiated
+encoder dimensions and rotates the GL image, with the inverse transform applied
+to touch and mouse coordinates. This path does not rebuild the codec on rotation. Each audio client
 has its own bounded PCM buffer and packet queue; an idle source returns
 within a bounded wait so disconnect does not stall audio shutdown.
 
@@ -30,8 +37,9 @@ python native/build.py --ndk D:/android-sdk-extra/ndk/27.2.12479018 --cmake D:/a
 The ignored `native/.official-build` directory contains the official checkouts,
 verified vendor archives, generated source and both ABI builds. The driver
 rejects altered source revisions. `--install` copies stripped native libraries
-and matching OpenSSL libraries into the APK inputs. `--tests` builds six Android
-console test executables for ADB execution. APK signing remains separate.
+and matching OpenSSL libraries into the APK inputs. `--tests` builds seven Android
+console test executables for ADB execution, including canvas orientation and
+per-client resolution budgets. APK signing remains separate.
 
 Sunshine's GPLv3 license is in `LICENSE.sunshine`; dependency notices are in
 `licenses/` and packaged in the app's `assets/licenses/`. The upstream

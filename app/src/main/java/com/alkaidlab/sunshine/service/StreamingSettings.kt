@@ -4,14 +4,16 @@ data class StreamingSettings(
     val maxFps: Int = 240,
     val repeatFrames: Boolean = true,
     val audioBufferMs: Int = 40,
-    val wifiLowLatency: Boolean = true
+    val wifiLowLatency: Boolean = true,
+    val rotationCompat: Boolean = false
 ) {
     companion object {
         fun from(properties: Map<String, String>): StreamingSettings = StreamingSettings(
             maxFps = properties["max_stream_fps"]?.toIntOrNull()?.coerceIn(15, 240) ?: 240,
             repeatFrames = properties["repeat_frames"] != "false",
             audioBufferMs = properties["audio_buffer_ms"]?.toIntOrNull()?.coerceIn(20, 100) ?: 40,
-            wifiLowLatency = properties["wifi_low_latency"] != "false"
+            wifiLowLatency = properties["wifi_low_latency"] != "false",
+            rotationCompat = properties["rotation_compat"] == "true"
         )
 
         fun validate(properties: Map<String, String>): String? {
@@ -24,7 +26,7 @@ data class StreamingSettings(
             for (key in listOf("encoder_h264", "encoder_hevc")) {
                 properties[key]?.let { if (it.length !in 1..128 || !it.matches(Regex("[A-Za-z0-9_.-]+"))) return "$key must be auto or a codec name" }
             }
-            for (key in listOf("repeat_frames", "wifi_low_latency")) {
+            for (key in listOf("repeat_frames", "wifi_low_latency", "rotation_compat")) {
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }
             if (properties.any { (key, value) -> key.contains('\n') || key.contains('\r') || key.contains('=') ||

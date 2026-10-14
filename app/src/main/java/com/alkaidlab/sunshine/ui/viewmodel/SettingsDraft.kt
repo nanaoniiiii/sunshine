@@ -21,7 +21,7 @@ data class SettingsDraft(val values: Map<String, String>) {
     companion object {
         fun from(c: ConfigResponse) = SettingsDraft(mapOf(
             "encoder_h264" to c.encoderH264, "encoder_hevc" to c.encoderHevc,
-            "hevc_mode" to c.hevcMode, "auto_rotate" to c.autoRotate, "auto_scale" to c.autoScale,
+            "hevc_mode" to c.hevcMode, "auto_rotate" to c.autoRotate, "auto_scale" to c.autoScale, "rotation_compat" to c.rotationCompat,
             "max_bitrate" to c.maxBitrate, "min_bitrate" to c.minBitrate, "port" to c.port,
             "web_port" to c.webPort, "address_family" to c.addressFamily, "max_stream_fps" to c.maxStreamFps,
             "repeat_frames" to c.repeatFrames, "audio_buffer_ms" to c.audioBufferMs, "wifi_low_latency" to c.wifiLowLatency))

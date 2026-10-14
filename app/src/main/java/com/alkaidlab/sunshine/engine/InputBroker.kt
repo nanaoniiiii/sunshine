@@ -17,6 +17,9 @@ object InputBroker {
     private var captureHeight = 1
     private var clientWidth = 1
     private var clientHeight = 1
+    private var rotationCompat = false
+    private var displayRotation = 0
+    @JvmStatic @Synchronized fun setRotationCompatibility(enabled: Boolean) { rotationCompat = enabled }
     private var mouseX = 0f
     private var mouseY = 0f
     private var downTime = 0L
@@ -33,14 +36,20 @@ object InputBroker {
     }
     @JvmStatic @Synchronized fun updateDisplayDimensions() {
         val wm = context?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
+        @Suppress("DEPRECATION")
+        displayRotation = wm.defaultDisplay.rotation
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            val bounds = wm.maximumWindowMetrics.bounds
+            setCaptureDimensions(bounds.width(), bounds.height())
+            return
+        }
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(metrics)
         setCaptureDimensions(metrics.widthPixels, metrics.heightPixels)
     }
     private fun position(x: Float, y: Float, width: Int, height: Int): Pair<Float, Float> {
-        val fit = CaptureGeometry.fit(captureWidth, captureHeight, width.coerceAtLeast(1), height.coerceAtLeast(1))
-        return ((x - fit.x) * captureWidth / fit.width).coerceIn(0f, (captureWidth - 1).toFloat()) to
-            ((y - fit.y) * captureHeight / fit.height).coerceIn(0f, (captureHeight - 1).toFloat())
+        return CaptureGeometry.mapPosition(x, y, captureWidth, captureHeight, width.coerceAtLeast(1), height.coerceAtLeast(1),
+            CaptureGeometry.compatibilityTurn(captureWidth, captureHeight, width, height, displayRotation, rotationCompat))
     }
     private fun emit(action: Int, changed: Long? = null) {
         if (fingers.isEmpty()) return

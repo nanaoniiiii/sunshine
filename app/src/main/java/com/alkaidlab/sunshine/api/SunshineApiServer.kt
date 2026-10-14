@@ -166,6 +166,7 @@ class SunshineApiServer(
             hevcMode = hevcMode,
             audioSink = confMap["audio_sink"] ?: "media_projection",
             autoRotate = confMap["auto_rotate"] ?: "true",
+            rotationCompat = confMap["rotation_compat"] ?: "false",
             autoScale = confMap["auto_scale"] ?: "true",
             addressFamily = confMap["address_family"] ?: "both",
             maxStreamFps = confMap["max_stream_fps"] ?: "240",
