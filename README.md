@@ -13,23 +13,23 @@
 
 ## 实机与官网
 
-<table>
-  <tr><th>Sunshine 主机 · OPPO Android 11</th><th>常见问题 · 设置 → 维护</th><th>官网 · nanaoni.tech</th></tr>
+<table width="100%">
+  <tr><th width="33%">Sunshine 主机<br>OPPO Android 11</th><th width="33%">常见问题<br>设置 → 维护</th><th width="33%">官网<br>nanaoni.tech</th></tr>
   <tr>
-    <td><img src="docs/images/sunshine-device.png" alt="OPPO 真机上的 Sunshine 主页面，服务运行中" width="240" height="528"></td>
-    <td><img src="docs/images/faq-device.png" alt="真机上的常见问题页面" width="240" height="528"></td>
-    <td><a href="https://nanaoni.tech"><img src="docs/images/website.png" alt="Sunshine 官网首屏实景" width="240" height="528"></a></td>
+    <td width="33%" align="center"><img src="docs/images/sunshine-device.png" alt="OPPO 真机上的 Sunshine 主页面，服务运行中" width="240" height="528"></td>
+    <td width="33%" align="center"><img src="docs/images/faq-device.png" alt="真机上的常见问题页面" width="240" height="528"></td>
+    <td width="33%" align="center"><a href="https://nanaoni.tech"><img src="docs/images/website.png" alt="Sunshine 官网首屏实景" width="240" height="528"></a></td>
   </tr>
 </table>
 
 <details>
 <summary>查看接收端画面与关于栏</summary>
 
-<table>
-  <tr><th>接收端示例 · 三星 Android 13</th><th>项目介绍、作者与链接</th></tr>
+<table width="100%">
+  <tr><th width="50%">接收端示例<br>三星 Android 13</th><th width="50%">项目介绍<br>作者与链接</th></tr>
   <tr>
-    <td><img src="docs/images/moonlight-device.png" alt="三星接收端显示竖屏像素测试图" width="240" height="528"></td>
-    <td><img src="docs/images/about-device.png" alt="设置中的关于栏，显示版本、作者、官网和仓库入口" width="240" height="528"></td>
+    <td width="50%" align="center"><img src="docs/images/moonlight-device.png" alt="三星接收端显示竖屏像素测试图" width="240" height="528"></td>
+    <td width="50%" align="center"><img src="docs/images/about-device.png" alt="设置中的关于栏，显示版本、作者、官网和仓库入口" width="240" height="528"></td>
   </tr>
 </table>
 
