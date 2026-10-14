@@ -45,6 +45,16 @@
         <activity android:name=".ui.StreamTestActivity" android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />
 
+        <activity android:name=".ui.VirtualDesktopActivity" android:exported="true"
+            android:taskAffinity="com.alkaidlab.sunshine.virtualdesktop" android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.SECONDARY_HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".service.SunshineService"
             android:enabled="true"

@@ -148,6 +148,13 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
 
     val runtimeSessions: StateFlow<List<RuntimeSession>> = runtime.activeSessionsFlow
     val fullscreenBusy = runtime.fullscreenBusy
+    val virtualScreenState = runtime.virtualScreenState
+    fun toggleVirtualScreen() {
+        viewModelScope.launch {
+            _statusMessage.value = if (runtime.virtualScreenState.value.active) runtime.exitVirtualScreen().message
+                else runtime.createVirtualScreen().message
+        }
+    }
     fun fullscreenSession(sessionId: Long) {
         viewModelScope.launch {
             _statusMessage.value = runtime.fullscreenSession(sessionId).message

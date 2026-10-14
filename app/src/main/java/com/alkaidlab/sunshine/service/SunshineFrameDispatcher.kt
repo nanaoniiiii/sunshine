@@ -66,6 +66,7 @@ class SunshineFrameDispatcher {
     private fun coordinates(values: FloatArray): FloatBuffer = ByteBuffer.allocateDirect(values.size * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(values); position(0) }
     @Volatile var sourceRotation: Int = 0
+    @Volatile var sourceIsVirtual: Boolean = false
 
     @Volatile
     var isRunning: Boolean = false
@@ -188,7 +189,7 @@ class SunshineFrameDispatcher {
                 it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps,
                 it.threadId, it.measuredHandoffMs,
                 CaptureGeometry.orientedFit(sourceWidth, sourceHeight, it.width, it.height,
-                    CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, it.width, it.height, sourceRotation, settings.rotationCompat)).let { vp ->
+                    CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, it.width, it.height, sourceRotation, settings.rotationCompat && !sourceIsVirtual)).let { vp ->
                     listOf(vp.x, vp.y, vp.width, vp.height)
                 }) }
         )
@@ -699,7 +700,7 @@ class SunshineFrameDispatcher {
         return try {
             val targetW = target.width
             val targetH = target.height
-            val turn = CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, targetW, targetH, sourceRotation, settings.rotationCompat)
+            val turn = CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, targetW, targetH, sourceRotation, settings.rotationCompat && !sourceIsVirtual)
             val viewport = CaptureGeometry.orientedFit(sourceWidth, sourceHeight, targetW, targetH, turn)
             val textureCoords = when (turn) { 1 -> clockwiseCoords; 3 -> counterclockwiseCoords; else -> texCoordBuffer }
             // Clear every frame: rotation/resize may expose pixels from an older viewport.

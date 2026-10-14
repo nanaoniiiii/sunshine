@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StreamingSettingsTest {
+    @Test fun virtualScreenConfigurationRejectsUnknownModesAndInvalidDensity() {
+        assertNull(StreamingSettings.validate(mapOf("virtual_screen_mode" to "desktop", "virtual_screen_density" to "240")))
+        assertNull(StreamingSettings.validate(mapOf("virtual_screen_mode" to "screen_off", "virtual_screen_density" to "640")))
+        assertNotNull(StreamingSettings.validate(mapOf("virtual_screen_mode" to "mirror")))
+        assertNotNull(StreamingSettings.validate(mapOf("virtual_screen_density" to "0")))
+        assertNotNull(StreamingSettings.validate(mapOf("virtual_screen_density" to "8000")))
+    }
     @Test fun encoderChoicesAllowStaleDeviceNamesButRejectMalformedValues() {
         assertNull(StreamingSettings.validate(mapOf("encoder_h264" to "auto", "encoder_hevc" to "OMX.qcom.video.encoder.hevc")))
         assertNull(StreamingSettings.validate(mapOf("encoder_h264" to "OMX.device.no-longer-present")))

@@ -26,7 +26,7 @@ fun AboutSection() {
     SectionCard("关于", Icons.Default.Info) {
         Text("Sunshine for Android", style = MaterialTheme.typography.titleLarge)
         Text(BuildConfig.VERSION_NAME, color = PrimaryCyan, style = MaterialTheme.typography.bodyMedium)
-        Text("把 Android 手机或平板作为串流主机，在另一块屏幕上接收画面与声音，并通过 Shizuku 实现远程输入。支持 H.264 / HEVC 硬件编码、设备配对、应用管理与连接诊断。可使用 Moonlight，也可开发兼容串流协议的自定义接收端。",
+        Text("把 Android 手机或平板作为串流主机，在另一块屏幕上接收画面与声音，并通过 Shizuku 实现远程输入。支持 H.264 / HEVC 硬件编码、主屏息屏串流、独立第二屏桌面、设备配对、应用管理与连接诊断。可使用 Moonlight，也可开发兼容串流协议的自定义接收端。",
             color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
         Text("作者：七鬼 · nanaoniiiii", style = MaterialTheme.typography.bodyLarge)
         HelpLink("项目官网 · nanaoni.tech", WEBSITE)
@@ -47,6 +47,11 @@ fun FaqScreen(onBack: () -> Unit = {}) {
             }
             PageHeader("常见问题", "全屏、横屏、配对与 Shizuku 授权")
         }
+        item { FaqTopic("主屏息屏与第二屏桌面", expanded == "virtual", { expanded = if (expanded == "virtual") null else "virtual" }) {
+            HelpText("先连接 Moonlight，再在设置的虚拟屏串流栏选择模式。主屏息屏串流关闭物理屏幕面板，接收端继续使用手机原有主页与应用；点击恢复主屏即可重新亮屏。")
+            HelpText("第二屏桌面模式按 Moonlight 请求的分辨率创建独立虚拟屏，优先启动可用的系统第二屏桌面，否则启动全屏 Sunshine 虚拟桌面。主屏息屏不影响第二屏显示与操作。桌面显示密度可在设置中调整，退出并重新创建后生效。")
+            HelpText("在主页或虚拟桌面点击退出虚拟屏可恢复主屏串流。最后一个接收端断开时自动退出并恢复显示设置。")
+        } }
         item { FaqTopic("Moonlight 画面不全屏或竖屏变成小块", expanded == "fullscreen", { expanded = if (expanded == "fullscreen") null else "fullscreen" }) {
             HelpText("1. 先核对 Sunshine 主页中该连接的请求分辨率。竖屏内容应请求竖屏宽高（例如 1440×3168），横屏应请求横屏宽高；仅旋转客户端页面不会重新协商视频尺寸。修改 Moonlight 分辨率后退出并重新连接。")
             HelpText("2. 检查客户端的自定义分辨率、交换宽高／自动反转分辨率、屏幕方向／跟随设备旋转、填充刘海区域、视频缩放模式。各 Moonlight 分支的名称与位置可能不同。")

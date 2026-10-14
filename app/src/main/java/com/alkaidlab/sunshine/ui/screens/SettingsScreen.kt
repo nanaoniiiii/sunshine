@@ -82,6 +82,21 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                     SettingSwitch("自动缩放", "匹配客户端请求的分辨率", current.checked("auto_scale"), true) { edit("auto_scale", it.toString()) }
                     SettingSwitch("静态画面持续补帧", "关闭可减少静止画面的送帧；遇到停顿时请开启", current.checked("repeat_frames"), true) { edit("repeat_frames", it.toString()) }
                 } }
+                item { SectionCard("虚拟屏串流", Icons.Default.DesktopWindows) {
+                    val mode = current["virtual_screen_mode"]
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        RadioButton(selected = mode != "screen_off", onClick = { edit("virtual_screen_mode", "desktop") })
+                        Text("第二屏／桌面模式")
+                    }
+                    Text("主屏继续使用，优先启动可用的 DeX／系统第二屏桌面；没有时打开全屏 Sunshine 虚拟桌面。", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        RadioButton(selected = mode == "screen_off", onClick = { edit("virtual_screen_mode", "screen_off") })
+                        Text("主屏息屏串流")
+                    }
+                    Text("只关闭手机显示面板，Moonlight 继续显示和操作原主屏，主页、应用和操作逻辑保持原样。", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    number("虚拟屏显示密度", "DPI · 120–640", "virtual_screen_density")
+                    Text("第二屏按 Moonlight 请求的分辨率创建。配置在下次点击主页按钮时应用；最后一个连接结束时自动退出并恢复显示。", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                } }
                 item { SectionCard("码率与缓冲", Icons.Default.Speed) {
                     number("最小码率", "Kbps · 1000–150000", "min_bitrate")
                     number("最大码率", "Kbps · 1000–150000", "max_bitrate")

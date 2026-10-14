@@ -153,6 +153,7 @@ void capture(safe::mail_t mail,config_t config,void* channel) {
     stats->configured_fps=fps;stats->requested_fps=config.framerate;stats->codec=mime;
     stats->applied=bitrate;stats->encoder_choice=selection.first;stats->encoder_attempts=attempts;
     stats->canvas_width=canvas.first;stats->canvas_height=canvas.second;
+    stats->requested_width=config.width;stats->requested_height=config.height;
     stats->network.initialize(config.bitrate,config::stream.fec_percentage);
     char* codec_name=nullptr;
     if(AMediaCodec_getName(codec,&codec_name)==AMEDIA_OK&&codec_name){stats->encoder=codec_name;AMediaCodec_releaseName(codec,codec_name);}

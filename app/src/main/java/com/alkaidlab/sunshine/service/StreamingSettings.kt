@@ -18,7 +18,7 @@ data class StreamingSettings(
 
         fun validate(properties: Map<String, String>): String? {
             for ((key, range) in listOf("max_stream_fps" to 15..240, "audio_buffer_ms" to 20..100,
-                "min_bitrate" to 1000..150000, "max_bitrate" to 1000..150000)) {
+                "virtual_screen_density" to 120..640, "min_bitrate" to 1000..150000, "max_bitrate" to 1000..150000)) {
                 properties[key]?.let { if (it.toIntOrNull() !in range) return "$key must be within $range" }
             }
             if ((properties["min_bitrate"]?.toIntOrNull() ?: 5000) >
@@ -29,6 +29,7 @@ data class StreamingSettings(
             for (key in listOf("repeat_frames", "wifi_low_latency", "rotation_compat")) {
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }
+            properties["virtual_screen_mode"]?.let { if (it !in listOf("desktop", "screen_off")) return "virtual_screen_mode must be desktop or screen_off" }
             if (properties.any { (key, value) -> key.contains('\n') || key.contains('\r') || key.contains('=') ||
                         value.contains('\n') || value.contains('\r') }) return "Configuration must contain single-line values"
             return null

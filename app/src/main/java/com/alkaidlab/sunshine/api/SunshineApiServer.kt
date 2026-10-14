@@ -118,6 +118,15 @@ class SunshineApiServer(
                 uri == "/api/clients/unpair-all" && method == Method.POST -> handleUnpairAll()
                 uri == "/api/pin" && method == Method.POST -> handleSubmitPin(session)
                 uri == "/api/runtime/sessions" && method == Method.GET -> handleGetRuntimeSessions()
+                uri == "/api/virtual-screen" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().virtualScreenState.value)
+                uri == "/api/virtual-screen/create" && method == Method.POST -> {
+                    val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().createVirtualScreen() }
+                    jsonResponse(SimpleStatusResponse(result.applied.toString(), result.message))
+                }
+                uri == "/api/virtual-screen/exit" && method == Method.POST -> {
+                    val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().exitVirtualScreen() }
+                    jsonResponse(SimpleStatusResponse(result.applied.toString(), result.message))
+                }
                 uri.startsWith("/api/runtime/sessions/") && method == Method.POST -> handleVideoControl(session)
                 uri == "/api/encoders" && method == Method.GET -> jsonResponse(mapOf("encoders" to com.alkaidlab.sunshine.service.EncoderCapabilities.encoders))
                 uri == "/api/diagnostics" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().diagnostics())
@@ -168,6 +177,8 @@ class SunshineApiServer(
             autoRotate = confMap["auto_rotate"] ?: "true",
             rotationCompat = confMap["rotation_compat"] ?: "false",
             autoScale = confMap["auto_scale"] ?: "true",
+            virtualScreenMode = confMap["virtual_screen_mode"] ?: "desktop",
+            virtualScreenDensity = confMap["virtual_screen_density"] ?: "240",
             addressFamily = confMap["address_family"] ?: "both",
             maxStreamFps = confMap["max_stream_fps"] ?: "240",
             repeatFrames = confMap["repeat_frames"] ?: "true",

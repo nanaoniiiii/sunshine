@@ -75,6 +75,6 @@ class SettingsAutosave {
     private fun snapshot() = Snapshot(confirmed, draft)
 
     companion object {
-        val numericKeys = setOf("max_stream_fps", "audio_buffer_ms", "min_bitrate", "max_bitrate", "port", "web_port")
+        val numericKeys = setOf("max_stream_fps", "audio_buffer_ms", "virtual_screen_density", "min_bitrate", "max_bitrate", "port", "web_port")
     }
 }

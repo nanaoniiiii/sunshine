@@ -63,7 +63,8 @@ class SunshineEngineService : Service() {
         override fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
             NativeServer.configureVideo(minimum, maximum, maxFps)
         }
-        override fun configureCanvas(sourceWidth: Int, sourceHeight: Int, followOrientation: Boolean, rotationCompat: Boolean) {
+        override fun configureCanvas(sourceWidth: Int, sourceHeight: Int, followOrientation: Boolean, rotationCompat: Boolean, sourceDisplayId: Int) {
+            com.alkaidlab.sunshine.engine.InputBroker.setSourceDisplay(sourceDisplayId, sourceWidth, sourceHeight)
             com.alkaidlab.sunshine.engine.InputBroker.setRotationCompatibility(rotationCompat)
             NativeServer.configureCanvas(sourceWidth, sourceHeight, followOrientation)
         }

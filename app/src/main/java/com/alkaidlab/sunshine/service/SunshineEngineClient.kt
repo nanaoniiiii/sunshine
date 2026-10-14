@@ -110,7 +110,8 @@ class SunshineEngineClient(private val context: Context) {
                             EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray())
                         remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
                         val capture = runtime.getCaptureDimensions(1, 1)
-                        remote.configureCanvas(capture[0], capture[1], runtime.autoRotateEnabled && !runtime.rotationCompatEnabled, runtime.rotationCompatEnabled)
+                        remote.configureCanvas(capture[0], capture[1], runtime.sourceDisplayId == 0 && runtime.autoRotateEnabled && !runtime.rotationCompatEnabled,
+                            runtime.sourceDisplayId == 0 && runtime.rotationCompatEnabled, runtime.sourceDisplayId)
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
@@ -195,7 +196,8 @@ class SunshineEngineClient(private val context: Context) {
         try { engine?.configureVideo(minimum, maximum, maxFps) } catch (_: RemoteException) {}
     }
     fun configureCanvas(width: Int, height: Int, follow: Boolean, compat: Boolean) {
-        try { engine?.configureCanvas(width, height, follow && !compat, compat) } catch (_: RemoteException) {}
+        val id = SunshineRuntimeManager.getInstance().sourceDisplayId
+        try { engine?.configureCanvas(width, height, id == 0 && follow && !compat, id == 0 && compat, id) } catch (_: RemoteException) {}
     }
 
     fun videoSessions(): List<com.alkaidlab.sunshine.data.NativeVideoSession> = try {

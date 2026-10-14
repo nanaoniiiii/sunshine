@@ -57,19 +57,27 @@ class SunshineRuntimeManager private constructor() {
     @Volatile var engineClient: SunshineEngineClient? = null
     private val frameDispatcher = SunshineFrameDispatcher()
     private val captureHandler = Handler(Looper.getMainLooper())
+    private val _virtualScreenState = MutableStateFlow(VirtualScreenState())
+    val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
+    private var virtualScreenClient: VirtualScreenClient? = null
+    val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     private var captureDisplayManager: DisplayManager? = null
     private val _fullscreenBusy = MutableStateFlow(false)
     private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
     private val captureDisplayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
-        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {
+            if (displayId == sourceDisplayId && _virtualScreenState.value.active && !_virtualScreenState.value.busy)
+                fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+        }
         override fun onDisplayChanged(displayId: Int) {
             if (displayId == Display.DEFAULT_DISPLAY) syncCaptureSize()
         }
     }
 
     private fun displayCaptureSize(fallbackWidth: Int, fallbackHeight: Int): IntArray {
+        _virtualScreenState.value.takeIf { it.active && it.mode == "desktop" }?.let { return intArrayOf(it.width, it.height) }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val manager = context?.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
             val bounds = manager?.maximumWindowMetrics?.bounds
@@ -84,6 +92,7 @@ class SunshineRuntimeManager private constructor() {
 
     /** A low-resolution or differently oriented first client must never shrink later clients. */
     private fun syncCaptureSize(): Boolean {
+        if ((_virtualScreenState.value.active && _virtualScreenState.value.mode == "desktop") || _virtualScreenState.value.busy) return true
         val display = virtualDisplay ?: return false
         if (!frameDispatcher.isRunning) return false
         frameDispatcher.sourceRotation = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
@@ -196,7 +205,7 @@ class SunshineRuntimeManager private constructor() {
 
     // Shizuku Input injection reflection
     private var remoteWake: RemoteInputWakeManager? = null
-    fun onRemoteInput() { remoteWake?.onInput(_isStreaming.value) }
+    fun onRemoteInput() { if (!_virtualScreenState.value.active && !_virtualScreenState.value.busy) remoteWake?.onInput(_isStreaming.value) }
     private var inputManager: Any? = null
     private var injectInputMethod: Method? = null
 
@@ -448,6 +457,100 @@ class SunshineRuntimeManager private constructor() {
 
     fun getCaptureDimensions(width: Int, height: Int): IntArray = displayCaptureSize(width, height)
 
+    private fun displayClient(): VirtualScreenClient {
+        return virtualScreenClient ?: VirtualScreenClient(checkNotNull(context)) {
+            captureHandler.post {
+                if (_virtualScreenState.value.active) fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+            }
+        }.also { virtualScreenClient = it }
+    }
+
+    suspend fun createVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
+        if (_virtualScreenState.value.busy || fullscreenBusy.value) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
+        if (_virtualScreenState.value.active) return@withContext FullscreenDisplay.Result(true, "虚拟屏已创建")
+        val session = activeSessions.firstOrNull() ?: return@withContext FullscreenDisplay.Result(false, "先连接 Moonlight，再创建虚拟屏")
+        val ctx = context ?: return@withContext FullscreenDisplay.Result(false, "服务未启动")
+        if (mediaProjection == null || !frameDispatcher.isRunning) return@withContext FullscreenDisplay.Result(false, "先允许屏幕录制并建立串流连接")
+        val props = java.io.File(ctx.filesDir, "sunshine.conf").readLines().mapNotNull { line ->
+            val parts = line.trim().takeUnless { it.startsWith("#") }?.split('=', limit = 2)
+            if (parts?.size == 2) parts[0].trim() to parts[1].trim() else null
+        }.toMap()
+        val mode = props["virtual_screen_mode"].takeIf { it == "screen_off" } ?: "desktop"
+        val density = props["virtual_screen_density"]?.toIntOrNull()?.coerceIn(120, 640) ?: 240
+        val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == session.videoThreadId }
+        val width = native?.requestedWidth?.takeIf { it > 0 } ?: session.width
+        val height = native?.requestedHeight?.takeIf { it > 0 } ?: session.height
+        _virtualScreenState.value = VirtualScreenState(busy = true, width = width, height = height, mode = mode)
+        try {
+            val client = displayClient()
+            client.connect()
+            if (mode == "screen_off") {
+                check(withContext(Dispatchers.IO) { client.blankMain() }) { "无法关闭主屏显示面板" }
+                check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "连接已结束" }
+                _virtualScreenState.value = VirtualScreenState(active = true, displayId = 0,
+                    width = frameDispatcher.sourceWidth, height = frameDispatcher.sourceHeight, mode = mode, launcher = "原主屏画面")
+                SunshineLogManager.log("SCREEN_OFF_STREAM", "Physical panel blanked; original display and input remain active")
+                return@withContext FullscreenDisplay.Result(true, "已开始主屏息屏串流，继续显示原主屏画面")
+            }
+            virtualDisplay?.release(); virtualDisplay = null
+            val surface = frameDispatcher.resizeCaptureSync(width, height) ?: error("无法切换虚拟屏采集画布")
+            val id = withContext(Dispatchers.IO) { client.create(width, height, density, surface, mode) }
+            check(id > 0) { "系统没有返回独立显示 ID" }
+            check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "创建期间连接已结束" }
+            val description = org.json.JSONObject(client.snapshot()).optString("launcher", "Sunshine 桌面")
+            _virtualScreenState.value = VirtualScreenState(active = true, displayId = id, width = width, height = height,
+                mode = mode, launcher = description)
+            frameDispatcher.sourceIsVirtual = true
+            frameDispatcher.sourceRotation = 0
+            engineClient?.configureCanvas(width, height, false, false)
+            SunshineLogManager.log("VIRTUAL_SCREEN", "Created display=$id, ${width}x$height, mode=$mode, launcher=$description")
+            FullscreenDisplay.Result(true, "已创建 ${width} × $height 虚拟屏 · $description")
+        } catch (error: Exception) {
+            withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
+            _virtualScreenState.value = VirtualScreenState(busy = true, error = (error.cause ?: error).message)
+            if (mode == "desktop") restorePhysicalCapture()
+            SunshineLogManager.log("VIRTUAL_SCREEN_ERR", (error.cause ?: error).message ?: "Create failed")
+            FullscreenDisplay.Result(false, "虚拟屏未创建：${(error.cause ?: error).message}")
+        } finally {
+            _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
+        }
+    }
+
+    private fun restorePhysicalCapture() {
+        frameDispatcher.sourceIsVirtual = false
+        val mp = mediaProjection ?: return
+        val dimensions = displayCaptureSize(lastWidth, lastHeight)
+        val surface = frameDispatcher.resizeCaptureSync(dimensions[0], dimensions[1]) ?: return
+        virtualDisplay?.release()
+        virtualDisplay = mp.createVirtualDisplay("SunshineVirtualDisplay", dimensions[0], dimensions[1],
+            context?.resources?.displayMetrics?.densityDpi ?: 300, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null)
+        frameDispatcher.sourceRotation = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
+        engineClient?.configureCanvas(dimensions[0], dimensions[1], autoRotateEnabled, rotationCompatEnabled)
+    }
+
+    suspend fun exitVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
+        if (_virtualScreenState.value.busy) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
+        if (!_virtualScreenState.value.active) return@withContext FullscreenDisplay.Result(true, "虚拟屏已退出")
+        val previous = _virtualScreenState.value
+        _virtualScreenState.value = previous.copy(busy = true)
+        try {
+            withContext(Dispatchers.IO) { virtualScreenClient?.close() }
+            _virtualScreenState.value = VirtualScreenState(busy = true)
+            if (previous.mode == "desktop") restorePhysicalCapture()
+            SunshineLogManager.log("VIRTUAL_SCREEN", "Released display mode; physical capture restored")
+            FullscreenDisplay.Result(true, "已退出虚拟屏并恢复主屏")
+        } catch (e: Exception) {
+            _virtualScreenState.value = if (previous.mode == "screen_off") previous.copy(busy = true, error = e.message)
+                else VirtualScreenState(busy = true, error = e.message)
+            if (previous.mode == "desktop") try { restorePhysicalCapture() } catch (_: Exception) {}
+            FullscreenDisplay.Result(false, "虚拟屏退出时出现问题：${e.message}")
+        } finally { _virtualScreenState.value = _virtualScreenState.value.copy(busy = false) }
+    }
+
+    suspend fun launchVirtualApp(component: String): Boolean = withContext(Dispatchers.IO) {
+        if (!_virtualScreenState.value.active) false else virtualScreenClient?.launch(component) == true
+    }
+
     fun submitPin(pin: String): Boolean {
         val cleanPin = pin.trim()
         if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
@@ -536,7 +639,9 @@ class SunshineRuntimeManager private constructor() {
         Handler(Looper.getMainLooper()).post {
             if (activeSessions.none { it.videoThreadId == callerThreadId && it.surface === surface }) return@post
             val mp = mediaProjection
-            if (mp != null) {
+            if (_virtualScreenState.value.active || _virtualScreenState.value.busy) {
+                frameDispatcher.addSurface(surface, width, height, fps, callerThreadId)
+            } else if (mp != null) {
                 if (!frameDispatcher.isRunning || virtualDisplay == null) {
                     try {
                         val captureSize = displayCaptureSize(width, height)
@@ -616,6 +721,7 @@ class SunshineRuntimeManager private constructor() {
             com.alkaidlab.sunshine.engine.InputBroker.setActiveClientDimensions(remaining.width, remaining.height)
         } else {
             _isStreaming.value = false
+            if (_virtualScreenState.value.active) fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
             stopTelemetryLoop()
             streamStartTime = 0L
             restoreFullscreenIfIdle()
@@ -964,6 +1070,10 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     private fun releaseCapture() {
+        try { virtualScreenClient?.release() } catch (_: Exception) {}
+        virtualScreenClient = null
+        _virtualScreenState.value = VirtualScreenState()
+        frameDispatcher.sourceIsVirtual = false
         pauseAudioCapture()
         frameDispatcher.stop()
         virtualDisplay?.release()
@@ -1063,6 +1173,11 @@ class SunshineRuntimeManager private constructor() {
 
     fun injectMotionEvent(event: MotionEvent) {
         if (SunshineEngineBridge.injectMotion(event)) return
+        if (_virtualScreenState.value.busy) return
+        if (_virtualScreenState.value.active) {
+            try { virtualScreenClient?.motion(event) } catch (e: Exception) { SunshineLogManager.log("VIRTUAL_INPUT_ERR", e.message.orEmpty()) }
+            return
+        }
         onRemoteInput()
         if (!isBoundViaShizuku) {
             initShizukuInput()
@@ -1090,6 +1205,11 @@ class SunshineRuntimeManager private constructor() {
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {
         if (SunshineEngineBridge.injectKeyboard(keyCode, isDown, modifiers)) return
+        if (_virtualScreenState.value.busy) return
+        if (_virtualScreenState.value.active) {
+            try { virtualScreenClient?.key(keyCode, isDown, modifiers) } catch (e: Exception) { SunshineLogManager.log("VIRTUAL_INPUT_ERR", e.message.orEmpty()) }
+            return
+        }
         onRemoteInput()
         if (inputManager == null) {
             initShizukuInput()

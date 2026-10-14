@@ -19,6 +19,11 @@ object InputBroker {
     private var clientHeight = 1
     private var rotationCompat = false
     private var displayRotation = 0
+    private var sourceDisplayId = 0
+    @JvmStatic @Synchronized fun setSourceDisplay(id: Int, width: Int, height: Int) {
+        sourceDisplayId = id
+        setCaptureDimensions(width, height)
+    }
     @JvmStatic @Synchronized fun setRotationCompatibility(enabled: Boolean) { rotationCompat = enabled }
     private var mouseX = 0f
     private var mouseY = 0f
@@ -35,6 +40,15 @@ object InputBroker {
         if (width > 0 && height > 0) { clientWidth = width; clientHeight = height }
     }
     @JvmStatic @Synchronized fun updateDisplayDimensions() {
+        if (sourceDisplayId != 0) {
+            val display = (context?.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.getDisplay(sourceDisplayId)
+                ?: return
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION") display.getRealMetrics(metrics)
+            displayRotation = display.rotation
+            setCaptureDimensions(metrics.widthPixels, metrics.heightPixels)
+            return
+        }
         val wm = context?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         @Suppress("DEPRECATION")
         displayRotation = wm.defaultDisplay.rotation
@@ -115,7 +129,7 @@ object InputBroker {
             in 0x30..0x39 -> KeyEvent.KEYCODE_0 + code - 0x30
             in 0x60..0x69 -> KeyEvent.KEYCODE_0 + code - 0x60
             in 0x70..0x7b -> KeyEvent.KEYCODE_F1 + code - 0x70
-            8 -> KeyEvent.KEYCODE_DEL; 9 -> KeyEvent.KEYCODE_TAB; 13 -> KeyEvent.KEYCODE_ENTER
+            0x5b, 0x5c -> KeyEvent.KEYCODE_HOME; 8 -> KeyEvent.KEYCODE_DEL; 9 -> KeyEvent.KEYCODE_TAB; 13 -> KeyEvent.KEYCODE_ENTER
             27 -> KeyEvent.KEYCODE_ESCAPE; 32 -> KeyEvent.KEYCODE_SPACE
             37 -> KeyEvent.KEYCODE_DPAD_LEFT; 38 -> KeyEvent.KEYCODE_DPAD_UP; 39 -> KeyEvent.KEYCODE_DPAD_RIGHT; 40 -> KeyEvent.KEYCODE_DPAD_DOWN
             33 -> KeyEvent.KEYCODE_PAGE_UP; 34 -> KeyEvent.KEYCODE_PAGE_DOWN; 35 -> KeyEvent.KEYCODE_MOVE_END; 36 -> KeyEvent.KEYCODE_MOVE_HOME

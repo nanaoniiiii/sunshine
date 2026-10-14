@@ -30,6 +30,7 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
     val config by viewModel.config.collectAsState()
     val sessions by viewModel.runtimeSessions.collectAsState()
     val fullscreenBusy by viewModel.fullscreenBusy.collectAsState()
+    val virtualScreen by viewModel.virtualScreenState.collectAsState()
     val perf by viewModel.perf.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
     val capture by viewModel.isMediaProjectionGranted.collectAsState()
@@ -65,6 +66,18 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                     if (!capture) PrimaryButton(onClick = onRequestMediaProjection, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.ScreenShare, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp)); Text("允许屏幕录制")
+                    } else if (sessions.isNotEmpty()) {
+                        PrimaryButton(onClick = viewModel::toggleVirtualScreen,
+                            enabled = !virtualScreen.busy && !fullscreenBusy && (virtualScreen.active || shizuku),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                            Icon(if (virtualScreen.active) Icons.Default.Close else Icons.Default.DesktopWindows, null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp)); Text(if (virtualScreen.busy) "切换显示中…" else if (virtualScreen.active) {
+                                if (virtualScreen.mode == "screen_off") "恢复主屏" else "退出虚拟屏"
+                            } else if (config?.virtualScreenMode == "screen_off") "主屏息屏串流" else "创建虚拟屏")
+                        }
+                        if (virtualScreen.active) Text(if (virtualScreen.mode == "screen_off") "主屏息屏串流 · 原主屏画面与操作"
+                            else "虚拟屏 ${virtualScreen.width} × ${virtualScreen.height} · ${virtualScreen.launcher}",
+                            color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
                     } else PrimaryButton(onClick = onOpenPairing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.AddLink, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp)); Text("配对新设备")
@@ -106,7 +119,7 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                                 color = TextSecondary, modifier = Modifier.weight(1f))
                             FilledTonalButton(
                                 onClick = { session.sessionId?.let(viewModel::fullscreenSession) },
-                                enabled = !fullscreenBusy && session.sessionId != null,
+                                enabled = !fullscreenBusy && (!virtualScreen.active || virtualScreen.mode == "screen_off") && !virtualScreen.busy && session.sessionId != null,
                                 modifier = Modifier.heightIn(min = 48.dp)) {
                                 Icon(Icons.Default.Fullscreen, null, modifier = Modifier.size(20.dp))
                                 Spacer(Modifier.width(6.dp))
