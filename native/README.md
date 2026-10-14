@@ -1,67 +1,43 @@
 # Android native engine
 
-The release engine is now rebuilt from the Android port in
-[kumu-ze/connect-screen.com](https://github.com/kumu-ze/connect-screen.com/tree/7552cc395d5d017def154a2a8cbac114803ac6a9),
-not patched as an opaque binary. `sources.lock.json` fixes the upstream commit,
-submodules, NDK revision, Boost archive and OpenSSL archives. The upstream GPLv3
-license is preserved in `LICENSE.upstream`; dependencies retain their licenses in
-the pinned checkout. The upstream Opus static libraries remain pinned artifacts
-within that commit. APK signing is separate and uses the existing release key.
+The protocol engine is built directly from official [Sunshine v0.23.1](https://github.com/LizardByte/Sunshine/tree/8b21db64fb8e8ffb9c24a412dbc66b7410699211).
+`sources.lock.json` pins Sunshine, its protocol dependencies, Opus, Boost,
+OpenSSL, NDK and archive digests. `android/prepare_source.py` applies the
+Android integration to a separate generated source tree.
 
-`patches/android-host.patch` adds:
+This project's Android adapters provide MediaCodec H.264/HEVC encoding,
+JNI lifecycle management, display surfaces, per-client audio capture fanout,
+touch/mouse/keyboard delivery through the existing Shizuku service, pairing
+metadata migration, application launch and streaming diagnostics. Official
+Sunshine provides pairing, certificate authentication, RTSP, encryption,
+RTP packetization and FEC. Opus is compiled from its official source.
 
-- One capture producer and one bounded PCM queue/packetizer per client, including
-  clients negotiating different packet durations. A joining client starts with no
-  stale partial packet. Each native queue holds at most 40ms, or one longer
-  negotiated packet; this is separate from the host's configurable PCM buffer.
-- Removal of the subscriber and queue shutdown before joining the Opus thread,
-  including when the capture source is silent. An encoder failure only stops that
-  client's queue.
-- JNI attachment ownership: nested callbacks do not detach the video thread or
-  invalidate its Surface. The host detaches EGL synchronously before MediaCodec
-  is stopped, and the Surface JNI local reference is released afterwards.
-- Audio capture remains enabled regardless of the client's host-speaker flag:
-  Android playback capture still needs to feed remote audio in either mode.
-- Per-session video diagnostics, bounded encoder-output timestamp samples, live
-  bitrate bounds and manual bitrate/keyframe/disconnect commands. MediaCodec
-  operations run on their owning video thread; driver failures are reported.
-- Correct output-buffer offsets, honest codec creation failures, negotiated low
-  frame rates, and UDP batch fallback that retries only the unsent suffix.
-
-The Kotlin host retains its isolated `:engine` process and last-client recovery.
-Desktop-specific display drivers are not included. Per-session feedback adaptation
-and adaptive FEC are experimental and default off; see
-[network feedback](../docs/network-feedback.md). Bounded encoded queues, explicit
-encoder selection and remote wake are described in
-[queue and encoder controls](../docs/queue-encoder-controls.md). Manual bitrate control is documented in
-[docs/native-video-controls.md](../docs/native-video-controls.md).
-`patches/openssl-download.patch` enforces the archive hash instead
-of allowing the upstream unchecked download.
+Existing pairing credentials and device names are migrated in place; the
+first engine start preserves a `.before-official` state backup. The input
+worker runs serially to preserve key and modifier order. Each audio client
+has its own bounded PCM buffer and packet queue; an idle source returns
+within a bounded wait so disconnect does not stall audio shutdown.
 
 ## Build
 
-Requires Python 3, Git, CMake 3.31.6, Ninja and NDK 27.2.12479018. On Windows:
+Requires Python 3.11.8+, Git, CMake, Ninja and NDK 27.2.12479018:
 
 ```powershell
 python native/build.py --ndk D:/android-sdk-extra/ndk/27.2.12479018 --cmake D:/android-sdk-extra/cmake/3.31.6/bin/cmake.exe --ninja D:/android-sdk-extra/cmake/3.31.6/bin/ninja.exe --tests --install
 ./gradlew.bat :app:assembleRelease :app:testDebugUnitTest :app:lintRelease
 ```
 
-The ignored `native/.build` directory contains the pinned source and ABI builds.
-`--install` copies stripped `libsunshine.so` and matching OpenSSL shared libraries
-into the APK inputs for both ABIs. Without it, the checked-in APK inputs stay
-unchanged. The driver refuses unexpected source revisions or patches rather than
-resetting a developer's changes. Never uninstall or clear application data to
-work around an APK signature mismatch.
+The ignored `native/.official-build` directory contains the official checkouts,
+verified vendor archives, generated source and both ABI builds. The driver
+rejects altered source revisions. `--install` copies stripped native libraries
+and matching OpenSSL libraries into the APK inputs. `--tests` builds six Android
+console test executables for ADB execution. APK signing remains separate.
 
-`--tests` also builds six console executables per ABI: packet continuity,
-mixed durations, joining-client state and surround mapping; and bounded queue,
-silent-source shutdown and independent-client fanout; and video bounds, commands,
-buffer ranges, timestamp windows and partial-batch progress; and network report
-parsing, stale/duplicate rejection, budget arithmetic, adaptation cooldown and
-driver-gated FEC changes; and encoded queue deadlines, per-client isolation,
-IDR recovery and shutdown; and default-first codec selection, failure traversal
-and explicit no-fallback behavior. Run them through ADB on a
-device supporting that ABI. They produce no audio. Device streaming regression
-uses Douyin when audio validation is requested. The v2026.10.12.2 regression is
-video-only, with both endpoints muted and a silent visual diagnostic activity.
+Sunshine's GPLv3 license is in `LICENSE.sunshine`; dependency notices are in
+`licenses/` and packaged in the app's `assets/licenses/`. The upstream
+moonlight-common-c files used by Sunshine provide protocol definitions and the
+RTSP parser; they contain no Moonlight Android application or permissions proxy.
+
+See [video controls](../docs/native-video-controls.md),
+[network feedback](../docs/network-feedback.md) and
+[queue and encoder controls](../docs/queue-encoder-controls.md).

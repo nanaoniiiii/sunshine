@@ -1,6 +1,6 @@
 # 编码队列、编码器选项与远程唤醒
 
-v2026.10.12.4 延续 foundation-sunshine 的逐会话控制思路，以及固定 connect-screen.com Android 原生移植。保留现有 Moonlight 协议与上一版默认关闭的自适应控制，不移植桌面显示驱动。
+v2026.10.12.4 延续 foundation-sunshine 的逐会话控制思路，当前使用官方 Sunshine 核心与独立 Android 平台适配。保留现有 Moonlight 协议与上一版默认关闭的自适应控制，不移植桌面显示驱动。
 
 ## 编码队列
 

@@ -1,7 +1,7 @@
 # 原生视频控制与 Shizuku 兼容性
 
-`v2026.10.12.2` 在固定的 Android 原生上游上实现本项目的会话控制。
-参考 [kumu-ze/connect-screen.com](https://github.com/kumu-ze/connect-screen.com/tree/7552cc395d5d017def154a2a8cbac114803ac6a9) 的 MediaCodec/UDP 串流，以及 [foundation-sunshine](https://github.com/AlkaidLab/foundation-sunshine/tree/adecdec1664f8ce43be3c90679484f6ae307bb8f) 的性能统计和会话管理。移植的是 Android 可用的控制、测量和缓冲处理；Windows 显示驱动与自动网络自适应策略没有加入。
+当前版本使用官方 Sunshine 协议核心和本项目独立实现的 Android 编码、输入与诊断适配。
+每会话的码率、关键帧、FEC 与断连控制由本项目 Android 后端执行。
 
 ## 行为
 
@@ -10,7 +10,7 @@
 - 每会话支持手动码率、关键帧和断连。命令在视频线程上执行；请求成功代表排队接受，需读诊断确认驱动结果。失败命令不忙循环重试，显式请求可重试。
 - 诊断返回实际 H.264/HEVC、MediaCodec 名称、请求/配置 FPS、目标/已应用码率、输出 FPS/码率、帧数、关键帧、无效缓冲与驱动状态。输出停止超过两秒后，输出 FPS/码率显示为零。
 - `submit_to_output_p95_ms` 是最近最多 256 个有效样本的 EGL 提交时间戳到编码器输出的 P95；不是纯硬件编码时间或端到端延迟。编码器输出码率也不包含 FEC、音频和网络开销。
-- MediaCodec 输出按正确的 offset/size 读取并检查边界；HEVC 创建失败会终止该会话，不再假装用不匹配的 H.264 参数继续。UDP 批量发送部分成功后只重试未发送后缀，避免重复发送已成功的数据。
+- MediaCodec 输出按正确的 offset/size 读取并检查边界；HEVC 创建失败会终止该会话，不再假装用不匹配的 H.264 参数继续。Android 后端逐数据报发送并记录成功和失败，避免批量发送部分成功后重复发送数据。
 
 ## API
 

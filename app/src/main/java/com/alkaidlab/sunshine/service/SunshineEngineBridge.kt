@@ -4,7 +4,7 @@ import android.os.Process
 import android.os.RemoteException
 import android.view.MotionEvent
 import android.view.Surface
-import com.connect_screen.mirror.job.SunshineMouse
+import com.alkaidlab.sunshine.engine.InputBroker
 
 /** JNI callbacks run in :engine. Keep start/stop/restart ordering under one lock. */
 object SunshineEngineBridge {
@@ -20,8 +20,8 @@ object SunshineEngineBridge {
             sessions.started(threadId)
             clientDimensions[threadId] = width to height
             val capture = host?.streamStarted(threadId, width, height, fps, packetDuration, surface, audio, appId, clientId)
-            SunshineMouse.setCaptureDimensions(capture?.getOrNull(0) ?: width, capture?.getOrNull(1) ?: height)
-            SunshineMouse.setActiveClientDimensions(width, height)
+            InputBroker.setCaptureDimensions(capture?.getOrNull(0) ?: width, capture?.getOrNull(1) ?: height)
+            InputBroker.setActiveClientDimensions(width, height)
         }
     }
 
@@ -31,8 +31,8 @@ object SunshineEngineBridge {
             val revision = sessions.stopped(threadId) ?: return
             clientDimensions.remove(threadId)
             clientDimensions.values.lastOrNull()?.let { (width, height) ->
-                SunshineMouse.setActiveClientDimensions(width, height)
-            } ?: SunshineMouse.reset()
+                InputBroker.setActiveClientDimensions(width, height)
+            } ?: InputBroker.reset()
             host?.streamStopped(threadId, revision)
         }
     }

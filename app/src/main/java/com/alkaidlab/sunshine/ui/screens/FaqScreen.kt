@@ -26,7 +26,7 @@ fun AboutSection() {
     SectionCard("关于", Icons.Default.Info) {
         Text("Sunshine for Android", style = MaterialTheme.typography.titleLarge)
         Text(BuildConfig.VERSION_NAME, color = PrimaryCyan, style = MaterialTheme.typography.bodyMedium)
-        Text("把 Android 手机或平板作为串流主机，让 Moonlight 在另一块屏幕上接收画面与声音，并通过 Shizuku 实现远程输入。支持 H.264 / HEVC 硬件编码、设备配对、应用管理与连接诊断。实际能力取决于设备、系统及应用权限。",
+        Text("把 Android 手机或平板作为串流主机，在另一块屏幕上接收画面与声音，并通过 Shizuku 实现远程输入。支持 H.264 / HEVC 硬件编码、设备配对、应用管理与连接诊断。可使用 Moonlight，也可开发兼容串流协议的自定义接收端。",
             color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
         Text("作者：七鬼 · nanaoniiiii", style = MaterialTheme.typography.bodyLarge)
         HelpLink("项目官网 · nanaoni.tech", WEBSITE)

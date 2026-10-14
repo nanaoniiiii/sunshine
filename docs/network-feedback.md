@@ -1,6 +1,6 @@
 # 逐会话网络反馈与自适应控制
 
-`v2026.10.12.3` 扩展固定 Android 原生引擎。参考 foundation-sunshine 的逐会话码率预算思想，接入固定 Moonlight common-c 的 `SS_FRAME_FEC_STATUS` 协议；屏易连原有的发送、FEC 与控制通道继续使用，不替换客户端协议。
+`v2026.10.12.3` 扩展固定 Android 原生引擎。参考 foundation-sunshine 的逐会话码率预算思想，接入固定 Moonlight common-c 的 `SS_FRAME_FEC_STATUS` 协议；当前版本由官方 Sunshine 提供协议发送、FEC 与控制通道，不替换客户端协议。
 
 ## 反馈和发送
 

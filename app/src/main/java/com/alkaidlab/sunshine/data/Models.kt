@@ -202,6 +202,8 @@ data class NativeVideoSession(
     @SerializedName("encoder_choice") val encoderChoice: String = "auto",
     @SerializedName("encoder_attempts") val encoderAttempts: Int = 0,
     @SerializedName("encoder_reported_latency_frames") val encoderReportedLatencyFrames: Int? = null,
+    @SerializedName("codec_profile_idc") val codecProfileIdc: Int? = null,
+    @SerializedName("codec_level_idc") val codecLevelIdc: Int? = null,
     @SerializedName("queue_frames") val queueFrames: Int = 0,
     @SerializedName("queue_bytes") val queueBytes: Long = 0,
     @SerializedName("queue_peak_frames") val queuePeakFrames: Int = 0,

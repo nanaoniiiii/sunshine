@@ -9,6 +9,8 @@
 .externalNativeBuild
 .cxx
 /native/.build/
+/native/.official-build/
+/native/android/__pycache__/
 /native/__pycache__/
 
 # Root debug/test artifacts and local files

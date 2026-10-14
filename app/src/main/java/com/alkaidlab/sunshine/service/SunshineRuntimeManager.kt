@@ -195,7 +195,7 @@ class SunshineRuntimeManager private constructor() {
             captureDisplayManager?.registerDisplayListener(captureDisplayListener, captureHandler)
         }
         remoteWake = RemoteInputWakeManager(appContext.applicationContext, ::injectWakeKey)
-        com.connect_screen.mirror.job.SunshineMouse.setContext(appContext)
+        com.alkaidlab.sunshine.engine.InputBroker.setContext(appContext)
         reloadConfig(this.context)
         initShizukuInput()
         frameDispatcher.setOnSurfaceEvictedListener { _ ->
@@ -343,7 +343,7 @@ class SunshineRuntimeManager private constructor() {
 
                     // 6. Keep physical display orientation updated if auto_rotate is enabled
                     if (autoRotateEnabled) {
-                        com.connect_screen.mirror.job.SunshineMouse.updateDisplayDimensions()
+                        com.alkaidlab.sunshine.engine.InputBroker.updateDisplayDimensions()
                     }
 
                     // 7. Emit fresh PerfResponse to StateFlow
@@ -492,7 +492,7 @@ class SunshineRuntimeManager private constructor() {
             streamStartTime = System.currentTimeMillis()
         }
 
-        com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(width, height)
+        com.alkaidlab.sunshine.engine.InputBroker.setActiveClientDimensions(width, height)
 
         val selectedApp = try { context?.let { AppCatalog.read(java.io.File(it.filesDir, "apps.json")).apps.firstOrNull { app -> app.id?.toIntOrNull() == appId } } } catch (_: Exception) { null }
         val session = RuntimeSession(
@@ -573,7 +573,7 @@ class SunshineRuntimeManager private constructor() {
         SunshineLogManager.log("STREAM", "Disconnected tid=$callerThreadId; remaining=${activeSessions.size}")
         val remaining = activeSessions.lastOrNull()
         if (remaining != null) {
-            com.connect_screen.mirror.job.SunshineMouse.setActiveClientDimensions(remaining.width, remaining.height)
+            com.alkaidlab.sunshine.engine.InputBroker.setActiveClientDimensions(remaining.width, remaining.height)
         } else {
             _isStreaming.value = false
             stopTelemetryLoop()
@@ -944,7 +944,7 @@ class SunshineRuntimeManager private constructor() {
         releaseCapture()
         captureDisplayManager?.unregisterDisplayListener(captureDisplayListener)
         captureDisplayManager = null
-        com.connect_screen.mirror.job.SunshineMouse.reset()
+        com.alkaidlab.sunshine.engine.InputBroker.reset()
     }
 
     fun getLastWidth(): Int = if (lastWidth > 0) lastWidth else 720
@@ -1037,15 +1037,15 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun handleTouchPacket(action: Int, pointerId: Int, flags: Int, x: Float, y: Float, pressure: Float, contactArea: Float) {
-        com.connect_screen.mirror.job.SunshineMouse.handleTouchPacket(action, flags, pointerId, x, y, pressure, contactArea, 0f)
+        com.alkaidlab.sunshine.engine.InputBroker.handleTouchPacket(action, flags, pointerId.toLong(), x, y, pressure, contactArea, 0f)
     }
 
     fun handleAbsMouseMove(x: Float, y: Float, width: Float, height: Float) {
-        com.connect_screen.mirror.job.SunshineMouse.handleAbsMouseMovePacket(x, y, width, height)
+        com.alkaidlab.sunshine.engine.InputBroker.handleAbsMouseMovePacket(x, y, width, height)
     }
 
     fun handleMouseButton(button: Int, isDown: Boolean) {
-        com.connect_screen.mirror.job.SunshineMouse.handleLeftMouseButton(!isDown)
+        com.alkaidlab.sunshine.engine.InputBroker.handleLeftMouseButton(!isDown)
     }
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {

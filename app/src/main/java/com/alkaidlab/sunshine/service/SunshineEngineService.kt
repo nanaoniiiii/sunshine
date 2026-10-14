@@ -6,8 +6,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.Process
-import com.connect_screen.mirror.job.SunshineServer
-import com.connect_screen.mirror.job.SunshineMouse
+import com.alkaidlab.sunshine.engine.NativeServer
+import com.alkaidlab.sunshine.engine.InputBroker
 
 /** Only this disposable process loads JNI. Capture, API, and UI remain in the host. */
 class SunshineEngineService : Service() {
@@ -19,7 +19,7 @@ class SunshineEngineService : Service() {
         super.onCreate()
         // Native input callbacks run here, so the mapper needs this process's
         // actual physical display dimensions as well as the host capture size.
-        SunshineMouse.setContext(this)
+        InputBroker.setContext(this)
     }
     private val binder = object : ISunshineEngine.Stub() {
         override fun start(host: ISunshineEngineHost, name: String, cert: String, key: String,
@@ -29,14 +29,14 @@ class SunshineEngineService : Service() {
                 started = true
                 SunshineEngineBridge.host = host
                 host.asBinder().linkToDeath({ terminate() }, 0)
-                SunshineServer.setSunshineName(name)
-                SunshineServer.setCertPath(cert)
-                SunshineServer.setPkeyPath(key)
-                SunshineServer.setFileStatePath(state)
-                if (hevc) SunshineServer.enableH265()
+                NativeServer.setSunshineName(name)
+                NativeServer.setCertPath(cert)
+                NativeServer.setPkeyPath(key)
+                NativeServer.setFileStatePath(state)
+                if (hevc) NativeServer.enableH265()
                 Thread({
                     try {
-                        SunshineServer.start()
+                        NativeServer.start()
                     } finally {
                         // Native globals cannot safely be initialized a second time.
                         terminate()
@@ -61,19 +61,19 @@ class SunshineEngineService : Service() {
         override fun shutdown() { mainHandler.post { terminate() } }
         // Do not take the host callback lock: configuration can arrive inside streamStarted.
         override fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
-            SunshineServer.configureVideo(minimum, maximum, maxFps)
+            NativeServer.configureVideo(minimum, maximum, maxFps)
         }
         override fun configureEncoders(avc: String, hevc: String, avcNames: Array<out String>, hevcNames: Array<out String>) {
-            SunshineServer.configureEncoders(avc, hevc, avcNames, hevcNames)
+            NativeServer.configureEncoders(avc, hevc, avcNames, hevcNames)
         }
-        override fun videoSnapshot(): String = SunshineServer.videoSnapshot()
+        override fun videoSnapshot(): String = NativeServer.videoSnapshot()
         override fun controlVideo(sessionId: Long, operation: Int, value: Int): Boolean =
-            SunshineServer.controlVideo(sessionId, operation, value)
-        override fun submitPin(pin: String) { SunshineServer.submitPin(pin) }
+            NativeServer.controlVideo(sessionId, operation, value)
+        override fun submitPin(pin: String) { NativeServer.submitPin(pin) }
         override fun startAudio(samplesPerPacket: Int) {
             synchronized(SunshineEngineBridge.lock) {
                 if (audioStarted) return
-                SunshineServer.startAudioRecording(EngineAudioSource(), samplesPerPacket)
+                NativeServer.startAudioRecording(EngineAudioSource(), samplesPerPacket)
                 audioStarted = true
             }
         }

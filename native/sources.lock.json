@@ -1,19 +1,25 @@
 {
-  "upstream": "https://github.com/kumu-ze/connect-screen.com.git",
-  "commit": "7552cc395d5d017def154a2a8cbac114803ac6a9",
+  "upstream": "https://github.com/LizardByte/Sunshine.git",
+  "commit": "8b21db64fb8e8ffb9c24a412dbc66b7410699211",
+  "version": "v0.23.1",
   "ndk_version": "27.2.12479018",
   "android_api": 29,
   "submodules": {
-    "Simple-Web-Server": "546895a93a29062bb178367b46c7afb72da9881e",
-    "libwordexp": "c3da198b6c697065eab39dcb6da1e87802d53f52",
-    "moonlight-common-c": "6250fa29ee87873716045e3b64f1f229374324e8",
-    "moonlight-common-c/enet": "78cc9b4b03bdd4f95c277391cac6e0951407072b",
-    "nanors": "19f07b513e924e471cadd141943c1ec4adc8d0e0",
-    "openssl-cmake": "7e0c2c423e85e83d7bbb97d770b5eea467b1cc9b"
+    "third-party/Simple-Web-Server": "27b41f5ee154cca0fce4fe2955dd886d04e3a4ed",
+    "third-party/moonlight-common-c": "cbd0ec1b25edfb8ee8645fffa49ff95b6e04c70e",
+    "third-party/moonlight-common-c/enet": "04e27590670a87a7cd40f5a05cda97467e4e25a3",
+    "third-party/nanors": "e9e242e98e27037830490b2a752895ca68f75f8b",
+    "third-party/nv-codec-headers": "22441b505d9d9afc1e3002290820909846c24bdc"
+  },
+  "opus": {
+    "url": "https://github.com/xiph/opus.git",
+    "version": "v1.5.2",
+    "commit": "ddbe48383984d56acd9e1ab6a090c54ca6b735a6"
   },
   "boost": {
     "version": "1.86.0",
-    "sha256": "2c5ec5edcdff47ff55e27ed9560b0a0b94b07bd07ed9928b476150e16b0efc57"
+    "url": "https://github.com/boostorg/boost/releases/download/boost-1.86.0/boost-1.86.0-cmake.tar.gz",
+    "sha256": "c62ce6e64d34414864fef946363db91cea89c1b90360eabed0515f0eda74c75c"
   },
   "openssl": {
     "version": "3.5.4",

@@ -77,10 +77,11 @@ cd sunshine
 
 macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`。发布构建启用 R8 和资源压缩，沿用项目现有签名配置。
 
-需要重新构建原生引擎时，请先阅读[原生构建说明](native/README.md)。`native/sources.lock.json` 固定上游和依赖版本；`native/patches/android-host.patch` 保存 Android 主机修改。
+需要重新构建原生引擎时，请先阅读[原生构建说明](native/README.md)。`native/sources.lock.json` 固定上游和依赖版本；`native/android/` 保存本项目独立实现的 Android 平台适配。
 
 ## 工程记录
 
+- [v2026.10.14.3：官方 Sunshine 引擎、自动保存与输入提交](docs/validation/v2026.10.14.3.md)
 - [v2026.10.14.2：帮助、关于与仓库更新](docs/validation/v2026.10.14.2.md)
 - [v2026.10.14.1：默认竖屏、按连接全屏与退出恢复](docs/validation/v2026.10.14.1.md)
 - [后端架构与性能优化](docs/backend-optimization.md)

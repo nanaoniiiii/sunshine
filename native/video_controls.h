@@ -34,6 +34,7 @@ struct VideoSession {
     VideoClock::time_point send_interval=VideoClock::now(), last_send=send_interval;
     std::string encoder_choice="auto";
     int encoder_attempts=0, reported_latency=-1;
+    int profile_idc=-1, level_idc=-1;
     VideoClock::time_point interval = VideoClock::now(), last_output = interval;
     uint64_t interval_frames = 0, interval_bytes = 0;
     double fps = 0, kbps = 0;
@@ -196,6 +197,8 @@ inline std::string video_snapshot() {
         out << ",\"encoder_choice\":" << json_quote(s.encoder_choice) << ",\"encoder_attempts\":" << s.encoder_attempts
             << ",\"encoder_reported_latency_frames\":";
         if(s.reported_latency>=0) out << s.reported_latency; else out << "null";
+        out << ",\"codec_profile_idc\":";if(s.profile_idc>=0)out << s.profile_idc;else out << "null";
+        out << ",\"codec_level_idc\":";if(s.level_idc>=0)out << s.level_idc;else out << "null";
         out << ",\"queue_frames\":" << s.queue.frames << ",\"queue_bytes\":" << s.queue.bytes
             << ",\"queue_peak_frames\":" << s.queue.peak_frames << ",\"queue_peak_bytes\":" << s.queue.peak_bytes
             << ",\"queue_dropped_frames\":" << s.queue.dropped << ",\"queue_waiting_idr\":" << (s.queue.waiting_idr?"true":"false")

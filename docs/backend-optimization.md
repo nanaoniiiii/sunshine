@@ -3,9 +3,8 @@
 基于已发布提交 `049fa3a14510eda04fe9337bd4e23455e5fdf924`。参考项目固定为：
 
 * [Foundation Sunshine f0ec742](https://github.com/AlkaidLab/foundation-sunshine/tree/f0ec742292a09bd8a23c77b990716bebd6ec9166)：`src/stream.cpp`、`src/streaming/{bitrate,fec}.cpp`、`src/perf_recorder.cpp`。参考每会话预算、发送节奏与分阶段统计。
-* [屏易连 7552cc3](https://github.com/kumu-ze/connect-screen.com/tree/7552cc395d5d017def154a2a8cbac114803ac6a9)：`app-mirror/src/main/cpp/sunshine.cpp`、`audio.cpp`、`platform/common.cpp`。参考 Android Surface、MediaCodec 与 PCM/Opus 交接方式。
 
-本地真机复测发现旧原生库的多个编码线程竞争同一个 PCM 队列，第二客户端加入后第一客户端永久静音。现已采用固定版本的屏易连 Android 原生源码重新构建，增加逐会话音频分包、有限队列和退出唤醒，并修正 JNI 线程附加生命周期。源码版本、依赖哈希、补丁与两种 ABI 构建脚本见 [原生构建说明](../native/README.md)。桌面平台特有的 HDR、GPU 驱动和虚拟显示代码没有直接套用到 Android。
+本地真机复测发现旧原生库的多个编码线程竞争同一个 PCM 队列，第二客户端加入后第一客户端永久静音。逐会话音频分包、有限队列、退出唤醒和 JNI 线程生命周期已纳入本项目 Android 后端；当前原生引擎直接使用官方 Sunshine 核心与本项目平台适配。源码版本、依赖哈希、补丁与两种 ABI 构建脚本见 [原生构建说明](../native/README.md)。桌面平台特有的 HDR、GPU 驱动和虚拟显示代码没有直接套用到 Android。
 
 ## 已实现
 
@@ -48,14 +47,14 @@ GPU 统计累计到捕获生命周期结束（引擎空闲恢复保留捕获）�
 
 | 优先级 | 建议 | 实现和验证前提 |
 | --- | --- | --- |
-| 已完成 | 原生来源固定和构建 | 固定屏易连 commit、子模块、NDK、Boost/OpenSSL 哈希；保留宿主独立 engine 与断开恢复逻辑，逐 ABI 从源码构建 |
+| 已完成 | 原生来源固定和构建 | 固定官方 Sunshine commit、子模块、NDK、Boost/OpenSSL 哈希；保留宿主独立 engine 与断开恢复逻辑，逐 ABI 从源码构建 |
 | 已完成 | 原生音频队列与包长隔离 | 每客户端按协商 packetDuration 重组，原生队列最多 40ms 或一个更长协商包；这与宿主 PCM 缓冲分别计量，并非端到端音频延迟上限 |
 | P1 | 编码前丢旧帧、编码后队列预算 | 编码前允许丢最新纹理之外的旧帧；编码后的参考帧不能随意丢弃，否则需 IDR 恢复机制 |
 | P1 | 逐客户端动态码率与自适应 FEC | 移植 Foundation 的 `streaming/bitrate` 和 `streaming/fec` 预算思路；提高冗余前降低视频码率，维持总链路预算；增加 JNI 与原生反馈 |
-| P1 | UDP 发送节奏与有界批次 | 检查屏易连 `sendmmsg`/GSO 部分成功重试与 fallback，按链路预算 pacing；不能用更大 socket 缓冲掩盖排队延迟 |
+| P1 | UDP 发送节奏与有界批次 | 采用 Android 逐数据报发送与真实统计，按链路预算 pacing；不能用更大 socket 缓冲掩盖排队延迟 |
 | P1 | 慢编码器隔离 | `eglSwapBuffers` 仍可阻塞共享 GL 线程；进一步采用可验证的 EGL fence/独立提交线程或原生队列背压，不能仅靠下一帧降频解决当前阻塞 |
 | P2 | 逐会话链路统计、手动 IDR 与断开 | 增加已协商 codec/bitrate、捕获到编码输出时间、Moonlight loss/RTT/FEC 与会话控制 JNI；避免宿主猜测与全局进程重启 |
-| P2 | 单应用/扩展显示串流 | 按屏易连的 Android 显示能力设计；需要 Android 14+ 单次授权、多显示输入坐标和 OEM 差异实机验证 |
+| P2 | 单应用/扩展显示串流 | 按 Android 平台显示接口设计；需要 Android 14+ 单次授权、多显示输入坐标和 OEM 差异实机验证 |
 
 ## 回归与对比测试
 
