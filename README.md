@@ -84,6 +84,7 @@ macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`�
 
 - [v2026.10.14.3：官方 Sunshine 引擎、自动保存与输入提交](docs/validation/v2026.10.14.3.md)
 - [v2026.10.14.2：帮助、关于与仓库更新](docs/validation/v2026.10.14.2.md)
+- [v2026.10.15.1：直接安装的小体积 APK](docs/validation/v2026.10.15.1.md)
 - [v2026.10.14.4：原生画布旋转与手机全屏兼容](docs/validation/v2026.10.14.4.md)
 - [v2026.10.14.1：默认竖屏、按连接全屏与退出恢复](docs/validation/v2026.10.14.1.md)
 - [后端架构与性能优化](docs/backend-optimization.md)

@@ -17,8 +17,8 @@ android {
         minSdk = 29
         targetSdk = 34
         // Calendar name: vYYYY.MM.DD.N; the independent code increases with each release.
-        versionCode = 20261022
-        versionName = "v2026.10.14.4"
+        versionCode = 20261023
+        versionName = "v2026.10.15.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -78,6 +78,8 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
         jniLibs {
+            // Android extracts the compressed libraries during installation.
+            useLegacyPackaging = true
             pickFirsts += "**/*.so"
         }
     }
