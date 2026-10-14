@@ -26,16 +26,17 @@
 <summary>查看接收端画面与关于栏</summary>
 
 <table width="100%">
-  <tr><th width="50%">接收端示例<br>三星 Android 13</th><th width="50%">项目介绍<br>作者与链接</th></tr>
+  <tr><th width="33%">接收端示例<br>三星 Android 13</th><th width="33%">项目介绍<br>作者与链接</th><th width="33%">项目入口</th></tr>
   <tr>
-    <td width="50%" align="center"><img src="docs/images/moonlight-device.png" alt="三星接收端显示竖屏像素测试图" width="240" height="528"></td>
-    <td width="50%" align="center"><img src="docs/images/about-device.png" alt="设置中的关于栏，显示版本、作者、官网和仓库入口" width="240" height="528"></td>
+    <td width="33%" align="center"><img src="docs/images/moonlight-device.png" alt="三星接收端显示竖屏像素测试图" width="240" height="528"></td>
+    <td width="33%" align="center"><img src="docs/images/about-device.png" alt="设置中的关于栏，显示版本、作者、官网和仓库入口" width="240" height="528"></td>
+    <td width="33%" align="center"><a href="https://nanaoni.tech">访问官网</a><br><br><a href="https://github.com/nanaoniiiii/sunshine">GitHub 仓库</a><br><br><a href="https://github.com/nanaoniiiii">作者：七鬼</a></td>
   </tr>
 </table>
 
-以上应用截图截取自 v2026.10.14.1–v2026.10.14.2，可能与您使用的版本有所出入。
-
 </details>
+
+以上应用截图截取自 v2026.10.14.1–v2026.10.14.2，可能与您使用的版本有所出入。
 
 ## 项目能力
 
