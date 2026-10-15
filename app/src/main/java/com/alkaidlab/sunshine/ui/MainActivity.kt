@@ -238,8 +238,10 @@ fun MainContent(
                                 NavigationTab.SETTINGS -> when (settingsPage) {
                                     "logs" -> LogsScreen(viewModel, onBack = { settingsPage = "settings" })
                                     "faq" -> FaqScreen(onBack = { settingsPage = "settings" })
+                                    "experimental" -> ExperimentalScreen(viewModel, onBack = { settingsPage = "settings" })
                                     else -> SettingsScreen(viewModel, onOpenLogs = { settingsPage = "logs" },
-                                        onOpenFaq = { settingsPage = "faq" }, onFollowSystemTheme = onFollowSystemTheme)
+                                        onOpenFaq = { settingsPage = "faq" }, onFollowSystemTheme = onFollowSystemTheme,
+                                        onOpenExperimental = { settingsPage = "experimental" })
                                 }
                             }
                         }

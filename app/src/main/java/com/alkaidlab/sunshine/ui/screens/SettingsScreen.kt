@@ -30,7 +30,7 @@ import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 
 @Composable
 fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, onFollowSystemTheme: () -> Unit = {},
-    onOpenFaq: () -> Unit = {}) {
+    onOpenFaq: () -> Unit = {}, onOpenExperimental: () -> Unit = {}) {
     val config by viewModel.config.collectAsState()
     val draft by viewModel.settingsDraft.collectAsState()
     val saving by viewModel.configSaving.collectAsState()
@@ -88,7 +88,7 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                         RadioButton(selected = mode != "screen_off", onClick = { edit("virtual_screen_mode", "desktop") })
                         Text("第二屏／桌面模式")
                     }
-                    Text("主屏继续使用，优先启动可用的 DeX／系统第二屏桌面；没有时打开全屏 Sunshine 虚拟桌面。", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                    Text("主屏继续使用，在独立第二屏上打开全屏 Sunshine 虚拟桌面。三星 DeX 可在实验性功能中开启。", color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         RadioButton(selected = mode == "screen_off", onClick = { edit("virtual_screen_mode", "screen_off") })
                         Text("主屏息屏串流")
@@ -135,6 +135,13 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                     }
                 } }
                 item { AboutSection() }
+                item { SectionCard("实验性功能", Icons.Default.Science) {
+                    TextButton(onClick = onOpenExperimental, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                        Icon(Icons.Default.Science, null, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(12.dp)); Text("实验性功能", modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                        Icon(Icons.Default.ChevronRight, null)
+                    }
+                } }
         }
     }
     if (restart) AlertDialog(onDismissRequest = { restart = false }, title = { Text("重启 Sunshine 服务？") },

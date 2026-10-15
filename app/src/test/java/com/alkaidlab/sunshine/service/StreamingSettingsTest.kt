@@ -4,6 +4,11 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StreamingSettingsTest {
+    @Test fun experimentalOptionsRequireExplicitBooleans() {
+        assertNull(StreamingSettings.validate(mapOf("experimental_samsung_dex" to "true", "experimental_desktop_high_refresh" to "false")))
+        assertNotNull(StreamingSettings.validate(mapOf("experimental_samsung_dex" to "yes")))
+        assertNotNull(StreamingSettings.validate(mapOf("experimental_desktop_high_refresh" to "120")))
+    }
     @Test fun virtualScreenConfigurationRejectsUnknownModesAndInvalidDensity() {
         assertNull(StreamingSettings.validate(mapOf("virtual_screen_mode" to "desktop", "virtual_screen_density" to "240")))
         assertNull(StreamingSettings.validate(mapOf("virtual_screen_mode" to "screen_off", "virtual_screen_density" to "640")))

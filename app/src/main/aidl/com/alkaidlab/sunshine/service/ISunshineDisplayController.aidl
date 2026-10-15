@@ -2,7 +2,7 @@ package com.alkaidlab.sunshine.service;
 import android.view.Surface;
 import android.view.MotionEvent;
 interface ISunshineDisplayController {
-    int createDisplay(int width, int height, int density, in Surface surface, String mode, IBinder owner) = 0;
+    int createDisplay(int width, int height, int density, in Surface surface, String mode, IBinder owner, int fps, boolean samsungDex, boolean highRefresh) = 0;
     void closeDisplay() = 1;
     boolean launchApp(String component) = 2;
     boolean injectMotion(in MotionEvent event) = 3;

@@ -26,7 +26,7 @@ data class StreamingSettings(
             for (key in listOf("encoder_h264", "encoder_hevc")) {
                 properties[key]?.let { if (it.length !in 1..128 || !it.matches(Regex("[A-Za-z0-9_.-]+"))) return "$key must be auto or a codec name" }
             }
-            for (key in listOf("repeat_frames", "wifi_low_latency", "rotation_compat")) {
+            for (key in listOf("repeat_frames", "wifi_low_latency", "rotation_compat", "experimental_samsung_dex", "experimental_desktop_high_refresh")) {
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }
             properties["virtual_screen_mode"]?.let { if (it !in listOf("desktop", "screen_off")) return "virtual_screen_mode must be desktop or screen_off" }

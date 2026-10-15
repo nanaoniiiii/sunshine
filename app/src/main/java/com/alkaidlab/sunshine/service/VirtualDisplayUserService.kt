@@ -29,15 +29,26 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     private var mode = ""
     private var input: Any? = null
     private var inject: java.lang.reflect.Method? = null
+    private var requestedRefreshRate = 60
+    private var refreshRateRequestSupported = false
+    private var dexRequested = false
+    private var dexActive = false
+    private val details = mutableListOf<String>()
 
-    @Synchronized override fun createDisplay(width: Int, height: Int, density: Int, surface: Surface, mode: String, owner: IBinder): Int {
+    @Synchronized override fun createDisplay(width: Int, height: Int, density: Int, surface: Surface, mode: String, owner: IBinder,
+        fps: Int, samsungDex: Boolean, highRefresh: Boolean): Int {
         require(width in 240..8192 && height in 240..8192 && density in 120..640)
+        require(fps in 15..240)
         require(mode == "desktop")
         check(surface.isValid)
         check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机，再创建虚拟屏" }
         closeDisplay()
         try {
             this.mode = mode
+            details.clear()
+            dexRequested = samsungDex
+            dexActive = false
+            requestedRefreshRate = if (highRefresh) fps else 60
             if (mode == "desktop") {
                 desktopBefore = setting("force_desktop_mode_on_external_displays")
                 freeformBefore = setting("enable_freeform_support")
@@ -51,8 +62,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
                 flags = flags or flag(name)
             }
             if (mode == "desktop") flags = flags or flag("VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS")
-            display = (shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).createVirtualDisplay(
-                "Sunshine Virtual Screen", width, height, density, surface, flags, null, handler)
+            display = createSurfaceDisplay(width, height, density, surface, flags)
                 ?: error("系统未创建虚拟屏")
             this.owner = owner
             owner.linkToDeath(died, 0)
@@ -62,6 +72,8 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
                 .newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "Sunshine:VirtualDisplayAwake").apply { acquire() }
             val id = display!!.display.displayId
             check(startDesktop(id)) { "无法启动虚拟屏桌面" }
+            if (requestedRefreshRate > 60 && !refreshRateRequestSupported)
+                details.add("此系统未提供虚拟屏刷新率请求接口，保留系统显示模式")
             return id
         } catch (e: Throwable) {
             closeDisplay()
@@ -70,6 +82,30 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     }
 
     private fun flag(name: String): Int = try { DisplayManager::class.java.getDeclaredField(name).getInt(null) } catch (_: Exception) { 0 }
+
+    private fun createSurfaceDisplay(width: Int, height: Int, density: Int, surface: Surface, flags: Int): VirtualDisplay? {
+        val manager = shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        refreshRateRequestSupported = false
+        // Android 14+ exposes a requested refresh rate. Older adapters may only
+        // advertise a fixed 60 Hz mode; changing encoder FPS cannot change that.
+        try {
+            val configType = Class.forName("android.hardware.display.VirtualDisplayConfig")
+            val builderType = Class.forName("android.hardware.display.VirtualDisplayConfig\$Builder")
+            val builder = builderType.getConstructor(String::class.java, Int::class.javaPrimitiveType,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType).newInstance("Sunshine Virtual Screen", width, height, density)
+            builderType.getMethod("setFlags", Int::class.javaPrimitiveType).invoke(builder, flags)
+            builderType.getMethod("setSurface", Surface::class.java).invoke(builder, surface)
+            builderType.getMethod("setRequestedRefreshRate", Float::class.javaPrimitiveType).invoke(builder, requestedRefreshRate.toFloat())
+            val config = builderType.getMethod("build").invoke(builder)
+            val result = manager.javaClass.getMethod("createVirtualDisplay", configType)
+                .invoke(manager, config) as? VirtualDisplay
+            if (result != null) { refreshRateRequestSupported = true; return result }
+        } catch (_: NoSuchMethodException) {
+            // Preserve the normal desktop on Android versions without this API.
+        } catch (_: ClassNotFoundException) {
+        } catch (e: Exception) { details.add("高刷新率请求未应用：${(e.cause ?: e).message}") }
+        return manager.createVirtualDisplay("Sunshine Virtual Screen", width, height, density, surface, flags, null, handler)
+    }
 
     @Synchronized override fun blankMainScreen(owner: IBinder): Boolean {
         check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
@@ -108,10 +144,14 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     }
 
     private fun startDesktop(id: Int): Boolean {
+        val samsung = Build.MANUFACTURER.equals("samsung", true)
+        if (dexRequested && samsung && startSamsungDesktop(id)) return true
+        if (dexRequested) details.add(if (samsung) "当前系统未提供可用的第二屏 DeX，已使用 Sunshine 桌面"
+            else "此主机不是三星设备，已使用普通第二屏桌面")
         if (mode == "desktop") {
             val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_SECONDARY_HOME)
             val candidates = shell.packageManager.queryIntentActivities(home, 0)
-            val system = candidates.firstOrNull { it.activityInfo.packageName != "com.alkaidlab.sunshine" }
+            val system = candidates.firstOrNull { !samsung && it.activityInfo.packageName != "com.alkaidlab.sunshine" }
             if (system != null) {
                 val component = ComponentName(system.activityInfo.packageName, system.activityInfo.name)
                 if (start(component, id, false)) { launcher = "系统第二屏桌面"; return true }
@@ -120,6 +160,40 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         val component = ComponentName("com.alkaidlab.sunshine", "com.alkaidlab.sunshine.ui.VirtualDesktopActivity")
         launcher = "Sunshine 桌面"
         return start(component, id, false)
+    }
+
+    private fun startSamsungDesktop(id: Int): Boolean {
+        val secondary = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_SECONDARY_HOME)
+        val system = shell.packageManager.queryIntentActivities(secondary, 0).firstOrNull {
+            val info = it.activityInfo
+            info.exported && (info.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0) &&
+                (info.packageName.startsWith("com.sec.android.") || info.packageName.startsWith("com.samsung.android."))
+        }
+        if (system != null && start(ComponentName(system.activityInfo.packageName, system.activityInfo.name), id, false) && isDexConfigured()) {
+            dexActive = true; launcher = "三星 DeX 第二屏"; return true
+        }
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage("com.sec.android.app.desktoplauncher")
+        val legacy = shell.packageManager.resolveActivity(intent, 0)?.activityInfo ?: return false
+        if (!legacy.exported || !start(ComponentName(legacy.packageName, legacy.name), id, false)) return false
+        // A successful am start alone does not establish that legacy DeX entered
+        // desktop mode. Inspect this display's configuration before reporting it.
+        if (!isDexConfigured()) return false
+        dexActive = true; launcher = "三星 DeX"; return true
+    }
+
+    private fun isDexConfigured(): Boolean {
+        // A bare display context inherits the shell process configuration. Read
+        // the actual task configurations on the owned display instead.
+        return try {
+            val taskManager = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null)
+            val tasks = Class.forName("android.app.IActivityTaskManager")
+                .getMethod("getAllRootTaskInfosOnDisplay", Int::class.javaPrimitiveType)
+                .invoke(taskManager, display!!.display.displayId) as List<*>
+            tasks.any { task ->
+                val configuration = task!!.javaClass.getField("configuration").get(task)
+                configuration.javaClass.getField("semDesktopModeEnabled").getInt(configuration) == 1
+            }
+        } catch (_: Exception) { false }
     }
 
     private fun start(component: ComponentName, id: Int, freeform: Boolean): Boolean = try {
@@ -184,7 +258,10 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             keyCode, 0, modifiers, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD))
     }
     @Synchronized override fun snapshot(): String = JSONObject().put("display_id", if (mode == "screen_off" && panelOff) 0 else display?.display?.displayId ?: -1)
-        .put("protocol_version", 2).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
-        .put("launcher", launcher).put("mode", mode).put("panel_off", panelOff).toString()
+        .put("protocol_version", 3).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
+        .put("launcher", launcher).put("mode", mode).put("panel_off", panelOff)
+        .put("requested_refresh_rate", requestedRefreshRate).put("actual_refresh_rate", display?.display?.refreshRate ?: 0f)
+        .put("refresh_rate_request_supported", refreshRateRequestSupported).put("dex_requested", dexRequested)
+        .put("dex_active", dexActive).put("detail", details.joinToString("；")).toString()
     override fun destroy() { try { closeDisplay() } finally { thread.quitSafely(); System.exit(0) } }
 }

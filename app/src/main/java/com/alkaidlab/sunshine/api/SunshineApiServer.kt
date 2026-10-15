@@ -179,6 +179,8 @@ class SunshineApiServer(
             autoScale = confMap["auto_scale"] ?: "true",
             virtualScreenMode = confMap["virtual_screen_mode"] ?: "desktop",
             virtualScreenDensity = confMap["virtual_screen_density"] ?: "240",
+            experimentalSamsungDex = confMap["experimental_samsung_dex"] ?: "false",
+            experimentalDesktopHighRefresh = confMap["experimental_desktop_high_refresh"] ?: "true",
             addressFamily = confMap["address_family"] ?: "both",
             maxStreamFps = confMap["max_stream_fps"] ?: "240",
             repeatFrames = confMap["repeat_frames"] ?: "true",

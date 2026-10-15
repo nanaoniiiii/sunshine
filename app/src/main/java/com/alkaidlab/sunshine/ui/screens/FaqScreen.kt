@@ -49,7 +49,7 @@ fun FaqScreen(onBack: () -> Unit = {}) {
         }
         item { FaqTopic("主屏息屏与第二屏桌面", expanded == "virtual", { expanded = if (expanded == "virtual") null else "virtual" }) {
             HelpText("先连接 Moonlight，再在设置的虚拟屏串流栏选择模式。主屏息屏串流关闭物理屏幕面板，接收端继续使用手机原有主页与应用；点击恢复主屏即可重新亮屏。")
-            HelpText("第二屏桌面模式按 Moonlight 请求的分辨率创建独立虚拟屏，优先启动可用的系统第二屏桌面，否则启动全屏 Sunshine 虚拟桌面。主屏息屏不影响第二屏显示与操作。桌面显示密度可在设置中调整，退出并重新创建后生效。")
+            HelpText("第二屏桌面模式按 Moonlight 请求的分辨率创建独立虚拟屏，使用全屏 Sunshine 虚拟桌面。三星 DeX 可在设置最下方的实验性功能中开启，也可查看第二屏实际刷新率。主屏息屏不影响第二屏显示与操作。桌面显示密度可在设置中调整，退出并重新创建后生效。")
             HelpText("在主页或虚拟桌面点击退出虚拟屏可恢复主屏串流。最后一个接收端断开时自动退出并恢复显示设置。")
         } }
         item { FaqTopic("Moonlight 画面不全屏或竖屏变成小块", expanded == "fullscreen", { expanded = if (expanded == "fullscreen") null else "fullscreen" }) {

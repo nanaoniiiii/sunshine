@@ -73,6 +73,12 @@ class SunshineRuntimeManager private constructor() {
         }
         override fun onDisplayChanged(displayId: Int) {
             if (displayId == Display.DEFAULT_DISPLAY) syncCaptureSize()
+            val current = _virtualScreenState.value
+            if (current.active && current.mode == "desktop" && current.displayId == displayId) {
+                captureDisplayManager?.getDisplay(displayId)?.let { display ->
+                    _virtualScreenState.compareAndSet(current, current.copy(actualRefreshRate = display.refreshRate))
+                }
+            }
         }
     }
 
@@ -480,6 +486,9 @@ class SunshineRuntimeManager private constructor() {
         val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == session.videoThreadId }
         val width = native?.requestedWidth?.takeIf { it > 0 } ?: session.width
         val height = native?.requestedHeight?.takeIf { it > 0 } ?: session.height
+        val refreshRate = minOf(native?.requestedFps?.takeIf { it > 0 } ?: session.fps, streamingSettings.value.maxFps).coerceIn(15, 240)
+        val samsungDex = props["experimental_samsung_dex"] == "true"
+        val highRefresh = props["experimental_desktop_high_refresh"] != "false"
         _virtualScreenState.value = VirtualScreenState(busy = true, width = width, height = height, mode = mode)
         try {
             val client = displayClient()
@@ -494,12 +503,16 @@ class SunshineRuntimeManager private constructor() {
             }
             virtualDisplay?.release(); virtualDisplay = null
             val surface = frameDispatcher.resizeCaptureSync(width, height) ?: error("无法切换虚拟屏采集画布")
-            val id = withContext(Dispatchers.IO) { client.create(width, height, density, surface, mode) }
+            val id = withContext(Dispatchers.IO) { client.create(width, height, density, surface, mode, refreshRate, samsungDex, highRefresh) }
             check(id > 0) { "系统没有返回独立显示 ID" }
             check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "创建期间连接已结束" }
-            val description = org.json.JSONObject(client.snapshot()).optString("launcher", "Sunshine 桌面")
+            val snapshot = org.json.JSONObject(client.snapshot())
+            val description = snapshot.optString("launcher", "Sunshine 桌面")
             _virtualScreenState.value = VirtualScreenState(active = true, displayId = id, width = width, height = height,
-                mode = mode, launcher = description)
+                mode = mode, launcher = description, requestedRefreshRate = snapshot.optInt("requested_refresh_rate"),
+                actualRefreshRate = snapshot.optDouble("actual_refresh_rate", 0.0).toFloat(),
+                refreshRateRequestSupported = snapshot.optBoolean("refresh_rate_request_supported"),
+                dexRequested = samsungDex, dexActive = snapshot.optBoolean("dex_active"), detail = snapshot.optString("detail"))
             frameDispatcher.sourceIsVirtual = true
             frameDispatcher.sourceRotation = 0
             engineClient?.configureCanvas(width, height, false, false)

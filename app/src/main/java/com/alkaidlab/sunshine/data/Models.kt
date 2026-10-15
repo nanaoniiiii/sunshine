@@ -25,6 +25,8 @@ data class ConfigResponse(
     @SerializedName("rotation_compat") val rotationCompat: String = "false",
     @SerializedName("virtual_screen_mode") val virtualScreenMode: String = "desktop",
     @SerializedName("virtual_screen_density") val virtualScreenDensity: String = "240",
+    @SerializedName("experimental_samsung_dex") val experimentalSamsungDex: String = "false",
+    @SerializedName("experimental_desktop_high_refresh") val experimentalDesktopHighRefresh: String = "true",
     @SerializedName("auto_scale") val autoScale: String = "true",
     @SerializedName("address_family") val addressFamily: String = "both",
     @SerializedName("max_stream_fps") val maxStreamFps: String = "240",

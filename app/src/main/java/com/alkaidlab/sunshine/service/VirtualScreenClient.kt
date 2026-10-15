@@ -9,7 +9,9 @@ import kotlinx.coroutines.withTimeout
 import rikka.shizuku.Shizuku
 
 data class VirtualScreenState(val active: Boolean = false, val busy: Boolean = false, val displayId: Int = -1,
-    val width: Int = 0, val height: Int = 0, val mode: String = "desktop", val launcher: String = "", val error: String? = null)
+    val width: Int = 0, val height: Int = 0, val mode: String = "desktop", val launcher: String = "", val error: String? = null,
+    val requestedRefreshRate: Int = 0, val actualRefreshRate: Float = 0f, val refreshRateRequestSupported: Boolean = false,
+    val dexRequested: Boolean = false, val dexActive: Boolean = false, val detail: String = "")
 
 class VirtualScreenClient(private val context: Context, private val disconnected: () -> Unit) {
     private var remote: ISunshineDisplayController? = null
@@ -35,12 +37,12 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         Shizuku.bindUserService(args, connection)
         return try {
             val service = withTimeout(8000) { promise.await() }
-            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 2) { "显示服务版本过旧，请重新绑定" }
+            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 3) { "显示服务版本过旧，请重新绑定" }
             service
         } finally { waiting = null }
     }
-    suspend fun create(width: Int, height: Int, density: Int, surface: Surface, mode: String): Int =
-        connect().createDisplay(width, height, density, surface, mode, owner)
+    suspend fun create(width: Int, height: Int, density: Int, surface: Surface, mode: String, fps: Int, samsungDex: Boolean, highRefresh: Boolean): Int =
+        connect().createDisplay(width, height, density, surface, mode, owner, fps, samsungDex, highRefresh)
     suspend fun blankMain(): Boolean = connect().blankMainScreen(owner)
     fun close() { remote?.closeDisplay() }
     fun snapshot(): String = remote?.snapshot().orEmpty()
