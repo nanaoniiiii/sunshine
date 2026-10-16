@@ -11,7 +11,7 @@
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
 
-**v2026.10.16.1 交付候选**：新增无需 HDMI 的三星原生 DeX 集成、逐客户端队列与 UDP 批次发送修复、Shizuku 12 兼容，以及基于真实纹理时间戳的虚拟屏高帧率识别。SM-T970 普通虚拟屏单路 2K 串流已测得编码 FPS 窗口中位数 118.64；三端高动态负载和最新版本息屏高刷仍需复测，不能视为所有场景稳定通过。详见 [平板验证](docs/validation/tablet-host-fps-2026-10-16.md) 和 [三端验证历史](docs/validation/multi-client-virtual-screen-2026-10-16.md)。
+**v2026.10.16.1 交付候选**：新增无需 HDMI 的三星原生 DeX 集成、逐客户端队列与 UDP 批次发送修复、Shizuku 12 兼容，以及基于真实纹理时间戳的虚拟屏高帧率识别。SM-T970 普通虚拟屏单路 2K 串流已测得编码 FPS 窗口中位数 118.64；三端高动态负载和最新版本息屏高刷仍需复测，不能视为所有场景稳定通过。详见 [项目交接](docs/HANDOFF-2026-10-16.md)、[平板验证](docs/validation/tablet-host-fps-2026-10-16.md) 和 [三端验证历史](docs/validation/multi-client-virtual-screen-2026-10-16.md)。
 
 ## 实机与官网
 
