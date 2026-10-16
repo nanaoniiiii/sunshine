@@ -25,6 +25,7 @@ class SunshineApp : Application() {
         }
         SunshineRuntimeManager.getInstance().initialize(this)
 
+        com.alkaidlab.sunshine.update.AppUpdater.initialize(this)
         try {
             Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
             Shizuku.addBinderDeadListener(binderDeadListener)

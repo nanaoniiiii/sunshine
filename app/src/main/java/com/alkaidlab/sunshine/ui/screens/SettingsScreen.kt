@@ -135,6 +135,7 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                     }
                 } }
                 item { AboutSection() }
+                item { AppUpdateCard() }
                 item { SectionCard("实验性功能", Icons.Default.Science) {
                     TextButton(onClick = onOpenExperimental, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.Science, null, modifier = Modifier.size(20.dp))

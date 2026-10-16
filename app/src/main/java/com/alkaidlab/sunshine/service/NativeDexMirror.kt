@@ -20,10 +20,12 @@ internal class NativeDexMirror private constructor(val source: Display, private 
             val state = manager.javaClass.getMethod("getDesktopModeState").invoke(manager) ?: return null
             val enabled = state.javaClass.getMethod("getEnabled").invoke(state) as Int
             val type = state.javaClass.getMethod("getDisplayType").invoke(state) as Int
-            if (enabled != 4 || type != 102) return null
+            if (enabled != 4 || type !in listOf(101, 102)) return null
             val displays = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            (displays.getDisplay(2) ?: displays.getDisplays("com.samsung.android.hardware.display.category.DESKTOP")
-                .firstOrNull { it.displayId != Display.DEFAULT_DISPLAY })?.takeIf { it.isValid && it.state == Display.STATE_ON }
+            (if (type == 101) displays.getDisplay(Display.DEFAULT_DISPLAY) else
+                displays.getDisplays("com.samsung.android.hardware.display.category.DESKTOP")
+                    .firstOrNull { it.displayId != Display.DEFAULT_DISPLAY } ?: displays.getDisplay(2))
+                ?.takeIf { it.isValid && it.state == Display.STATE_ON }
         } catch (_: Exception) { null } }
 
         fun hasExternalConnection(context: Context): Boolean {
@@ -38,7 +40,7 @@ internal class NativeDexMirror private constructor(val source: Display, private 
         private fun displayType(display: Display): Int = try { Display::class.java.getMethod("getType").invoke(display) as Int } catch (_: Exception) { 0 }
 
         fun create(source: Display, width: Int, height: Int, surface: Surface): NativeDexMirror {
-            require(source.displayId != Display.DEFAULT_DISPLAY && source.isValid && surface.isValid)
+            require(source.isValid && surface.isValid)
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION") source.getRealMetrics(metrics)
             val viewport = CaptureGeometry.fit(metrics.widthPixels, metrics.heightPixels, width, height)

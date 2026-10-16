@@ -79,7 +79,16 @@ class SunshineRuntimeManager private constructor() {
             if (current.active && current.mode == "desktop" && current.displayId == displayId) {
                 captureDisplayManager?.getDisplay(displayId)?.let { display ->
                     if (current.systemDexMirror && display.state != Display.STATE_ON && !current.busy) {
-                        fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+                        if (current.displayId == Display.DEFAULT_DISPLAY) {
+                            // Closing a tablet cover powers off display 0; it does not
+                            // remove the native desktop. Keep logical rendering awake
+                            // and blank only the physical panel instead of exiting DeX.
+                            SunshineLogManager.log("VIRTUAL_POWER", "Primary DeX slept; recovering with physical panel blanked")
+                            fullscreenScope.launch(Dispatchers.Main) { setVirtualScreenPanelOff(true) }
+                        } else {
+                            SunshineLogManager.log("VIRTUAL_EXIT", "Native secondary display powered off")
+                            fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+                        }
                         return
                     }
                     if (_virtualScreenState.compareAndSet(current, current.copy(actualRefreshRate = display.refreshRate)) &&
@@ -533,7 +542,8 @@ class SunshineRuntimeManager private constructor() {
                 val pending = withContext(Dispatchers.IO) { client.prepareLocalDex() }
                 if (pending) {
                     preparingLocalDex = true
-                    _virtualScreenState.value = _virtualScreenState.value.copy(detail = "请在三星 DeX 列表选择 Sunshine Local DeX，并确认立即开始")
+                    val route = org.json.JSONObject(client.snapshot()).optString("dex_route_detail")
+                    _virtualScreenState.value = _virtualScreenState.value.copy(detail = route.ifBlank { "请在三星 DeX 列表选择 Sunshine Local DeX，并确认立即开始" })
                     var ready = false
                     for (attempt in 0 until 240) {
                         check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "连接已结束" }
@@ -542,7 +552,7 @@ class SunshineRuntimeManager private constructor() {
                         if (status.optBoolean("local_dex_ready")) { ready = true; break }
                         kotlinx.coroutines.delay(250)
                     }
-                    check(ready) { "本机 DeX 等待超时，请选择 Sunshine Local DeX 并确认连接后重试" }
+                    check(ready) { "三星 DeX 等待超时：${_virtualScreenState.value.detail}" }
                     preparingLocalDex = false
                 }
             }
@@ -556,9 +566,15 @@ class SunshineRuntimeManager private constructor() {
             virtualDisplay?.release(); virtualDisplay = null
             val surface = frameDispatcher.resizeCaptureSync(captureWidth, captureHeight) ?: error("无法切换虚拟屏采集画布")
             val id = withContext(Dispatchers.IO) { client.create(captureWidth, captureHeight, density, surface, mode, refreshRate, samsungDex, highRefresh) }
-            check(id > 0) { "系统没有返回独立显示 ID" }
+            val created = org.json.JSONObject(client.snapshot())
+            check(id > 0 || (id == 0 && created.optBoolean("system_dex_mirror") && created.optBoolean("dex_active"))) { "系统没有返回有效的桌面显示 ID" }
             check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "创建期间连接已结束" }
+            val controlsReady = withContext(Dispatchers.IO) { client.showControls {
+                SunshineLogManager.log("VIRTUAL_EXIT", "Requested by desktop control")
+                fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+            } }
             val snapshot = org.json.JSONObject(client.snapshot())
+            check(controlsReady) { "无法显示退出控制条，已恢复主屏：${snapshot.optString("detail")}" }
             snapshot.optString("local_dex_stage").takeIf { it.startsWith("wfd_status:") }?.let {
                 SunshineLogManager.log("DEX_TRANSPORT", it.removePrefix("wfd_status:"))
             }
@@ -568,12 +584,13 @@ class SunshineRuntimeManager private constructor() {
                 actualRefreshRate = snapshot.optDouble("actual_refresh_rate", 0.0).toFloat(),
                 refreshRateRequestSupported = snapshot.optBoolean("refresh_rate_request_supported"),
                 dexRequested = samsungDex, dexActive = snapshot.optBoolean("dex_active"), detail = snapshot.optString("detail"),
-                systemDexMirror = snapshot.optBoolean("system_dex_mirror"))
+                systemDexMirror = snapshot.optBoolean("system_dex_mirror"), desktopControls = snapshot.optBoolean("desktop_controls"))
             frameDispatcher.setVirtualSource(true, snapshot.optDouble("actual_refresh_rate", 60.0).toFloat())
             frameDispatcher.sourceRotation = 0
             engineClient?.configureCanvas(captureWidth, captureHeight, false, false)
             SunshineLogManager.log("VIRTUAL_SCREEN", "Created display=$id, ${captureWidth}x$captureHeight, mode=$mode, launcher=$description")
-            FullscreenDisplay.Result(true, "已创建 $captureWidth × $captureHeight 虚拟屏 · $description")
+            FullscreenDisplay.Result(true, if (snapshot.optBoolean("system_dex_mirror"))
+                "已开始串流 $captureWidth × $captureHeight · $description" else "已创建 $captureWidth × $captureHeight 虚拟屏 · $description")
         } catch (error: Exception) {
             withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
             _virtualScreenState.value = VirtualScreenState(busy = true, error = (error.cause ?: error).message)
@@ -619,6 +636,14 @@ class SunshineRuntimeManager private constructor() {
 
     suspend fun launchVirtualApp(component: String): Boolean = withContext(Dispatchers.IO) {
         if (!_virtualScreenState.value.active) false else virtualScreenClient?.launch(component) == true
+    }
+
+    suspend fun virtualDesktopTasks(): String = withContext(Dispatchers.IO) {
+        if (!_virtualScreenState.value.active) "[]" else virtualScreenClient?.tasks() ?: "[]"
+    }
+
+    suspend fun virtualDesktopAction(action: String, taskId: Int = -1): Boolean = withContext(Dispatchers.IO) {
+        if (!_virtualScreenState.value.active) false else virtualScreenClient?.action(action, taskId) == true
     }
 
     suspend fun setVirtualScreenPanelOff(off: Boolean): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
@@ -1265,6 +1290,7 @@ class SunshineRuntimeManager private constructor() {
         if (SunshineEngineBridge.injectMotion(event)) return
         if (_virtualScreenState.value.busy && !preparingLocalDex) return
         if (_virtualScreenState.value.active) {
+            if (_virtualScreenState.value.systemDexMirror && sourceDisplayId == Display.DEFAULT_DISPLAY) onRemoteInput()
             try { virtualScreenClient?.motion(event) } catch (e: Exception) { SunshineLogManager.log("VIRTUAL_INPUT_ERR", e.message.orEmpty()) }
             return
         }
@@ -1294,9 +1320,16 @@ class SunshineRuntimeManager private constructor() {
     }
 
     fun handleKeyboardEvent(keyCode: Int, isDown: Boolean, modifiers: Int) {
+        if (_virtualScreenState.value.active && keyCode == KeyEvent.KEYCODE_ESCAPE &&
+            modifiers and KeyEvent.META_CTRL_ON != 0 && modifiers and KeyEvent.META_ALT_ON != 0) {
+            if (isDown) fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
+            if (isDown) SunshineLogManager.log("VIRTUAL_EXIT", "Requested by Ctrl+Alt+Escape")
+            return
+        }
         if (SunshineEngineBridge.injectKeyboard(keyCode, isDown, modifiers)) return
         if (_virtualScreenState.value.busy && !preparingLocalDex) return
         if (_virtualScreenState.value.active) {
+            if (_virtualScreenState.value.systemDexMirror && sourceDisplayId == Display.DEFAULT_DISPLAY) onRemoteInput()
             try { virtualScreenClient?.key(keyCode, isDown, modifiers) } catch (e: Exception) { SunshineLogManager.log("VIRTUAL_INPUT_ERR", e.message.orEmpty()) }
             return
         }

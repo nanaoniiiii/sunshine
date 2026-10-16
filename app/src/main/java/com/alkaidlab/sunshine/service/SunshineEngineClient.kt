@@ -113,8 +113,9 @@ class SunshineEngineClient(private val context: Context) {
                             EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray())
                         remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
                         val capture = runtime.getCaptureDimensions(1, 1)
-                        remote.configureCanvas(capture[0], capture[1], runtime.sourceDisplayId == 0 && runtime.autoRotateEnabled && !runtime.rotationCompatEnabled,
-                            runtime.sourceDisplayId == 0 && runtime.rotationCompatEnabled, runtime.sourceDisplayId, sourceFrameLimit(runtime))
+                        val rotation = canvasRotation(runtime, runtime.autoRotateEnabled, runtime.rotationCompatEnabled)
+                        remote.configureCanvas(capture[0], capture[1], rotation.follow,
+                            rotation.compatibility, runtime.sourceDisplayId, sourceFrameLimit(runtime))
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
@@ -201,7 +202,12 @@ class SunshineEngineClient(private val context: Context) {
     fun configureCanvas(width: Int, height: Int, follow: Boolean, compat: Boolean) {
         val runtime = SunshineRuntimeManager.getInstance()
         val id = runtime.sourceDisplayId
-        try { engine?.configureCanvas(width, height, id == 0 && follow && !compat, id == 0 && compat, id, sourceFrameLimit(runtime)) } catch (_: RemoteException) {}
+        val rotation = canvasRotation(runtime, follow, compat)
+        try { engine?.configureCanvas(width, height, rotation.follow, rotation.compatibility, id, sourceFrameLimit(runtime)) } catch (_: RemoteException) {}
+    }
+    private fun canvasRotation(runtime: SunshineRuntimeManager, follow: Boolean, compatibility: Boolean): CaptureSourcePolicy.Rotation {
+        val state = runtime.virtualScreenState.value
+        return CaptureSourcePolicy.rotation(runtime.sourceDisplayId, state.active && state.mode == "desktop", follow, compatibility)
     }
     private fun sourceFrameLimit(runtime: SunshineRuntimeManager): Int {
         val state = runtime.virtualScreenState.value

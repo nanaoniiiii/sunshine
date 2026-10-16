@@ -11,7 +11,7 @@ data class VirtualScreenState(val active: Boolean = false, val busy: Boolean = f
     val width: Int = 0, val height: Int = 0, val mode: String = "desktop", val launcher: String = "", val error: String? = null,
     val requestedRefreshRate: Int = 0, val actualRefreshRate: Float = 0f, val refreshRateRequestSupported: Boolean = false,
     val dexRequested: Boolean = false, val dexActive: Boolean = false, val detail: String = "", val systemDexMirror: Boolean = false,
-    val mainPanelOff: Boolean = false)
+    val mainPanelOff: Boolean = false, val desktopControls: Boolean = false)
 
 class VirtualScreenClient(private val context: Context, private val disconnected: () -> Unit) {
     private var remote: ISunshineDisplayController? = null
@@ -38,7 +38,7 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         Shizuku.bindUserService(args, connection)
         return try {
             val service = withTimeout(8000) { promise.await() }
-            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 6) { "显示服务版本过旧，请重新绑定" }
+            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 8) { "显示服务版本过旧，请重新绑定" }
             service.attachOwner(owner)
             service
         } finally { waiting = null }
@@ -51,6 +51,12 @@ class VirtualScreenClient(private val context: Context, private val disconnected
     fun close() { remote?.closeDisplay() }
     fun snapshot(): String = remote?.snapshot().orEmpty()
     fun launch(component: String): Boolean = remote?.launchApp(component) == true
+    fun showControls(exit: () -> Unit): Boolean = remote?.showDesktopControls(object : ISunshineDesktopCallback.Stub() {
+        override fun requestExit() = exit()
+        override fun reportStatus(status: String) { SunshineLogManager.log("DESKTOP_CONTROL", status.take(512)) }
+    }) == true
+    fun tasks(): String = remote?.desktopTasks() ?: "[]"
+    fun action(action: String, taskId: Int = -1): Boolean = remote?.desktopAction(action, taskId) == true
     fun motion(event: MotionEvent): Boolean = remote?.injectMotion(event) == true
     fun key(code: Int, down: Boolean, modifiers: Int): Boolean = remote?.injectKey(code, down, modifiers) == true
     fun release() {

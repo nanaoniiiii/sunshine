@@ -110,13 +110,18 @@ class MainActivity : ComponentActivity() {
                     onRequestShizuku = { requestShizukuPermission() },
                     onRequestBatteryOptimization = { requestIgnoreBatteryOptimization() }
                 )
+                com.alkaidlab.sunshine.ui.components.AppUpdateDialog()
             }
         }
+        if (intent?.getBooleanExtra(com.alkaidlab.sunshine.update.AppUpdater.OPEN_UPDATE, false) == true)
+            com.alkaidlab.sunshine.update.AppUpdater.open()
     }
 
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent?.getBooleanExtra(com.alkaidlab.sunshine.update.AppUpdater.OPEN_UPDATE, false) == true)
+            com.alkaidlab.sunshine.update.AppUpdater.open()
         // Reopening the UI must not recreate capture or restart an active engine.
         SunshineService.start(this)
         if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {

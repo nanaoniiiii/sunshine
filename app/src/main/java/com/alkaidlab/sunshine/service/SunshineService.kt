@@ -35,6 +35,7 @@ class SunshineService : Service() {
     companion object {
         const val ACTION_START = "com.alkaidlab.sunshine.ACTION_START"
         const val ACTION_STOP = "com.alkaidlab.sunshine.ACTION_STOP"
+        const val ACTION_EXIT_DESKTOP = "com.alkaidlab.sunshine.ACTION_EXIT_DESKTOP"
         const val EXTRA_RESULT_DATA = "extra_result_data"
 
         private const val CHANNEL_ID = "sunshine_service_channel"
@@ -163,6 +164,10 @@ class SunshineService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action ?: ACTION_START) {
+            ACTION_EXIT_DESKTOP -> {
+                serviceScope.launch { SunshineRuntimeManager.getInstance().exitVirtualScreen() }
+                return START_NOT_STICKY
+            }
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
@@ -385,6 +390,8 @@ class SunshineService : Service() {
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .addAction(0, "退出桌面 / 恢复主屏", PendingIntent.getService(this, 2,
+                Intent(this, SunshineService::class.java).setAction(ACTION_EXIT_DESKTOP), PendingIntent.FLAG_IMMUTABLE))
             .build()
     }
 

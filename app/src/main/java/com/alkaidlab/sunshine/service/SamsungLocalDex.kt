@@ -25,6 +25,17 @@ internal class SamsungLocalDex(private val context: Context) : AutoCloseable {
     override fun close() { val receiver = peer; peer = null; receiver?.close() }
 
     companion object {
+        fun supported(context: Context): Boolean {
+            if (!android.os.Process.is64Bit()) return false
+            val systemPackage = try {
+                context.packageManager.getApplicationInfo("com.sec.android.app.dexonpc", 0).flags and ApplicationInfo.FLAG_SYSTEM != 0
+            } catch (_: Exception) { false }
+            if (!systemPackage) return false
+            // Some firmware keeps a package stub after removing the PC transport.
+            return try {
+                Class.forName("com.samsung.android.desktopmode.DesktopModeFeature").getField("SUPPORT_DEX_ON_PC").getBoolean(null)
+            } catch (_: Exception) { true } // Older compatible firmware may lack this feature field.
+        }
         private var loader: ClassLoader? = null
         // Keep one loader for the user-service lifetime: native libraries cannot be loaded twice by different loaders.
         @Synchronized private fun loadDeviceCrypto(context: Context) {

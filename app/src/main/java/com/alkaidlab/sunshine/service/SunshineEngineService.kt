@@ -27,6 +27,11 @@ class SunshineEngineService : Service() {
             .setContentIntent(android.app.PendingIntent.getActivity(this, 0,
                 Intent(this, com.alkaidlab.sunshine.ui.MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE))
             .setOngoing(true)
+            // Both foreground services share this notification ID. Either writer
+            // must preserve the escape action when it replaces the other content.
+            .addAction(0, "退出桌面 / 恢复主屏", android.app.PendingIntent.getService(this, 2,
+                Intent(this, SunshineService::class.java).setAction(SunshineService.ACTION_EXIT_DESKTOP),
+                android.app.PendingIntent.FLAG_IMMUTABLE))
             .build()
         startForeground(1001, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         // Native input callbacks run here, so the mapper needs this process's

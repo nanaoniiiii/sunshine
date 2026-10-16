@@ -29,10 +29,10 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
             TextButton(onClick = viewModel::retrySettingsSave) { Text("重试") }
         } }
         item { SectionCard("三星 DeX", Icons.Default.DesktopWindows) {
-            SettingSwitch("第二屏启用三星 DeX", "创建第二屏时尝试启动三星系统桌面", draft?.get("experimental_samsung_dex") == "true", draft != null) {
+            SettingSwitch("启用三星 DeX", "按本机系统能力选择原生桌面路径", draft?.get("experimental_samsung_dex") == "true", draft != null) {
                 viewModel.editSetting("experimental_samsung_dex", it.toString())
             }
-            Text("系统已开启 DeX 时直接串流第二屏。未连接外屏时，尝试启动本机 DeX 接收端；请在手机的 DeX 列表选择 Sunshine Local DeX 并确认。退出会关闭本次本机接收端，已有外接 DeX 会话保留。",
+            Text("已有原生 DeX 时直接串流。支持 DeX for PC 的手机使用 Sunshine Local DeX，请确认连接；支持 Standalone 的平板使用主屏原生 DeX（不独立于平板主屏），退出恢复本次切换。固件没有可用入口时提供带应用、任务和退出控制的兼容桌面，并显示原因。已有 DeX 会话保留。",
                 color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
         } }
         item { SectionCard("第二屏刷新率", Icons.Default.Speed) {
@@ -52,6 +52,8 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
                 SettingSwitch("关闭主屏面板", "保留第二屏渲染，退出第二屏时恢复主屏", state.mainPanelOff, !state.busy) {
                     viewModel.setVirtualScreenPanelOff(it)
                 }
+                if (state.systemDexMirror && state.displayId == 0)
+                    Text("当前串流的是平板主屏 DeX，不是独立第二屏。", color = TextSecondary)
                 if (state.detail.isNotBlank()) Text(state.detail, color = TextSecondary)
             } else Text("先选择第二屏模式并连接 Moonlight，再在主页创建虚拟屏。配置在下次创建时生效。", color = TextSecondary)
         } }

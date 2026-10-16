@@ -32,6 +32,9 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     private var display: VirtualDisplay? = null
     private var nativeDexMirror: NativeDexMirror? = null
     private var localDex: SamsungLocalDex? = null
+    private var standaloneDex: SamsungStandaloneDex? = null
+    private var dexRouteDetail = ""
+    private var controls: DesktopControlOverlay? = null
     private var owner: IBinder? = null
     private val died = IBinder.DeathRecipient { destroy() }
     private var panelOff = false
@@ -68,11 +71,15 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             !(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机，再创建虚拟屏" }
         // A prepared local receiver must survive the switch from primary capture to its DeX mirror.
         val preparedLocal = localDex
+        val preparedStandalone = standaloneDex
         localDex = null
-        try { closeDisplay() } finally { localDex = preparedLocal }
+        standaloneDex = null
+        val preparedDetail = dexRouteDetail
+        try { closeDisplay() } finally { localDex = preparedLocal; standaloneDex = preparedStandalone; dexRouteDetail = preparedDetail }
         try {
             this.mode = mode
             details.clear()
+            if (samsungDex && dexRouteDetail.isNotBlank()) details.add(dexRouteDetail)
             dexRequested = samsungDex
             dexActive = false
             requestedRefreshRate = if (highRefresh) fps else 60
@@ -93,10 +100,15 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
                     try {
                         nativeDexMirror = NativeDexMirror.create(nativeDisplay, width, height, surface)
                         attachOwner(owner)
+                        if (nativeDisplay.displayId == Display.DEFAULT_DISPLAY)
+                            wake = (shell.getSystemService(Context.POWER_SERVICE) as PowerManager)
+                                .newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "Sunshine:TabletDexAwake").apply { acquire() }
                         dexActive = true
-                        launcher = "三星原生 DeX"
+                        launcher = if (nativeDisplay.displayId == Display.DEFAULT_DISPLAY) "三星原生 DeX（平板主屏）" else "三星原生 DeX"
                         refreshRateRequestSupported = false
-                        details.add(if (localDex != null) "正在串流无 HDMI 的本机原生 DeX；退出将关闭本次本机接收端"
+                        details.add(if (standaloneDex != null) "使用平板主屏原生 DeX，并非独立第二屏；退出恢复本次切换"
+                            else if (nativeDisplay.displayId == Display.DEFAULT_DISPLAY) "串流已开启的平板主屏 DeX；退出保留原有模式"
+                            else if (localDex != null) "正在串流无 HDMI 的本机原生 DeX；退出将关闭本次本机接收端"
                             else "正在串流系统 DeX 第二屏；退出串流不会关闭原有 DeX 会话")
                         return nativeDisplay.displayId
                     } catch (e: Exception) {
@@ -185,10 +197,24 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         check(mode == "desktop" && (display != null || nativeDexMirror != null)) { "请先创建独立第二屏" }
         check(owner?.isBinderAlive == true) { "串流宿主已退出" }
         if (off) check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
+        val primaryDex = nativeDexMirror?.takeIf { it.source.displayId == Display.DEFAULT_DISPLAY }
+        if (off && primaryDex != null && !(shell.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive) {
+            val power = shell.getSystemService(Context.POWER_SERVICE) as PowerManager
+            try {
+                PowerManager::class.java.getMethod("wakeUp", Long::class.javaPrimitiveType, Int::class.javaPrimitiveType, String::class.java)
+                    .invoke(power, SystemClock.uptimeMillis(), 2, "Sunshine:DesktopStream")
+            } catch (_: Exception) { command("input", "keyevent", "KEYCODE_WAKEUP") }
+        }
         // Preserve the virtual display, owner watch and wake resources. Putting
         // display 0 to sleep would let OEM policies demote active stream workers.
         setPanelPower(if (off) 0 else 2)
         panelOff = off
+        if (off && primaryDex != null) handler.postDelayed({
+            synchronized(this) {
+                if (panelOff && nativeDexMirror === primaryDex && owner?.isBinderAlive == true)
+                    try { setPanelPower(0) } catch (e: Exception) { android.util.Log.e("SunshineDesktopControls", "Cannot reapply panel blanking", e) }
+            }
+        }, 250)
         return true
     }
 
@@ -216,68 +242,159 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
 
     private fun startDesktop(id: Int): Boolean {
         val samsung = Build.MANUFACTURER.equals("samsung", true)
-        if (dexRequested && samsung && startSamsungDesktop(id)) return true
-        if (dexRequested) details.add(if (samsung) "当前系统未提供可用的第二屏 DeX，已使用 Sunshine 桌面"
+        if (dexRequested) details.add(if (samsung) "当前没有可采集的原生 DeX，已使用 Sunshine 兼容桌面"
             else "此主机不是三星设备，已使用普通第二屏桌面")
-        if (mode == "desktop") {
-            val home = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_SECONDARY_HOME)
-            val candidates = shell.packageManager.queryIntentActivities(home, 0)
-            val system = candidates.firstOrNull { !samsung && it.activityInfo.packageName != "com.alkaidlab.sunshine" }
-            if (system != null) {
-                val component = ComponentName(system.activityInfo.packageName, system.activityInfo.name)
-                if (start(component, id, false)) { launcher = "系统第二屏桌面"; return true }
-            }
-        }
         val component = ComponentName("com.alkaidlab.sunshine", "com.alkaidlab.sunshine.ui.VirtualDesktopActivity")
         launcher = "Sunshine 桌面"
-        return start(component, id, false)
+        return start(component, id, false, home = true) && awaitForeground(component, id)
     }
 
-    private fun startSamsungDesktop(id: Int): Boolean {
-        val secondary = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_SECONDARY_HOME)
-        val system = shell.packageManager.queryIntentActivities(secondary, 0).firstOrNull {
-            val info = it.activityInfo
-            info.exported && (info.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM != 0) &&
-                (info.packageName.startsWith("com.sec.android.") || info.packageName.startsWith("com.samsung.android."))
-        }
-        if (system != null && start(ComponentName(system.activityInfo.packageName, system.activityInfo.name), id, false) && isDexConfigured()) {
-            dexActive = true; launcher = "三星 DeX 第二屏"; return true
-        }
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage("com.sec.android.app.desktoplauncher")
-        val legacy = shell.packageManager.resolveActivity(intent, 0)?.activityInfo ?: return false
-        if (!legacy.exported || !start(ComponentName(legacy.packageName, legacy.name), id, false)) return false
-        // A successful am start alone does not establish that legacy DeX entered
-        // desktop mode. Inspect this display's configuration before reporting it.
-        if (!isDexConfigured()) return false
-        dexActive = true; launcher = "三星 DeX"; return true
-    }
-
-    private fun isDexConfigured(): Boolean {
-        // A bare display context inherits the shell process configuration. Read
-        // the actual task configurations on the owned display instead.
-        return try {
-            val taskManager = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null)
-            val tasks = Class.forName("android.app.IActivityTaskManager")
-                .getMethod("getAllRootTaskInfosOnDisplay", Int::class.javaPrimitiveType)
-                .invoke(taskManager, display!!.display.displayId) as List<*>
-            tasks.any { task ->
-                val configuration = task!!.javaClass.getField("configuration").get(task)
-                configuration.javaClass.getField("semDesktopModeEnabled").getInt(configuration) == 1
-            }
-        } catch (_: Exception) { false }
-    }
-
-    private fun start(component: ComponentName, id: Int, freeform: Boolean): Boolean = try {
-        val args = mutableListOf("am", "start", "--display", id.toString(), "--windowingMode", if (freeform) "5" else "1", "-f", "0x18000000")
+    private fun start(component: ComponentName, id: Int, freeform: Boolean, home: Boolean = false, page: String = "apps"): Boolean = try {
+        val args = mutableListOf("am", "start", "--display", id.toString(), "--windowingMode", if (freeform) "5" else "1", "-f", if (home) "0x18000000" else "0x10200000",
+            "-a", Intent.ACTION_MAIN, "-c", if (home) Intent.CATEGORY_SECONDARY_HOME else Intent.CATEGORY_LAUNCHER)
+        if (home) args.addAll(listOf("--activityType", "2"))
+        if (component.className == "com.alkaidlab.sunshine.ui.VirtualDesktopActivity") args.addAll(listOf("--es", "desktop_page", page,
+            "--ei", "desktop_display_id", id.toString()))
         args.addAll(listOf("-n", component.flattenToString()))
         val result = command(*args.toTypedArray())
         !result.contains("Error:") && !result.contains("Error type")
     } catch (_: Exception) { false }
 
+    private fun awaitForeground(component: ComponentName, displayId: Int): Boolean {
+        repeat(15) {
+            @Suppress("DEPRECATION")
+            val tasks = (shell.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getRunningTasks(100)
+            val first = tasks.firstOrNull { task -> runCatching { task.javaClass.getField("displayId").getInt(task) == displayId }.getOrDefault(false) }
+            if (first?.topActivity == component) return true
+            Thread.sleep(100)
+        }
+        return false
+    }
+
     @Synchronized override fun launchApp(component: String): Boolean {
         val value = ComponentName.unflattenFromString(component) ?: return false
         val id = inputDisplayId() ?: return false
-        return start(value, id, mode == "desktop")
+        // Ordinary second displays do not reliably support OEM freeform. Launch fullscreen
+        // first so an unsupported windowing mode cannot strand the user on an empty wallpaper.
+        if (!start(value, id, nativeDexMirror != null) && !start(value, id, false)) return false
+        // am start may succeed while an OEM redirects the activity to another display.
+        repeat(12) {
+            @Suppress("DEPRECATION")
+            val tasks = (shell.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getRunningTasks(100)
+            if (tasks.any { task ->
+                task.topActivity?.packageName == value.packageName && runCatching { task.javaClass.getField("displayId").getInt(task) == id }.getOrDefault(false)
+            }) return true
+            Thread.sleep(100)
+        }
+        return false
+    }
+
+    @Synchronized override fun desktopTasks(): String {
+        val id = inputDisplayId() ?: return "[]"
+        return try {
+            @Suppress("DEPRECATION")
+            val tasks = (shell.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getRunningTasks(100)
+            val result = org.json.JSONArray()
+            val homes = listOf(Intent.CATEGORY_HOME, Intent.CATEGORY_SECONDARY_HOME).flatMap { category ->
+                shell.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(category), 0)
+                    .map { ComponentName(it.activityInfo.packageName, it.activityInfo.name) }
+            }.toSet()
+            for (task in tasks.filterNotNull()) {
+                val type = task.javaClass
+                if (type.getField("displayId").getInt(task) != id) continue
+                val component = type.getField("topActivity").get(task) as? ComponentName ?: continue
+                if (component.packageName == "com.alkaidlab.sunshine") continue
+                if (component in homes) continue
+                result.put(JSONObject().put("id", type.getField("taskId").getInt(task)).put("component", component.flattenToString()))
+            }
+            result.toString()
+        } catch (_: Exception) { "[]" }
+    }
+
+    @Synchronized override fun desktopAction(action: String, taskId: Int): Boolean {
+        val id = inputDisplayId() ?: return false
+        return when (action) {
+            "back" -> injectKey(KeyEvent.KEYCODE_BACK, true, 0) && injectKey(KeyEvent.KEYCODE_BACK, false, 0)
+            "home" -> if (nativeDexMirror != null) injectKey(KeyEvent.KEYCODE_HOME, true, 0) && injectKey(KeyEvent.KEYCODE_HOME, false, 0)
+                // A floating OEM task may stay above HOME. The owned app chooser
+                // remains usable above it without closing or minimizing user tasks.
+                else desktopAction("apps", -1)
+            "apps" -> {
+                val apps = shell.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                    .filter { it.activityInfo.exported && it.activityInfo.enabled && it.activityInfo.packageName != "com.alkaidlab.sunshine" }
+                    .distinctBy { it.activityInfo.packageName to it.activityInfo.name }.sortedBy { it.loadLabel(shell.packageManager).toString() }
+                controls?.choose("全部应用", apps.map { it.loadLabel(shell.packageManager).toString() to
+                    "launch:${ComponentName(it.activityInfo.packageName, it.activityInfo.name).flattenToString()}" })
+                controls != null
+            }
+            "tasks" -> {
+                val tasks = org.json.JSONArray(desktopTasks())
+                controls?.choose("最近任务", (0 until tasks.length()).map { index ->
+                    val task = tasks.getJSONObject(index)
+                    val component = ComponentName.unflattenFromString(task.getString("component"))!!
+                    val label = runCatching { shell.packageManager.getApplicationLabel(shell.packageManager.getApplicationInfo(component.packageName, 0)).toString() }
+                        .getOrDefault(component.packageName)
+                    label to "focus:${task.getInt("id") }"
+                })
+                controls != null
+            }
+            "quick" -> {
+                controls?.choose("快捷控制", listOf("全部应用" to "apps", "最近任务" to "tasks", "网络设置" to "settings_wifi",
+                    "声音设置" to "settings_sound", "显示设置" to "settings_display", "回到主屏查看通知" to "exit"))
+                controls != null
+            }
+            "settings_wifi", "settings_sound", "settings_display" -> {
+                val setting = when (action) {
+                    "settings_wifi" -> android.provider.Settings.ACTION_WIFI_SETTINGS
+                    "settings_sound" -> android.provider.Settings.ACTION_SOUND_SETTINGS
+                    else -> android.provider.Settings.ACTION_DISPLAY_SETTINGS
+                }
+                Intent(setting).resolveActivity(shell.packageManager)?.let { launchApp(it.flattenToString()) } ?: false
+            }
+            "focus" -> {
+                val tasks = org.json.JSONArray(desktopTasks())
+                if ((0 until tasks.length()).none { tasks.getJSONObject(it).optInt("id", -1) == taskId }) false
+                else try { !command("am", "task", "focus", taskId.toString()).contains("Error") } catch (_: Exception) { false }
+            }
+            else -> when {
+                action.startsWith("focus:") -> action.removePrefix("focus:").toIntOrNull()?.let { desktopAction("focus", it) } ?: false
+                action.startsWith("launch:") -> launchApp(action.removePrefix("launch:"))
+                else -> false
+            }
+        }
+    }
+
+    @Synchronized override fun showDesktopControls(callback: ISunshineDesktopCallback): Boolean {
+        // The shell service can remain bound between streams. A primary screen
+        // (including screen-off streaming) must never acquire desktop controls.
+        if (mode != "desktop" || (display == null && nativeDexMirror == null) || owner?.isBinderAlive != true) {
+            controls?.close(); controls = null
+            return false
+        }
+        val id = inputDisplayId() ?: return false
+        controls?.close(); controls = null
+        val target = (shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager).getDisplay(id) ?: return false
+        val overlay = DesktopControlOverlay(shell.createDisplayContext(target), action = { action ->
+            try { callback.reportStatus("Action received: $action") } catch (_: Exception) {}
+            if (action == "exit") try { callback.requestExit() } catch (_: Exception) {}
+            else handler.post {
+                val applied = desktopAction(action, -1)
+                try { callback.reportStatus("Action completed: $action = $applied") } catch (_: Exception) {}
+            }
+        }, report = { status -> try { callback.reportStatus(status) } catch (_: Exception) {} })
+        return try {
+            overlay.show()
+            var visible = false
+            for (attempt in 0 until 4) {
+                if (overlay.isVisibleOn(id)) { visible = true; break }
+                Thread.sleep(100)
+            }
+            check(visible) { "控制条被系统隐藏，未在目标屏幕显示" }
+            if (standaloneDex != null && nativeDexMirror?.source?.displayId == Display.DEFAULT_DISPLAY) desktopAction("home", -1)
+            controls = overlay; true
+        } catch (e: Exception) {
+            overlay.close(); details.add("控制条不可用：${e.message}；可从主机通知退出桌面"); false
+        }
     }
 
     private fun setPanelPower(value: Int) {
@@ -299,9 +416,12 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
 
     @Synchronized override fun closeDisplay() {
         var restoreError: Exception? = null
+        mode = ""
+        controls?.close(); controls = null
         if (panelOff) try { setPanelPower(2); panelOff = false } catch (e: Exception) { restoreError = e }
         try { nativeDexMirror?.close() } catch (e: Exception) { restoreError = e } finally { nativeDexMirror = null }
         try { localDex?.close() } catch (e: Exception) { restoreError = e } finally { localDex = null }
+        try { standaloneDex?.close() } catch (e: Exception) { restoreError = e } finally { standaloneDex = null }
         try { virtualWake?.release() } catch (_: Exception) {}; virtualWake = null
         try { wake?.release() } catch (_: Exception) {}; wake = null
         try { display?.release() } catch (_: Exception) {}; display = null
@@ -314,6 +434,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         dexActive = false
         launcher = ""
         details.clear()
+        dexRouteDetail = ""
         if (restoreError != null) throw IllegalStateException("显示恢复失败：${restoreError.message}", restoreError)
     }
 
@@ -342,9 +463,10 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         @Suppress("DEPRECATION")
         nativeDisplay?.getRealMetrics(nativeMetrics)
         return JSONObject().put("display_id", inputDisplayId() ?: -1)
-        .put("protocol_version", 6).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
-        .put("local_dex_pending", localDex != null && nativeDexMirror == null)
-        .put("local_dex_ready", localDex != null && nativeDisplay != null)
+        .put("protocol_version", 8).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
+        .put("local_dex_pending", (localDex != null || standaloneDex != null) && nativeDexMirror == null)
+        .put("local_dex_ready", (localDex != null || standaloneDex != null) && nativeDisplay != null)
+        .put("dex_route_detail", dexRouteDetail).put("desktop_controls", controls != null)
         .put("native_dex_width", nativeMetrics.widthPixels).put("native_dex_height", nativeMetrics.heightPixels)
         .put("local_dex_stage", localDex?.stage ?: "idle").put("local_dex_error", localDex?.failure?.message ?: "")
         .put("launcher", launcher).put("mode", mode).put("panel_off", panelOff)
@@ -358,7 +480,20 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     @Synchronized override fun prepareLocalDex(owner: IBinder): Boolean {
         if (!Build.MANUFACTURER.equals("samsung", true) || NativeDexMirror.activeDisplay(shell) != null ||
             NativeDexMirror.hasExternalConnection(shell)) return false
-        localDex?.let { return true }
+        if (localDex != null || standaloneDex != null) return true
+        val route = SamsungDexPolicy.route(true, false, false, SamsungLocalDex.supported(shell), SamsungStandaloneDex.supported())
+        if (route == SamsungDexPolicy.Route.STANDALONE) {
+            val receiver = SamsungStandaloneDex(shell)
+            try {
+                receiver.start(); attachOwner(owner); standaloneDex = receiver
+                dexRouteDetail = "正在启动平板主屏 DeX；退出时恢复本次切换"
+                return true
+            } catch (e: Exception) { receiver.close(); throw e }
+        }
+        if (route == SamsungDexPolicy.Route.COMPATIBLE) {
+            dexRouteDetail = "当前固件没有可用的无外屏原生 DeX 入口，使用带应用与导航的兼容桌面"
+            return false
+        }
         val manager = shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val wifi = DisplayManager::class.java.getMethod("getWifiDisplayStatus").invoke(manager)
         check(wifi.javaClass.getMethod("getActiveDisplayState").invoke(wifi) == 0) { "请先结束现有无线投屏" }
