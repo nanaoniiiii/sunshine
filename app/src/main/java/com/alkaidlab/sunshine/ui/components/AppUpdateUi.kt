@@ -15,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.update.AppUpdater
 import kotlinx.coroutines.launch
@@ -47,9 +46,7 @@ fun AppUpdateDialog() {
             installing = true
             try {
                 val file = AppUpdater.installationFile() ?: return@launch
-                val uri = FileProvider.getUriForFile(context, "${context.packageName}.updates", file)
-                context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                context.startActivity(com.alkaidlab.sunshine.update.UpdateInstaller.intent(context, file))
             } catch (e: Exception) { AppUpdater.installationError("无法打开安装界面：${e.message}") }
             finally { installing = false }
         }
