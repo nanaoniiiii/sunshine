@@ -98,11 +98,23 @@ class SunshineFrameDispatcher {
         if (sourceIsVirtual) virtualSourceFrameLimit.toFloat() else sourceRefreshRate)
 
     fun frameProgress(threadId: Long, presentationTimeUs: Long, released: Boolean) {
-        glHandler?.post {
-            val target = clientTargets.find { it.threadId == threadId } ?: return@post
-            val freed = if (released) target.budget.complete(presentationTimeUs) else target.budget.encoded(presentationTimeUs)
-            if (freed) rescheduleFrame()
+        val handler = glHandler ?: return
+        if (!isRunning) return
+        if (progressMailbox.offer(threadId, presentationTimeUs, released) && !handler.post(progressRunnable)) progressMailbox.clear()
+    }
+
+    private val progressMailbox = FrameProgressMailbox()
+    private val wakeupPlan = FrameWakeupPlan()
+    private val progressRunnable = Runnable {
+        val batch = progressMailbox.drain()
+        if (!isRunning) return@Runnable
+        var freed = false
+        for (progress in batch) {
+            val target = clientTargets.find { it.threadId == progress.key.threadId } ?: continue
+            if (progress.encoded) freed = target.budget.encoded(progress.key.ptsUs) || freed
+            if (progress.released) freed = target.budget.complete(progress.key.ptsUs) || freed
         }
+        if (freed) rescheduleFrame()
     }
 
     @Volatile
@@ -151,7 +163,6 @@ class SunshineFrameDispatcher {
     private var hasDrawnAnyTexture = false
     private var textureVersion = 0L
     private var pendingTexture = false
-    private var frameScheduled = false
     @Volatile private var settings = StreamingSettings()
 
     val targetFps: Int
@@ -225,6 +236,10 @@ class SunshineFrameDispatcher {
             sourceReportedRefreshRate = sourceRefreshRate.takeIf { sourceIsVirtual },
             sourceObservedFps = demonstratedSourceFps,
             sourceFrameLimit = virtualSourceFrameLimit,
+            progressCallbacks = progressMailbox.callbacks,
+            progressBatches = progressMailbox.batches,
+            frameWakeups = wakeupPlan.posts,
+            retainedWakeups = wakeupPlan.retained,
             targets = clientTargets.map { com.alkaidlab.sunshine.data.FrameTargetDiagnostics(
                 it.width, it.height, it.requestedFps, effectiveFps(it.requestedFps), it.measuredFps,
                 it.threadId, it.measuredHandoffMs,
@@ -268,7 +283,7 @@ class SunshineFrameDispatcher {
     }
 
     private val framePumpRunnable = Runnable {
-        frameScheduled = false
+        wakeupPlan.consumed()
         if (!isRunning || !hasDrawnAnyTexture) return@Runnable
         for (target in clientTargets) {
             val dueNs = nextSubmissionNs(target) ?: continue
@@ -313,15 +328,24 @@ class SunshineFrameDispatcher {
 
     private fun scheduleFrame() {
         val handler = glHandler ?: return
-        if (!isRunning || !hasDrawnAnyTexture || frameScheduled) return
-        val dueNs = clientTargets.mapNotNull { nextSubmissionNs(it) }.minOrNull() ?: return
-        val delayNs = (dueNs - System.nanoTime()).coerceAtLeast(0)
-        frameScheduled = handler.postDelayed(framePumpRunnable, (delayNs + 999_999L) / 1_000_000L)
+        if (!isRunning || !hasDrawnAnyTexture) return
+        var earliest: Long? = null
+        for (target in clientTargets) {
+            val due = nextSubmissionNs(target) ?: continue
+            if (earliest == null || due < earliest) earliest = due
+        }
+        when (wakeupPlan.update(earliest)) {
+            FrameWakeupPlan.Change.KEEP -> Unit
+            FrameWakeupPlan.Change.CANCEL -> handler.removeCallbacks(framePumpRunnable)
+            FrameWakeupPlan.Change.POST -> {
+                handler.removeCallbacks(framePumpRunnable)
+                val delayNs = (checkNotNull(earliest) - System.nanoTime()).coerceAtLeast(0)
+                if (!handler.postDelayed(framePumpRunnable, (delayNs + 999_999L) / 1_000_000L)) wakeupPlan.consumed()
+            }
+        }
     }
 
     private fun rescheduleFrame() {
-        glHandler?.removeCallbacks(framePumpRunnable)
-        frameScheduled = false
         scheduleFrame()
     }
 
@@ -356,7 +380,8 @@ class SunshineFrameDispatcher {
                 hasDrawnAnyTexture = false
                 textureVersion = 0
                 pendingTexture = false
-                frameScheduled = false
+                wakeupPlan.reset()
+                progressMailbox.clear(true)
                 synchronized(telemetryLock) {
                     windowStartNs = System.nanoTime()
                     windowCaptures = 0
@@ -400,7 +425,7 @@ class SunshineFrameDispatcher {
                     // The caller detaches the producer first; encoder targets stay alive.
                     handler.removeCallbacks(framePumpRunnable)
                     handler.removeCallbacks(latchFrameRunnable)
-                    frameScheduled = false
+                    wakeupPlan.consumed()
                     pendingTexture = false
                     hasDrawnAnyTexture = false
                     inputSurface?.release()
@@ -552,6 +577,8 @@ class SunshineFrameDispatcher {
         val handler = glHandler
         handler?.removeCallbacks(framePumpRunnable)
         handler?.removeCallbacks(latchFrameRunnable)
+        handler?.removeCallbacks(progressRunnable)
+        progressMailbox.clear()
         handler?.post {
             if (glThread !== thread) return@post
             isRunning = false
@@ -597,7 +624,7 @@ class SunshineFrameDispatcher {
                 SunshineLogManager.log("DISPATCHER_WARN", "GL resource teardown failed: ${e.message}")
             } finally {
                 glHandler = null
-                frameScheduled = false
+                wakeupPlan.consumed()
                 pendingTexture = false
                 hasDrawnAnyTexture = false
                 stopping = false

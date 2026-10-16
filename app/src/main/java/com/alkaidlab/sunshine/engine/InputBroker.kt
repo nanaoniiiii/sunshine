@@ -22,8 +22,18 @@ object InputBroker {
     private var rotationCompat = false
     private var displayRotation = 0
     private var sourceDisplayId = 0
+    private val geometryCache = InputGeometryCache()
+    private val displayMetrics = DisplayMetrics()
+    private var displayManager: android.hardware.display.DisplayManager? = null
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(id: Int) = invalidateGeometry(id)
+        override fun onDisplayChanged(id: Int) = invalidateGeometry(id)
+        override fun onDisplayRemoved(id: Int) = invalidateGeometry(id)
+    }
+    @Synchronized private fun invalidateGeometry(id: Int) { geometryCache.displayChanged(id) }
     @JvmStatic @Synchronized fun setSourceDisplay(id: Int, width: Int, height: Int) {
         sourceDisplayId = id
+        geometryCache.sourceChanged(id)
         setCaptureDimensions(width, height)
         inputWidth = width
         inputHeight = height
@@ -36,7 +46,16 @@ object InputBroker {
     private data class Finger(val androidId: Int, var x: Float, var y: Float, var pressure: Float)
     private val fingers = linkedMapOf<Long, Finger>()
 
-    @JvmStatic @Synchronized fun setContext(value: Context) { context = value.applicationContext; updateDisplayDimensions() }
+    @JvmStatic @Synchronized fun setContext(value: Context) {
+        val app = value.applicationContext
+        if (context !== app || displayManager == null) {
+            displayManager?.unregisterDisplayListener(displayListener)
+            context = app
+            displayManager = app.getSystemService(android.hardware.display.DisplayManager::class.java)
+            displayManager?.registerDisplayListener(displayListener, android.os.Handler(android.os.Looper.getMainLooper()))
+        }
+        updateDisplayDimensions()
+    }
     @JvmStatic @Synchronized fun setCaptureDimensions(width: Int, height: Int) {
         if (width > 0 && height > 0) { captureWidth = width; captureHeight = height }
     }
@@ -44,9 +63,14 @@ object InputBroker {
         if (width > 0 && height > 0) { clientWidth = width; clientHeight = height }
     }
     @JvmStatic @Synchronized fun updateDisplayDimensions() {
-        val display = (context?.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.getDisplay(sourceDisplayId)
+        geometryCache.sourceChanged(sourceDisplayId)
+        ensureDisplayDimensions()
+    }
+    private fun ensureDisplayDimensions() = geometryCache.refresh { readDisplayDimensions() }
+    private fun readDisplayDimensions() {
+        val display = displayManager?.getDisplay(sourceDisplayId)
         if (display != null) {
-            val metrics = DisplayMetrics()
+            val metrics = displayMetrics
             @Suppress("DEPRECATION") display.getRealMetrics(metrics)
             displayRotation = display.rotation
             inputWidth = metrics.widthPixels
@@ -66,12 +90,13 @@ object InputBroker {
             inputWidth = captureWidth; inputHeight = captureHeight
             return
         }
-        val metrics = DisplayMetrics()
+        val metrics = displayMetrics
         @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(metrics)
         setCaptureDimensions(metrics.widthPixels, metrics.heightPixels)
         inputWidth = captureWidth; inputHeight = captureHeight
     }
     private fun position(x: Float, y: Float, width: Int, height: Int): Pair<Float, Float> {
+        ensureDisplayDimensions()
         return CaptureGeometry.mapCapturedPosition(x, y, inputWidth, inputHeight, captureWidth, captureHeight,
             width.coerceAtLeast(1), height.coerceAtLeast(1),
             CaptureGeometry.compatibilityTurn(captureWidth, captureHeight, width, height, displayRotation, rotationCompat))
@@ -89,7 +114,6 @@ object InputBroker {
     }
     @JvmStatic @Synchronized fun nativeTouch(type: Int, id: Long, x: Float, y: Float, pressure: Float, width: Int, height: Int) {
         if (!x.isFinite() || !y.isFinite() || !pressure.isFinite() || width < 1 || height < 1) return
-        updateDisplayDimensions()
         val (px, py) = position(x * width, y * height, width, height)
         when (type) {
             1 -> {
@@ -111,7 +135,7 @@ object InputBroker {
         owned.forEach { id -> emit(if (fingers.size == 1) MotionEvent.ACTION_UP else MotionEvent.ACTION_POINTER_UP, id); fingers.remove(id) }
     }
     @JvmStatic @Synchronized fun absoluteMouse(x: Float, y: Float, width: Int, height: Int) {
-        updateDisplayDimensions(); setActiveClientDimensions(width, height)
+        setActiveClientDimensions(width, height)
         mouseX = x; mouseY = y
         fingers[-1L]?.let { val p = position(x, y, width, height); it.x = p.first; it.y = p.second; emit(MotionEvent.ACTION_MOVE) }
     }

@@ -156,7 +156,11 @@ data class FrameDiagnostics(
     val targets: List<FrameTargetDiagnostics> = emptyList(),
     @SerializedName("source_reported_refresh_rate") val sourceReportedRefreshRate: Float? = null,
     @SerializedName("source_observed_fps") val sourceObservedFps: Int = 0,
-    @SerializedName("source_frame_limit") val sourceFrameLimit: Int = 0
+    @SerializedName("source_frame_limit") val sourceFrameLimit: Int = 0,
+    @SerializedName("progress_callbacks") val progressCallbacks: Long = 0,
+    @SerializedName("progress_batches") val progressBatches: Long = 0,
+    @SerializedName("frame_wakeups") val frameWakeups: Long = 0,
+    @SerializedName("retained_wakeups") val retainedWakeups: Long = 0
 )
 
 data class AudioDiagnostics(

@@ -142,7 +142,7 @@ sunshine_android::BatchResult send_video_batch(platf::batched_send_info_t& info)
         auto ip=info.target_address.to_v6();auto bytes=ip.to_bytes();
         std::copy(bytes.begin(),bytes.end(),address.sin6_addr.s6_addr);address.sin6_scope_id=ip.scope_id();length=sizeof(address);
     }
-    return gate.send([&]{return sunshine_android::send_udp_batch(int(info.native_socket),(sockaddr*)&target,length,info.buffer,info.block_size,info.block_count);});
+    return sunshine_android::send_udp_batch(int(info.native_socket),(sockaddr*)&target,length,info.buffer,info.block_size,info.block_count,&gate);
 }
 void set_audio_source(JNIEnv* env,jobject source) {
     std::lock_guard lock(audio_mutex);

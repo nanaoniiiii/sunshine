@@ -24,8 +24,8 @@ inline int ensure_video_send_buffer(int socket) {
     }
     return current;
 }
-// Peers share one UDP socket. Arbitrate only a bounded batch (at most 16
-// datagrams), never an entire frame or FEC block. FIFO tickets keep a busy
+// Peers share one UDP socket. Arbitrate only a non-blocking syscall (at most
+// 16 datagrams), never the retry backoff, entire frame or FEC block. FIFO tickets keep a busy
 // peer from repeatedly taking newly freed socket space ahead of another peer.
 class DatagramBatchGate {
     std::mutex mutex;
@@ -43,10 +43,16 @@ public:
         } release{*this};
         return operation();
     }
+    template<class Send,class Wait,class Now>
+    BatchResult send_batch(size_t count,Send operation,Wait wait,Now now) {
+        return send_datagram_batch(count,[&](size_t offset,size_t remaining) {
+            return send([&]{return operation(offset,remaining);});
+        },wait,now);
+    }
 };
 
 inline BatchResult send_udp_batch(int socket,const sockaddr* target,socklen_t target_size,
-                                 const char* bytes,size_t stride,size_t count) {
+                                 const char* bytes,size_t stride,size_t count,DatagramBatchGate* gate=nullptr) {
     if(count>16||!stride)return {0,0,0,EINVAL};
     std::array<iovec,16> vectors{};
     std::array<mmsghdr,16> messages{};
@@ -56,11 +62,14 @@ inline BatchResult send_udp_batch(int socket,const sockaddr* target,socklen_t ta
         messages[n].msg_hdr.msg_namelen=target_size;
         messages[n].msg_hdr.msg_iov=&vectors[n];messages[n].msg_hdr.msg_iovlen=1;
     }
-    return send_datagram_batch(count,[&](size_t offset,size_t remaining) {
+    auto send=[&](size_t offset,size_t remaining) {
         int sent=sendmmsg(socket,messages.data()+offset,unsigned(remaining),MSG_DONTWAIT);
         return BatchAttempt{sent,sent<0?errno:0};
-    },[] {std::this_thread::sleep_for(std::chrono::microseconds(100));},[] {
+    };
+    auto wait=[] {std::this_thread::sleep_for(std::chrono::microseconds(100));};
+    auto now=[] {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    });
+    };
+    return gate?gate->send_batch(count,send,wait,now):send_datagram_batch(count,send,wait,now);
 }
 }

@@ -177,6 +177,10 @@ class SunshineRuntimeManager private constructor() {
     } catch (_: Exception) { "{\"apps\":[]}" } }
     fun prepareApp(appId: Int): Boolean { return try {
         val ctx = context ?: return false
+        if (mediaProjection == null) {
+            SunshineLogManager.log("CAPTURE_REQUIRED", "Launch rejected: open Sunshine and grant fresh screen capture consent")
+            return false
+        }
         val app = AppCatalog.read(java.io.File(ctx.filesDir, "apps.json")).apps.firstOrNull { it.id?.toIntOrNull() == appId } ?: return false
         if (app.singleApp && !PrivilegedShell.available()) return false
         app.cmd.isNullOrBlank() || launchAppByCommand(app.cmd)

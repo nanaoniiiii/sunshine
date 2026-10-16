@@ -38,6 +38,7 @@ static void logic(){
     assert(zero.accepted==0&&zero.syscalls==1&&zero.error==EIO);
 }
 static void loopback(int family){
+    DatagramBatchGate gate;
     int receiver=socket(family,SOCK_DGRAM,0),sender=socket(family,SOCK_DGRAM,0);
     assert(receiver>=0&&sender>=0);
     int previous=0;socklen_t option_size=sizeof(previous);
@@ -55,7 +56,7 @@ static void loopback(int family){
     std::vector<char> bytes(stride*total);
     for(size_t n=0;n<total;++n){std::memset(bytes.data()+n*stride,int(n),stride);std::memcpy(bytes.data()+n*stride,&n,sizeof(n));}
     uint32_t syscalls=0;
-    for(size_t n=0;n<total;n+=16){auto result=send_udp_batch(sender,(sockaddr*)&target,length,bytes.data()+n*stride,stride,16);assert(result.accepted==16&&result.error==0);syscalls+=result.syscalls;}
+    for(size_t n=0;n<total;n+=16){auto result=send_udp_batch(sender,(sockaddr*)&target,length,bytes.data()+n*stride,stride,16,&gate);assert(result.accepted==16&&result.error==0);syscalls+=result.syscalls;}
     assert(syscalls==4);std::vector<bool> received(total);
     for(size_t n=0;n<total;++n){std::array<char,stride> packet{};assert(recv(receiver,packet.data(),packet.size(),0)==stride);size_t index;std::memcpy(&index,packet.data(),sizeof(index));assert(index<total&&!received[index]);received[index]=true;assert(!std::memcmp(packet.data(),bytes.data()+index*stride,stride));}
     close(receiver);close(sender);
@@ -73,4 +74,22 @@ static void shared_socket(){
     try{gate.send([]()->int{throw 1;});}catch(int){}
     assert(gate.send([]{return 9;})==9); // Exceptions cannot strand the next peer.
 }
-int main(){logic();shared_socket();loopback(AF_INET);loopback(AF_INET6);}
+static void retry_releases_shared_gate(){
+    DatagramBatchGate gate;
+    std::promise<void> waiting,resume;
+    auto resumed=resume.get_future();int calls=0;int64_t clock=0;
+    auto slow=std::async(std::launch::async,[&]{return gate.send_batch(16,[&](size_t offset,size_t remaining){
+        if(++calls==1){assert(offset==0);return BatchAttempt{4,0};}
+        assert(offset==4);
+        return calls==2?BatchAttempt{-1,EAGAIN}:BatchAttempt{int(remaining),0};
+    },[&]{waiting.set_value();resumed.wait();clock+=100000;},[&]{return clock;});});
+    waiting.get_future().wait();
+    auto other=std::async(std::launch::async,[&]{return gate.send_batch(1,[](size_t,size_t){return BatchAttempt{1,0};},[]{assert(false);},[]{return int64_t(0);});});
+    // The first peer is still in retry backoff. Another peer must be able to
+    // use the shared socket before that wait ends, without duplicating a prefix.
+    assert(other.wait_for(std::chrono::seconds(1))==std::future_status::ready);
+    assert(other.get().accepted==1);
+    resume.set_value();auto result=slow.get();
+    assert(result.accepted==16&&result.retries==1&&result.syscalls==3);
+}
+int main(){logic();shared_socket();retry_releases_shared_gate();loopback(AF_INET);loopback(AF_INET6);}

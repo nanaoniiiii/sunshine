@@ -9,8 +9,10 @@ import java.util.concurrent.TimeUnit
 object SunshineApiClient {
     private const val BASE_URL = "http://127.0.0.1:47990"
 
-    private val okHttpClient: OkHttpClient by lazy {
+    internal val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            // This is the app's own loopback control plane, never an Internet request.
+            .proxy(java.net.Proxy.NO_PROXY)
             .connectTimeout(3, TimeUnit.SECONDS)
             .readTimeout(5, TimeUnit.SECONDS)
             .writeTimeout(5, TimeUnit.SECONDS)

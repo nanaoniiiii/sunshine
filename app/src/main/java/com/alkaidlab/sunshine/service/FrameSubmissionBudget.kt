@@ -13,10 +13,7 @@ class FrameSubmissionBudget(private val limit: Int = 4, private val timeoutNs: L
 
     fun nextAvailableNs(nowNs: Long): Long {
         // MediaCodec reports microseconds; match its PTS precision exactly.
-        val iterator = pending.keys.iterator()
-        while (iterator.hasNext()) if (nowNs - iterator.next() * 1000L >= timeoutNs) {
-            iterator.remove(); expired++
-        }
+        while (pending.isNotEmpty() && nowNs - pending.firstKey() * 1000L >= timeoutNs) { pending.pollFirstEntry(); expired++ }
         pendingCount = pending.size
         return if (pending.size < limit) 0L else pending.firstKey() * 1000L + timeoutNs
     }
@@ -38,10 +35,11 @@ class FrameSubmissionBudget(private val limit: Int = 4, private val timeoutNs: L
         // No B-frames are configured. Once a later PTS emerges, older inputs
         // without output were skipped by the codec. Encoded packets retain
         // their credits until actual send/discard, including out-of-order ACKs.
-        val skipped = pending.headMap(presentationTimeUs).filterValues { !it }.keys.toList()
-        skipped.forEach { pending.remove(it) }
-        encoderSkipped += skipped.size
+        val iterator = pending.headMap(presentationTimeUs).entries.iterator()
+        var skipped = 0
+        while (iterator.hasNext()) if (!iterator.next().value) { iterator.remove(); skipped++ }
+        encoderSkipped += skipped
         pendingCount = pending.size
-        return skipped.isNotEmpty()
+        return skipped > 0
     }
 }
