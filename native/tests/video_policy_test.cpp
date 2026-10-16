@@ -3,6 +3,7 @@
 #include <cassert>
 #include <limits>
 #include <vector>
+#include <thread>
 
 int main() {
     using namespace sunshine_android;
@@ -14,6 +15,9 @@ int main() {
     policy.maximum = 4000;
     assert(policy.bitrate(10000, 7000) == 4000);
     assert(policy.fps(30) == 30 && policy.fps(120) == 90);
+    assert(policy.fps(120,60)==60&&policy.fps(30,60)==30);
+    assert(policy.fps(120,120)==90&&policy.fps(120,0)==90);
+    assert(policy.fps(120,-1)==90&&policy.fps(120,1)==1);
     assert(valid_output_range(3, 5, 8));
     assert(!valid_output_range(-1, 1, 8));
     assert(!valid_output_range(4, 5, 8));
@@ -45,6 +49,9 @@ int main() {
     bool disconnected = false;
     session->disconnect = [&] { disconnected = true; configure_video(5000, 50000, 240); };
     register_video(session);
+    std::thread writer([&]{for(int n=0;n<500;++n)record_video_output(session,100,false,0);});
+    for(int n=0;n<100;++n){auto value=video_snapshot();assert(value.front()=='['&&value.back()==']');assert(value.find("\"session_id\":"+std::to_string(session->id))!=std::string::npos);}
+    writer.join();assert(session->frames==500);
     auto first_id = session->id;
     assert(!control_video(first_id, 1, 11000));
     assert(!control_video(first_id, 1, 4000));

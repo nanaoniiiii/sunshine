@@ -40,6 +40,14 @@ public final class StreamTestActivity extends Activity {
         @Override public boolean onTouchEvent(MotionEvent event) {
             touch = "Touch " + event.getActionMasked() + ": " + Math.round(event.getX()) + "," + Math.round(event.getY());
             Log.i("SunshineVisualTest", touch + " size=" + getWidth() + "x" + getHeight());
+            StringBuilder detail = new StringBuilder("INPUT action=").append(event.getActionMasked())
+                    .append(" index=").append(event.getActionIndex()).append(" count=").append(event.getPointerCount())
+                    .append(" display=").append(getDisplay().getDisplayId()).append(" source=").append(event.getSource());
+            for (int i = 0; i < event.getPointerCount(); i++) {
+                detail.append(" p").append(event.getPointerId(i)).append("=")
+                        .append(event.getRawX(i)).append(",").append(event.getRawY(i));
+            }
+            Log.i("SunshineVisualTest", detail.toString());
             if (event.getActionMasked() == MotionEvent.ACTION_UP) performClick();
             invalidate(); return true;
         }

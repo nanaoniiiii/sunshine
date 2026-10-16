@@ -20,13 +20,30 @@ int main() {
     invalid=bytes; invalid[11]=char(255); assert(!parse_fec_report(invalid));
     assert(nominal_budget(10000,20)==12000 && encoding_budget(12000,35)==8888);
     assert(encoding_budget(nominal_budget(7308,20),20)>=7308); // Integer rounding preserves the initial budget.
+    assert(pacing_budget(12000)==80000&&pacing_budget(60000)==120500);
     assert(pacing_delay_ns(1,1500,1000)==12000000);
     assert(pacing_delay_ns(10,1500,10000)==12000000);
-    assert(keyframe_pacing_kbps(8000,300000,false)==8000);
-    assert(keyframe_pacing_kbps(8000,300000,true)==60000);
-    assert(keyframe_pacing_kbps(8000,1000000,true)==80000);
-    assert(keyframe_pacing_kbps(100000,1000000,true)==100000);
-    assert(keyframe_pacing_kbps(8000,1000,true)==8000);
+    DatagramPacer pacer(10000);
+    for(int n=0;n<16;++n){assert(pacer.wait_ns(0)==0);pacer.account(1500,0);}
+    assert(pacer.wait_ns(0)==19200000); // Full datagrams, including headers/parity.
+    pacer.account(1500,30000000); // Overslept; do not spend accumulated idle credit.
+    for(int n=0;n<15;++n){assert(pacer.wait_ns(30000000)==0);pacer.account(1500,30000000);}
+    assert(pacer.wait_ns(30000000)==19200000);
+    DatagramPacer fragmented(10000);
+    for(int n=0;n<15;++n)fragmented.account(1500,0); // End first FEC block before burst boundary.
+    assert(fragmented.wait_ns(0)==0);fragmented.account(1000,0);
+    assert(fragmented.wait_ns(0)==18800000); // Next FEC block shares the burst and byte budget.
+    assert(frame_pacing_kbps(8000,300000)==120000);
+    assert(frame_pacing_kbps(8000,1000000)==160000);
+    assert(frame_pacing_kbps(200000,1000000)==200000);
+    assert(frame_pacing_kbps(8000,1000)==8000);
+    assert(video_fec_blocks(90,20,6)==1);
+    assert(video_fec_blocks(91,20,6)==3);
+    assert(video_fec_blocks(636,20,6)==3);
+    assert(video_fec_blocks(637,20,6)==4);
+    assert(video_fec_blocks(840,20,6)==4);
+    assert(video_fec_blocks(3000,20,6)==4);
+    assert(video_fec_blocks(400,20,200)==4); // Minimum parity also limits capacity.
     NetworkPolicy policy; policy.initialize(10000,20);
     assert(!policy.feedback(*report,60,0)); // Never accept a frame that wasn't sent.
     policy.last_sent_frame=100; policy.has_sent_frame=true; policy.last_sent_at=0;
@@ -94,4 +111,28 @@ int main() {
     assert(control_video(s->id,1,7000) && !s->network.adaptive);
     unregister_video(s->id);
     assert(!control_video(s->id,4,20));
+    // Exercise the production command path, not only NetworkPolicy::recover.
+    auto adaptive=std::make_shared<VideoSession>();adaptive->negotiated=adaptive->applied=10000;
+    register_video(adaptive);
+    assert(control_video(adaptive->id,1,8000));
+    auto lower=take_video_command(adaptive);assert(lower.bitrate==8000);
+    adaptive->applied=lower.bitrate;
+    assert(control_video(adaptive->id,5,1));
+    const auto tick=video_now_ms();
+    adaptive->network.last_bad=tick-25000;adaptive->network.last_change=tick-6000;
+    adaptive->network.observe_queue(0,0,8000,1000,tick);
+    adaptive->network.observe_rtt(2,8000,1000,tick);
+    auto probe=take_video_command(adaptive);
+    assert(probe.bitrate==8400&&adaptive->desired==8400); // Healthy reduced stream probes upward.
+    assert(take_video_command(adaptive).bitrate==0); // No second command while driver update is pending.
+    adaptive->network.driver_result(probe.bitrate,true);adaptive->applied=probe.bitrate;
+    adaptive->network.last_change=tick-6000;adaptive->last_output=VideoClock::now()-std::chrono::seconds(3);
+    assert(take_video_command(adaptive).bitrate==0); // Idle output cannot establish recovery.
+    adaptive->last_output=VideoClock::now();adaptive->network.rtt_at=tick-6000;
+    assert(take_video_command(adaptive).bitrate==0); // Stale RTT must not probe.
+    adaptive->network.rtt_at=video_now_ms();adaptive->queue.waiting_idr=true;
+    assert(take_video_command(adaptive).bitrate==0); // Decoder recovery is still in progress.
+    adaptive->queue.waiting_idr=false;adaptive->network.enabled(false,video_now_ms());
+    assert(take_video_command(adaptive).bitrate==0); // Manual/default-off operation stays unchanged.
+    unregister_video(adaptive->id);
 }

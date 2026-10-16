@@ -29,15 +29,31 @@ object CaptureGeometry {
 
     fun mapPosition(x: Float, y: Float, sourceWidth: Int, sourceHeight: Int, targetWidth: Int, targetHeight: Int,
                     turn: Int = 0): Pair<Float, Float> {
+        val point = mapPositionUnclamped(x, y, sourceWidth, sourceHeight, targetWidth, targetHeight, turn)
+        return point.first.coerceIn(0f, (sourceWidth - 1).toFloat()) to
+            point.second.coerceIn(0f, (sourceHeight - 1).toFloat())
+    }
+
+    private fun mapPositionUnclamped(x: Float, y: Float, sourceWidth: Int, sourceHeight: Int,
+                                     targetWidth: Int, targetHeight: Int, turn: Int): Pair<Float, Float> {
         val viewport = orientedFit(sourceWidth, sourceHeight, targetWidth, targetHeight, turn)
         val u = ((x - viewport.x) / viewport.width).coerceIn(0f, 1f)
         val v = ((y - viewport.y) / viewport.height).coerceIn(0f, 1f)
-        val point = when (turn) {
+        return when (turn) {
             1 -> v * sourceWidth to (1f - u) * sourceHeight
             3 -> (1f - v) * sourceWidth to u * sourceHeight
             else -> u * sourceWidth to v * sourceHeight
         }
-        return point.first.coerceIn(0f, (sourceWidth - 1).toFloat()) to
-            point.second.coerceIn(0f, (sourceHeight - 1).toFloat())
+    }
+
+    /** Invert encoder fitting first, then the system display's fit into the capture surface. */
+    fun mapCapturedPosition(x: Float, y: Float, displayWidth: Int, displayHeight: Int,
+                            captureWidth: Int, captureHeight: Int, targetWidth: Int, targetHeight: Int,
+                            turn: Int = 0): Pair<Float, Float> {
+        if (displayWidth == captureWidth && displayHeight == captureHeight)
+            return mapPosition(x, y, captureWidth, captureHeight, targetWidth, targetHeight, turn)
+        // Clamp only the final display pixels, so the outer edge remains reachable after scaling.
+        val captured = mapPositionUnclamped(x, y, captureWidth, captureHeight, targetWidth, targetHeight, turn)
+        return mapPosition(captured.first, captured.second, displayWidth, displayHeight, captureWidth, captureHeight)
     }
 }

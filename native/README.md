@@ -37,9 +37,16 @@ python native/build.py --ndk D:/android-sdk-extra/ndk/27.2.12479018 --cmake D:/a
 The ignored `native/.official-build` directory contains the official checkouts,
 verified vendor archives, generated source and both ABI builds. The driver
 rejects altered source revisions. `--install` copies stripped native libraries
-and matching OpenSSL libraries into the APK inputs. `--tests` builds seven Android
+and matching OpenSSL libraries into the APK inputs. `--tests` builds eleven Android
 console test executables for ADB execution, including canvas orientation and
 per-client resolution budgets. APK signing remains separate.
+
+FEC preserves upstream's `deps/obl/autoshim.h` compilation step so ARM64 uses
+NEON rather than silently falling back to scalar arithmetic. `fec_vector_test`
+checks all GF(256) coefficients, unaligned tails, complete parity and loss
+recovery against an independent scalar reference; `fec_scalar_test` builds the
+same upstream algorithm without SIMD for timing comparisons. The reference
+executable is never linked into the engine.
 
 Sunshine's GPLv3 license is in `LICENSE.sunshine`; dependency notices are in
 `licenses/` and packaged in the app's `assets/licenses/`. The upstream

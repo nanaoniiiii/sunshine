@@ -3,6 +3,7 @@
 #include <string>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <boost/property_tree/ptree.hpp>
 #include <openssl/ssl.h>
 namespace android_host {
@@ -27,11 +28,15 @@ bool prepare_app(int id);
 std::string app_catalog();
 void report_error(const std::string& error);
 int avc_profile(const std::string& encoder);
-void stream_started(JNIEnv* env,int width,int height,int fps,int audio_ms,jobject surface,int app_id,const std::string& client_id);
+int bitrate_mode(const std::string& encoder,const std::string& mime);
+void stream_started(JNIEnv* env,int width,int height,int fps,int audio_ms,jobject surface,int app_id,const std::string& client_id,const std::string& client_address);
 void stream_stopped(JNIEnv* env);
 bool stream_paused();
 bool stream_resized(JNIEnv* env,int width,int height,jobject surface);
-void configure_canvas(int width,int height,bool follow);
+void configure_canvas(int width,int height,bool follow,int fps);
+std::shared_ptr<void> retain_channel(void* channel);
+void video_packet_released(int64_t thread_id,int64_t presentation_us);
+void video_frame_progress(int64_t thread_id,int64_t presentation_us,bool released);
 void input_event(const char* name,const char* signature,jvalue* args);
 std::string video_snapshot();
 bool video_control(int64_t session_id,int operation,int value);

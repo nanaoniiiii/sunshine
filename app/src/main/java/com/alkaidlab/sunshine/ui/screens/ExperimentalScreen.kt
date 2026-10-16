@@ -32,7 +32,7 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
             SettingSwitch("第二屏启用三星 DeX", "创建第二屏时尝试启动三星系统桌面", draft?.get("experimental_samsung_dex") == "true", draft != null) {
                 viewModel.editSetting("experimental_samsung_dex", it.toString())
             }
-            Text("系统提供可用的第二屏 DeX 桌面时使用该桌面；暂未提供时继续使用全屏 Sunshine 虚拟桌面。",
+            Text("系统已开启 DeX 时直接串流第二屏。未连接外屏时，尝试启动本机 DeX 接收端；请在手机的 DeX 列表选择 Sunshine Local DeX 并确认。退出会关闭本次本机接收端，已有外接 DeX 会话保留。",
                 color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
         } }
         item { SectionCard("第二屏刷新率", Icons.Default.Speed) {
@@ -49,6 +49,9 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
                 Text(state.launcher, style = MaterialTheme.typography.titleMedium)
                 Text("${state.width} × ${state.height} · ${state.actualRefreshRate} Hz", color = PrimaryCyan)
                 Text("请求刷新率：${state.requestedRefreshRate} Hz", color = TextSecondary)
+                SettingSwitch("关闭主屏面板", "保留第二屏渲染，退出第二屏时恢复主屏", state.mainPanelOff, !state.busy) {
+                    viewModel.setVirtualScreenPanelOff(it)
+                }
                 if (state.detail.isNotBlank()) Text(state.detail, color = TextSecondary)
             } else Text("先选择第二屏模式并连接 Moonlight，再在主页创建虚拟屏。配置在下次创建时生效。", color = TextSecondary)
         } }

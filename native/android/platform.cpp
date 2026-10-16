@@ -1,11 +1,16 @@
 #include "android_host.h"
 #include "platform/common.h"
+#include "encoded_queue.h"
 #include "process.h"
+#include "datagram_retry.h"
+#include "udp_batch_io.h"
 #include <boost/asio/ip/address.hpp>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
+#include <android/log.h>
 #include <thread>
 #include <deque>
 #include <condition_variable>
@@ -113,6 +118,32 @@ public:
 };
 }
 namespace android_host {
+int64_t video_thread_cpu_ns(){timespec value{};clock_gettime(CLOCK_THREAD_CPUTIME_ID,&value);return int64_t(value.tv_sec)*1000000000+value.tv_nsec;}
+void wait_video_packet(void* channel,int64_t nanoseconds) {
+    // Android may rewrite a running process's timer slack when screen/importance
+    // changes. Startup-only tuning cannot protect an already connected peer.
+    auto observed=prctl(PR_GET_TIMERSLACK);
+    bool reset=observed>1&&prctl(PR_SET_TIMERSLACK,1UL)==0;
+    auto applied=reset?prctl(PR_GET_TIMERSLACK):observed;
+    thread_local bool first=true;
+    if(first||observed!=1){record_pacing_slack(channel,observed,applied,reset);first=false;}
+    std::this_thread::sleep_for(std::chrono::nanoseconds(nanoseconds));
+}
+thread_local uint32_t last_datagram_retries=0;
+uint32_t datagram_retries(){return last_datagram_retries;}
+sunshine_android::BatchResult send_video_batch(platf::batched_send_info_t& info) {
+    static sunshine_android::DatagramBatchGate gate;
+    sockaddr_storage target{};socklen_t length;
+    if(info.target_address.is_v4()) {
+        auto& address=(sockaddr_in&)target;address.sin_family=AF_INET;address.sin_port=htons(info.target_port);
+        address.sin_addr.s_addr=htonl(info.target_address.to_v4().to_uint());length=sizeof(address);
+    } else {
+        auto& address=(sockaddr_in6&)target;address.sin6_family=AF_INET6;address.sin6_port=htons(info.target_port);
+        auto ip=info.target_address.to_v6();auto bytes=ip.to_bytes();
+        std::copy(bytes.begin(),bytes.end(),address.sin6_addr.s6_addr);address.sin6_scope_id=ip.scope_id();length=sizeof(address);
+    }
+    return gate.send([&]{return sunshine_android::send_udp_batch(int(info.native_socket),(sockaddr*)&target,length,info.buffer,info.block_size,info.block_count);});
+}
 void set_audio_source(JNIEnv* env,jobject source) {
     std::lock_guard lock(audio_mutex);
     if(audio_source)env->DeleteGlobalRef(audio_source);
@@ -138,7 +169,25 @@ std::unique_ptr<audio_control_t> audio_control(){return std::make_unique<Android
 std::shared_ptr<display_t> display(mem_type_e,const std::string&,const video::config_t&){return nullptr;}
 std::vector<std::string> display_names(mem_type_e){return {"Android Screen"};}
 bool needs_encoder_reenumeration(){return false;}
-void adjust_thread_priority(thread_priority_e priority){setpriority(PRIO_PROCESS,0,priority==thread_priority_e::low?5:0);}
+void adjust_thread_priority(thread_priority_e priority){
+    int requested=priority==thread_priority_e::low?5:
+        (priority==thread_priority_e::high||priority==thread_priority_e::critical?-4:0);
+    // Use Android's thread API so its scheduling-policy bookkeeping accompanies
+    // the nice change. A bare setpriority(0) never promoted latency-sensitive work.
+    android_host::Jvm java;
+    if(java.env&&android_host::bridge) {
+        auto method=java.env->GetStaticMethodID(android_host::bridge,"setWorkerPriority","(I)I");
+        if(method)java.env->CallStaticIntMethod(android_host::bridge,method,jint(requested));
+        if(java.env->ExceptionCheck())java.env->ExceptionClear();
+    }
+    if(priority==thread_priority_e::high||priority==thread_priority_e::critical) {
+        // Android background threads may inherit tens of milliseconds of timer
+        // slack. Packet pacing needs sub-millisecond sleeps on this thread only.
+        auto before=prctl(PR_GET_TIMERSLACK);
+        auto result=prctl(PR_SET_TIMERSLACK,1UL);
+        __android_log_print(ANDROID_LOG_INFO,"SunshinePacing","nice=%d requested=%d timer_slack_ns=%d -> %d result=%d",getpriority(PRIO_PROCESS,0),requested,before,prctl(PR_GET_TIMERSLACK),result);
+    }
+}
 void streaming_will_start(){}
 void streaming_will_stop(){proc::proc.terminate();}
 void restart(){android_host::stopping=true;}
@@ -152,16 +201,22 @@ bool send(send_info_t& info) {
         auto bytes=info.target_address.to_v6().to_bytes();std::copy(bytes.begin(),bytes.end(),address.sin6_addr.s6_addr);
         length=sizeof(address);
     }
-    ssize_t sent;
-    do { sent=sendto(info.native_socket,info.buffer,info.size,0,(sockaddr*)&target,length); } while(sent<0&&errno==EINTR);
-    return sent==ssize_t(info.size);
+    auto result=sunshine_android::send_datagram(info.size,[&] {
+        auto sent=sendto(info.native_socket,info.buffer,info.size,0,(sockaddr*)&target,length);
+        return sunshine_android::DatagramAttempt{sent,sent<0?errno:0};
+    },[] {std::this_thread::sleep_for(std::chrono::microseconds(100));},[] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    });
+    android_host::last_datagram_retries=result.retries;
+    return result.sent;
 }
 bool send_batch(batched_send_info_t& info) {
     // No prefix is sent here: the protocol's individual-send path owns the
     // whole batch and therefore never resends an already delivered prefix.
     return false;
 }
-std::unique_ptr<deinit_t> enable_socket_qos(uintptr_t socket,boost::asio::ip::address&,uint16_t,qos_data_type_e,bool enable) {
+std::unique_ptr<deinit_t> enable_socket_qos(uintptr_t socket,boost::asio::ip::address&,uint16_t,qos_data_type_e type,bool enable) {
+    if(type==qos_data_type_e::video)android_host::record_video_send_buffer(sunshine_android::ensure_video_send_buffer(int(socket)));
     if(enable){int tos=0x88;setsockopt(socket,IPPROTO_IP,IP_TOS,&tos,sizeof(tos));}return nullptr;
 }
 void open_url(const std::string&){}

@@ -50,10 +50,10 @@ class SunshineEngineClient(private val context: Context) {
         val host = object : ISunshineEngineHost.Stub() {
             private fun current() = enabled && generation == epoch
             override fun streamStarted(threadId: Long, width: Int, height: Int, fps: Int,
-                                       packetDuration: Int, surface: Surface, audio: Boolean, appId: Int, clientId: String): IntArray {
+                                       packetDuration: Int, surface: Surface, audio: Boolean, appId: Int, clientId: String, clientAddress: String): IntArray {
                 synchronized(runtime) {
                     if (!current()) { surface.release(); return intArrayOf(width, height) }
-                    runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId, appId, clientId)
+                    runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId, appId, clientId, clientAddress)
                 }
                 mainHandler.post { if (current()) cancelRecovery() }
                 return runtime.getCaptureDimensions(width, height)
@@ -96,6 +96,9 @@ class SunshineEngineClient(private val context: Context) {
                 current() && runtime.resizeStreamSurface(threadId, width, height, surface)
             override fun readAudio(count: Int, mode: Int): FloatArray =
                 if (current()) runtime.readAudio(count, mode) else floatArrayOf()
+            override fun videoFrameProgress(threadId: Long, presentationTimeUs: Long, released: Boolean) {
+                if (current()) runtime.onVideoFrameProgress(threadId, presentationTimeUs, released)
+            }
         }
         val newConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, service: IBinder) {
@@ -111,7 +114,7 @@ class SunshineEngineClient(private val context: Context) {
                         remote.configureVideo(runtime.configuredMinBitrate, runtime.configuredMaxBitrate, runtime.streamingSettings.value.maxFps)
                         val capture = runtime.getCaptureDimensions(1, 1)
                         remote.configureCanvas(capture[0], capture[1], runtime.sourceDisplayId == 0 && runtime.autoRotateEnabled && !runtime.rotationCompatEnabled,
-                            runtime.sourceDisplayId == 0 && runtime.rotationCompatEnabled, runtime.sourceDisplayId)
+                            runtime.sourceDisplayId == 0 && runtime.rotationCompatEnabled, runtime.sourceDisplayId, sourceFrameLimit(runtime))
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
@@ -196,8 +199,14 @@ class SunshineEngineClient(private val context: Context) {
         try { engine?.configureVideo(minimum, maximum, maxFps) } catch (_: RemoteException) {}
     }
     fun configureCanvas(width: Int, height: Int, follow: Boolean, compat: Boolean) {
-        val id = SunshineRuntimeManager.getInstance().sourceDisplayId
-        try { engine?.configureCanvas(width, height, id == 0 && follow && !compat, id == 0 && compat, id) } catch (_: RemoteException) {}
+        val runtime = SunshineRuntimeManager.getInstance()
+        val id = runtime.sourceDisplayId
+        try { engine?.configureCanvas(width, height, id == 0 && follow && !compat, id == 0 && compat, id, sourceFrameLimit(runtime)) } catch (_: RemoteException) {}
+    }
+    private fun sourceFrameLimit(runtime: SunshineRuntimeManager): Int {
+        val state = runtime.virtualScreenState.value
+        if (!state.active || state.mode != "desktop") return 0
+        return runtime.virtualSourceFrameLimit.coerceIn(1, 240)
     }
 
     fun videoSessions(): List<com.alkaidlab.sunshine.data.NativeVideoSession> = try {

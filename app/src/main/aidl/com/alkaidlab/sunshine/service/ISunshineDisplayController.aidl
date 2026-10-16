@@ -9,5 +9,8 @@ interface ISunshineDisplayController {
     boolean injectKey(int keyCode, boolean down, int modifiers) = 4;
     String snapshot() = 5;
     boolean blankMainScreen(IBinder owner) = 6;
+    boolean prepareLocalDex(IBinder owner) = 7;
+    void attachOwner(IBinder owner) = 8;
+    boolean setMainPanelOff(boolean off) = 9;
     void destroy() = 16777114;
 }

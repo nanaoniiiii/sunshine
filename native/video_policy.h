@@ -15,7 +15,10 @@ struct VideoPolicy {
     int bitrate(int negotiated, int override_kbps = 0) const {
         return std::clamp(override_kbps > 0 ? override_kbps : negotiated, floor(negotiated), ceiling(negotiated));
     }
-    int fps(int requested) const { return std::clamp(requested, 1, max_fps); }
+    int fps(int requested,int source_limit=0) const {
+        auto ceiling=source_limit>0?std::min(max_fps,source_limit):max_fps;
+        return std::clamp(requested,1,std::max(1,ceiling));
+    }
 };
 
 // MediaCodec offset/size are signed; check without addition overflow.

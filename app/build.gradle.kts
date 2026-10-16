@@ -17,8 +17,8 @@ android {
         minSdk = 29
         targetSdk = 34
         // Calendar name: vYYYY.MM.DD.N; the independent code increases with each release.
-        versionCode = 20261026
-        versionName = "v2026.10.15.3"
+        versionCode = 20261028
+        versionName = "v2026.10.16.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -8,7 +8,7 @@ interface ISunshineEngine {
     void submitPin(String pin);
     void startAudio(int samplesPerPacket);
     void configureVideo(int minimum, int maximum, int maxFps);
-    void configureCanvas(int sourceWidth, int sourceHeight, boolean followOrientation, boolean rotationCompat, int sourceDisplayId);
+    void configureCanvas(int sourceWidth, int sourceHeight, boolean followOrientation, boolean rotationCompat, int sourceDisplayId, int sourceFps);
     void configureEncoders(String avc, String hevc, in String[] avcNames, in String[] hevcNames);
     String videoSnapshot();
     boolean controlVideo(long sessionId, int operation, int value);

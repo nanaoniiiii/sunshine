@@ -134,7 +134,10 @@ data class FrameTargetDiagnostics(
     @SerializedName("measured_fps") val measuredFps: Double,
     @SerializedName("thread_id") val threadId: Long = 0,
     @SerializedName("gpu_handoff_ms") val gpuHandoffMs: Double? = null,
-    val viewport: List<Int> = emptyList()
+    val viewport: List<Int> = emptyList(),
+    @SerializedName("in_flight_frames") val inFlightFrames: Int = 0,
+    @SerializedName("submission_timeouts") val submissionTimeouts: Long = 0,
+    @SerializedName("encoder_skipped_inputs") val encoderSkippedInputs: Long = 0
 )
 
 data class FrameDiagnostics(
@@ -150,7 +153,10 @@ data class FrameDiagnostics(
     @SerializedName("handoff_max_ms") val handoffMaxMs: Double = 0.0,
     @SerializedName("capture_age_ms") val captureAgeMs: Double? = null,
     @SerializedName("pending_texture_limit") val pendingTextureLimit: Int = 1,
-    val targets: List<FrameTargetDiagnostics> = emptyList()
+    val targets: List<FrameTargetDiagnostics> = emptyList(),
+    @SerializedName("source_reported_refresh_rate") val sourceReportedRefreshRate: Float? = null,
+    @SerializedName("source_observed_fps") val sourceObservedFps: Int = 0,
+    @SerializedName("source_frame_limit") val sourceFrameLimit: Int = 0
 )
 
 data class AudioDiagnostics(
@@ -214,6 +220,7 @@ data class NativeVideoSession(
     @SerializedName("requested_height") val requestedHeight: Int = 0,
     @SerializedName("encoded_height") val encodedHeight: Int = 0,
     @SerializedName("canvas_reconfigurations") val canvasReconfigurations: Long = 0,
+    @SerializedName("encoder_reconfigurations") val encoderReconfigurations: Long = 0,
     @SerializedName("queue_frames") val queueFrames: Int = 0,
     @SerializedName("queue_bytes") val queueBytes: Long = 0,
     @SerializedName("queue_peak_frames") val queuePeakFrames: Int = 0,
@@ -232,8 +239,22 @@ data class NativeVideoSession(
     @SerializedName("sent_udp_payload_bytes") val sentUdpPayloadBytes: Long = 0,
     @SerializedName("sent_udp_payload_kbps") val sentUdpPayloadKbps: Double = 0.0,
     @SerializedName("send_errors") val sendErrors: Long = 0,
+    @SerializedName("last_send_errno") val lastSendErrno: Int = 0,
+    @SerializedName("socket_send_buffer_bytes") val socketSendBufferBytes: Int = 0,
+    @SerializedName("send_buffer_retries") val sendBufferRetries: Long = 0,
+    @SerializedName("send_syscalls") val sendSyscalls: Long = 0,
     @SerializedName("actual_parity_ratio") val actualParityRatio: Double? = null,
-    @SerializedName("network_control_updates") val networkControlUpdates: Long = 0
+    @SerializedName("network_control_updates") val networkControlUpdates: Long = 0,
+    @SerializedName("peak_frame_bytes") val peakFrameBytes: Long = 0,
+    @SerializedName("peak_keyframe_bytes") val peakKeyframeBytes: Long = 0,
+    @SerializedName("fec_skipped_blocks") val fecSkippedBlocks: Long = 0,
+    @SerializedName("bitrate_mode") val bitrateMode: Int = 1,
+    @SerializedName("pacing_timer_slack_ns") val pacingTimerSlackNs: Long = -1,
+    @SerializedName("pacing_timer_slack_peak_ns") val pacingTimerSlackPeakNs: Long = -1,
+    @SerializedName("pacing_timer_slack_resets") val pacingTimerSlackResets: Long = 0,
+    @SerializedName("frame_prepare_p95_ms") val framePrepareP95Ms: Double? = null,
+    @SerializedName("packet_header_p95_ms") val packetHeaderP95Ms: Double? = null,
+    @SerializedName("frame_cpu_p95_ms") val frameCpuP95Ms: Double? = null
 )
 
 data class EncoderCapability(

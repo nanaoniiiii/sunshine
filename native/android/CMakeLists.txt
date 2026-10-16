@@ -15,6 +15,11 @@ add_subdirectory(${SUNSHINE_SOURCE_DIR}/third-party/moonlight-common-c/enet enet
 file(GLOB OPUS_HEADERS "${OPUS_SOURCE_DIR}/include/*.h")
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/include/opus")
 file(COPY ${OPUS_HEADERS} DESTINATION "${CMAKE_BINARY_DIR}/include/opus")
+set(NANORS_SOURCE ${SUNSHINE_SOURCE_DIR}/third-party/nanors/rs.c)
+# Preserve upstream's SIMD dispatch. Without its forced include ARM64 silently
+# compiles the scalar FEC path, which becomes expensive under screen-off limits.
+set_source_files_properties(${NANORS_SOURCE} PROPERTIES COMPILE_OPTIONS
+    "-include;${SUNSHINE_SOURCE_DIR}/third-party/nanors/deps/obl/autoshim.h;-ftree-vectorize")
 add_library(sunshine_core STATIC
     ${SUNSHINE_SOURCE_DIR}/src/config.cpp
     ${SUNSHINE_SOURCE_DIR}/src/network.cpp
@@ -28,7 +33,7 @@ add_library(sunshine_core STATIC
     ${SUNSHINE_SOURCE_DIR}/src/file_handler.cpp
     ${SUNSHINE_SOURCE_DIR}/src/stat_trackers.cpp
     ${SUNSHINE_SOURCE_DIR}/third-party/moonlight-common-c/src/RtspParser.c
-    ${SUNSHINE_SOURCE_DIR}/third-party/nanors/rs.c)
+    ${NANORS_SOURCE})
 target_include_directories(sunshine_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${SUNSHINE_SOURCE_DIR} ${SUNSHINE_SOURCE_DIR}/src
@@ -47,9 +52,17 @@ add_library(sunshine SHARED host.cpp platform.cpp codec.cpp)
 target_link_libraries(sunshine PRIVATE sunshine_core)
 target_link_options(sunshine PRIVATE -Wl,--no-undefined)
 if(SUNSHINE_ANDROID_TESTS)
-    foreach(test native_audio video_policy network_policy fresh_video_queue encoder_selection audio_packetizer canvas_policy)
+    foreach(test native_audio video_policy network_policy fresh_video_queue encoder_selection audio_packetizer canvas_policy datagram_retry datagram_batch)
         add_executable(${test}_test ../tests/${test}_test.cpp)
         target_include_directories(${test}_test PRIVATE ..)
         target_compile_options(${test}_test PRIVATE -UNDEBUG)
     endforeach()
+    add_executable(fec_vector_test ../tests/fec_vector_test.cpp ${NANORS_SOURCE})
+    target_include_directories(fec_vector_test PRIVATE
+        ${SUNSHINE_SOURCE_DIR}/third-party/nanors ${SUNSHINE_SOURCE_DIR}/third-party/nanors/deps/obl)
+    target_compile_options(fec_vector_test PRIVATE -UNDEBUG)
+    add_executable(fec_scalar_test ../tests/fec_vector_test.cpp ../tests/fec_scalar_reference.c)
+    target_include_directories(fec_scalar_test PRIVATE
+        ${SUNSHINE_SOURCE_DIR}/third-party/nanors ${SUNSHINE_SOURCE_DIR}/third-party/nanors/deps/obl)
+    target_compile_options(fec_scalar_test PRIVATE -UNDEBUG)
 endif()

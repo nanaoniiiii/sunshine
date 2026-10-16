@@ -4,6 +4,42 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FramePacerTest {
+    @org.junit.Test fun virtualFramesWaitForFreshBuffersButKeepStaticStreamsAlive() {
+        val previous = 1_000_000_000L
+        val deadline = previous + 16_666_666L
+        org.junit.Assert.assertEquals(previous + 250_000_000L,
+            FramePacer.nextSubmissionNs(deadline, previous, true, true, true))
+        org.junit.Assert.assertEquals(deadline,
+            FramePacer.nextSubmissionNs(deadline, previous, false, true, true))
+        org.junit.Assert.assertEquals(deadline,
+            FramePacer.nextSubmissionNs(deadline, previous, true, true, false))
+        org.junit.Assert.assertNull(FramePacer.nextSubmissionNs(deadline, previous, true, false, true))
+        org.junit.Assert.assertEquals(previous + 500_000_000L,
+            FramePacer.nextSubmissionNs(previous + 500_000_000L, previous, true, true, true))
+    }
+    @org.junit.Test fun virtualSourcesUseActualRefreshWithoutLimitingPrimaryOrRealHighRefresh() {
+        org.junit.Assert.assertEquals(60, FramePacer.effectiveFps(120, 240, true, 60f))
+        org.junit.Assert.assertEquals(60, FramePacer.effectiveFps(120, 240, true, 59.94f))
+        org.junit.Assert.assertEquals(120, FramePacer.effectiveFps(120, 240, true, 120f))
+        org.junit.Assert.assertEquals(30, FramePacer.effectiveFps(30, 240, true, 60f))
+        org.junit.Assert.assertEquals(45, FramePacer.effectiveFps(120, 45, true, 60f))
+        org.junit.Assert.assertEquals(120, FramePacer.effectiveFps(120, 240, false, 60f))
+        org.junit.Assert.assertEquals(60, FramePacer.effectiveFps(120, 240, true, Float.NaN))
+        org.junit.Assert.assertEquals(60, FramePacer.effectiveFps(120, 240, true, 0f))
+    }
+
+    @org.junit.Test fun changingToVirtualSourceStopsDoubleRateRepeatsAndRestoresPrimaryRate() {
+        val pacer = FramePacer(120)
+        pacer.setFps(FramePacer.effectiveFps(120, 240, true, 60f))
+        var submissions = 0
+        for (ms in 0 until 1000) if (pacer.isDue(ms * 1_000_000L)) {
+            submissions++; pacer.advance(ms * 1_000_000L)
+        }
+        org.junit.Assert.assertEquals(60, submissions)
+        pacer.setFps(FramePacer.effectiveFps(120, 240, false, 60f))
+        org.junit.Assert.assertEquals(120, pacer.fps)
+        org.junit.Assert.assertTrue(pacer.isDue(1_000_000_000L))
+    }
     @Test fun mixedClientsKeepTheirRatesWhenCaptureIsFaster() {
         val clients = listOf(FramePacer(30), FramePacer(60), FramePacer(120))
         val submitted = IntArray(clients.size)

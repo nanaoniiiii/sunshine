@@ -127,6 +127,15 @@ class SunshineApiServer(
                     val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().exitVirtualScreen() }
                     jsonResponse(SimpleStatusResponse(result.applied.toString(), result.message))
                 }
+                uri == "/api/virtual-screen/panel" && method == Method.POST -> {
+                    val value = try { com.google.gson.JsonParser.parseString(parseBody(session)).asJsonObject["off"] } catch (_: Exception) { null }
+                    if (value == null || !value.isJsonPrimitive || !value.asJsonPrimitive.isBoolean)
+                        newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json", "{\"error\":\"off must be a boolean\"}")
+                    else {
+                        val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().setVirtualScreenPanelOff(value.asBoolean) }
+                        jsonResponse(SimpleStatusResponse(result.applied.toString(), result.message))
+                    }
+                }
                 uri.startsWith("/api/runtime/sessions/") && method == Method.POST -> handleVideoControl(session)
                 uri == "/api/encoders" && method == Method.GET -> jsonResponse(mapOf("encoders" to com.alkaidlab.sunshine.service.EncoderCapabilities.encoders))
                 uri == "/api/diagnostics" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().diagnostics())
@@ -145,7 +154,9 @@ class SunshineApiServer(
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
-        wm.defaultDisplay.getRealMetrics(metrics)
+        val primary = (context.getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager)
+            .getDisplay(android.view.Display.DEFAULT_DISPLAY)
+        (primary ?: wm.defaultDisplay).getRealMetrics(metrics)
 
         val devices = listOf(
             DisplayDeviceNode("0", "Android Screen: ${metrics.widthPixels}x${metrics.heightPixels} @ ${metrics.densityDpi}dpi")

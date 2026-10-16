@@ -39,10 +39,43 @@ static void call_void(const char* method,const char* signature,jvalue* args=null
 }
 void pin_requested(){call_void("onPinRequested","()V");}
 void input_activity(){call_void("onRemoteInput","()V");}
+void video_frame_progress(int64_t thread_id,int64_t presentation_us,bool released) {
+    if(!vm||!bridge)return;
+    // Attach native senders once. Re-query GetEnv on each call: queue destruction
+    // can also run on a thread whose outer scoped Jvm has since detached.
+    struct Attachment {
+        bool owned=false;
+        ~Attachment(){if(owned)vm->DetachCurrentThread();}
+        JNIEnv* current(){
+            JNIEnv* env=nullptr;
+            if(vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6)==JNI_EDETACHED) {
+                if(vm->AttachCurrentThread(&env,nullptr)!=JNI_OK)return nullptr;
+                owned=true;
+            }
+            return env;
+        }
+    };
+    thread_local Attachment attachment;
+    auto env=attachment.current();if(!env)return;
+    auto method=env->GetStaticMethodID(bridge,"onVideoFrameProgress","(JJZ)V");
+    if(method)env->CallStaticVoidMethod(bridge,method,jlong(thread_id),jlong(presentation_us),jboolean(released));
+    if(env->ExceptionCheck())env->ExceptionClear();
+}
+void video_packet_released(int64_t thread_id,int64_t presentation_us){video_frame_progress(thread_id,presentation_us,true);}
 void client_discovered(const std::string& address) {
     Jvm java;if(!java.env)return;
     auto text=java.env->NewStringUTF(address.c_str());jvalue args[1];args[0].l=text;
     call_void("onClientPaired","(Ljava/lang/String;)V",args);java.env->DeleteLocalRef(text);
+}
+int bitrate_mode(const std::string& encoder,const std::string& mime) {
+    Jvm java;if(!java.env||!bridge)return 1;
+    auto name=java.env->NewStringUTF(encoder.c_str());
+    auto type=java.env->NewStringUTF(mime.c_str());
+    auto method=java.env->GetStaticMethodID(bridge,"getBitrateMode","(Ljava/lang/String;Ljava/lang/String;)I");
+    int mode=method?java.env->CallStaticIntMethod(bridge,method,name,type):1;
+    java.env->DeleteLocalRef(name);java.env->DeleteLocalRef(type);
+    if(java.env->ExceptionCheck()){java.env->ExceptionClear();return 1;}
+    return mode==2?2:1;
 }
 void server_uuid(const std::string& uuid) {
     Jvm java;if(!java.env)return;
@@ -138,12 +171,15 @@ int avc_profile(const std::string& encoder) {
     if(java.env->ExceptionCheck()){java.env->ExceptionClear();return 0;}
     return value;
 }
-void stream_started(JNIEnv* env,int w,int h,int fps,int audio_ms,jobject surface,int app_id,const std::string& client) {
+void stream_started(JNIEnv* env,int w,int h,int fps,int audio_ms,jobject surface,int app_id,const std::string& client,const std::string& address) {
     auto text=env->NewStringUTF(client.c_str());
-    jvalue args[8];args[0].i=w;args[1].i=h;args[2].i=fps;args[3].i=audio_ms;
+    auto peer=env->NewStringUTF(address.c_str());
+    jvalue args[9];args[0].i=w;args[1].i=h;args[2].i=fps;args[3].i=audio_ms;
     args[4].l=surface;args[5].z=true;args[6].i=app_id;args[7].l=text;
-    call_void("createVirtualDisplay","(IIIILandroid/view/Surface;ZILjava/lang/String;)V",args);
+    args[8].l=peer;
+    call_void("createVirtualDisplay","(IIIILandroid/view/Surface;ZILjava/lang/String;Ljava/lang/String;)V",args);
     env->DeleteLocalRef(text);
+    env->DeleteLocalRef(peer);
 }
 void stream_stopped(JNIEnv*) {call_void("stopVirtualDisplay","()V");}
 bool stream_paused() {
@@ -238,7 +274,7 @@ extern "C" JNIEXPORT void JNICALL JNI_NAME(setSunshineName)(JNIEnv* e,jclass,jst
 extern "C" JNIEXPORT void JNICALL JNI_NAME(enableH265)(JNIEnv*,jclass){video::active_hevc_mode=2;config::video.hevc_mode=2;}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(submitPin)(JNIEnv* e,jclass,jstring p){nvhttp::pin(android_host::string(e,p));}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureVideo)(JNIEnv*,jclass,jint a,jint b,jint c){android_host::configure_video(a,b,c);}
-extern "C" JNIEXPORT void JNICALL JNI_NAME(configureCanvas)(JNIEnv*,jclass,jint width,jint height,jboolean follow){android_host::configure_canvas(width,height,follow);}
+extern "C" JNIEXPORT void JNICALL JNI_NAME(configureCanvas)(JNIEnv*,jclass,jint width,jint height,jboolean follow,jint fps){android_host::configure_canvas(width,height,follow,fps);}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureEncoders)(JNIEnv* e,jclass,jstring a,jstring b,jobjectArray c,jobjectArray d){android_host::configure_encoders(e,a,b,c,d);}
 extern "C" JNIEXPORT jstring JNICALL JNI_NAME(videoSnapshot)(JNIEnv* e,jclass){return e->NewStringUTF(android_host::video_snapshot().c_str());}
 extern "C" JNIEXPORT jboolean JNICALL JNI_NAME(controlVideo)(JNIEnv*,jclass,jlong id,jint op,jint value){return android_host::video_control(id,op,value);}

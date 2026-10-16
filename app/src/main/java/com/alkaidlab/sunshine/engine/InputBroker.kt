@@ -15,6 +15,8 @@ object InputBroker {
     private var context: Context? = null
     private var captureWidth = 1
     private var captureHeight = 1
+    private var inputWidth = 1
+    private var inputHeight = 1
     private var clientWidth = 1
     private var clientHeight = 1
     private var rotationCompat = false
@@ -23,6 +25,8 @@ object InputBroker {
     @JvmStatic @Synchronized fun setSourceDisplay(id: Int, width: Int, height: Int) {
         sourceDisplayId = id
         setCaptureDimensions(width, height)
+        inputWidth = width
+        inputHeight = height
     }
     @JvmStatic @Synchronized fun setRotationCompatibility(enabled: Boolean) { rotationCompat = enabled }
     private var mouseX = 0f
@@ -40,29 +44,36 @@ object InputBroker {
         if (width > 0 && height > 0) { clientWidth = width; clientHeight = height }
     }
     @JvmStatic @Synchronized fun updateDisplayDimensions() {
-        if (sourceDisplayId != 0) {
-            val display = (context?.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.getDisplay(sourceDisplayId)
-                ?: return
+        val display = (context?.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager)?.getDisplay(sourceDisplayId)
+        if (display != null) {
             val metrics = DisplayMetrics()
             @Suppress("DEPRECATION") display.getRealMetrics(metrics)
             displayRotation = display.rotation
-            setCaptureDimensions(metrics.widthPixels, metrics.heightPixels)
+            inputWidth = metrics.widthPixels
+            inputHeight = metrics.heightPixels
+            // A DeX mirror can fit a landscape system display inside a portrait capture surface.
+            if (sourceDisplayId == 0) setCaptureDimensions(inputWidth, inputHeight)
             return
         }
+        // Never substitute primary-screen metrics for a missing secondary display.
+        if (sourceDisplayId != 0) return
         val wm = context?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager ?: return
         @Suppress("DEPRECATION")
         displayRotation = wm.defaultDisplay.rotation
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
             val bounds = wm.maximumWindowMetrics.bounds
             setCaptureDimensions(bounds.width(), bounds.height())
+            inputWidth = captureWidth; inputHeight = captureHeight
             return
         }
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(metrics)
         setCaptureDimensions(metrics.widthPixels, metrics.heightPixels)
+        inputWidth = captureWidth; inputHeight = captureHeight
     }
     private fun position(x: Float, y: Float, width: Int, height: Int): Pair<Float, Float> {
-        return CaptureGeometry.mapPosition(x, y, captureWidth, captureHeight, width.coerceAtLeast(1), height.coerceAtLeast(1),
+        return CaptureGeometry.mapCapturedPosition(x, y, inputWidth, inputHeight, captureWidth, captureHeight,
+            width.coerceAtLeast(1), height.coerceAtLeast(1),
             CaptureGeometry.compatibilityTurn(captureWidth, captureHeight, width, height, displayRotation, rotationCompat))
     }
     private fun emit(action: Int, changed: Long? = null) {

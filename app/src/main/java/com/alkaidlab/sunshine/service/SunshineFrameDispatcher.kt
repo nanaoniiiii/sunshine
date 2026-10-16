@@ -28,6 +28,7 @@ class SunshineFrameDispatcher {
         val requestedFps: Int,
         val pacer: FramePacer,
         val threadId: Long = 0,
+        val budget: FrameSubmissionBudget = FrameSubmissionBudget(),
         var lastTextureVersion: Long = -1,
         var lastPresentationNs: Long = 0,
         var telemetryFrames: Int = 0,
@@ -67,6 +68,42 @@ class SunshineFrameDispatcher {
         .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(values); position(0) }
     @Volatile var sourceRotation: Int = 0
     @Volatile var sourceIsVirtual: Boolean = false
+        private set
+    @Volatile private var sourceRefreshRate: Float = 60f
+    @Volatile var sourceGeneration: Long = 0
+        private set
+    @Volatile private var demonstratedSourceFps = 0
+    private val sourceCadence = SourceCadenceTracker()
+    private var cadenceGeneration = -1L
+    private var sourceCadenceRaised: ((Long) -> Unit)? = null
+    val virtualSourceFrameLimit: Int
+        get() = if (sourceIsVirtual) maxOf(FramePacer.effectiveFps(240, 240, true, sourceRefreshRate), demonstratedSourceFps) else 0
+    fun setOnSourceCadenceRaisedListener(listener: (Long) -> Unit) { sourceCadenceRaised = listener }
+
+    fun setVirtualSource(enabled: Boolean, refreshRate: Float = 60f) {
+        sourceIsVirtual = enabled
+        sourceRefreshRate = refreshRate
+        demonstratedSourceFps = 0
+        val generation = ++sourceGeneration
+        glHandler?.post {
+            if (sourceGeneration != generation) return@post
+            sourceCadence.reset()
+            cadenceGeneration = generation
+            clientTargets.forEach { it.pacer.setFps(effectiveFps(it.requestedFps)) }
+            rescheduleFrame()
+        }
+    }
+
+    private fun effectiveFps(requested: Int) = FramePacer.effectiveFps(requested, settings.maxFps, sourceIsVirtual,
+        if (sourceIsVirtual) virtualSourceFrameLimit.toFloat() else sourceRefreshRate)
+
+    fun frameProgress(threadId: Long, presentationTimeUs: Long, released: Boolean) {
+        glHandler?.post {
+            val target = clientTargets.find { it.threadId == threadId } ?: return@post
+            val freed = if (released) target.budget.complete(presentationTimeUs) else target.budget.encoded(presentationTimeUs)
+            if (freed) rescheduleFrame()
+        }
+    }
 
     @Volatile
     var isRunning: Boolean = false
@@ -118,7 +155,7 @@ class SunshineFrameDispatcher {
     @Volatile private var settings = StreamingSettings()
 
     val targetFps: Int
-        get() = clientTargets.maxOfOrNull { minOf(it.requestedFps, settings.maxFps) } ?: 0
+        get() = clientTargets.maxOfOrNull { effectiveFps(it.requestedFps) } ?: 0
 
     private val telemetryLock = Any()
     private var windowStartNs = System.nanoTime()
@@ -143,7 +180,7 @@ class SunshineFrameDispatcher {
     fun configure(updated: StreamingSettings) {
         settings = updated
         glHandler?.post {
-            clientTargets.forEach { it.pacer.setFps(minOf(it.requestedFps, updated.maxFps)) }
+            clientTargets.forEach { it.pacer.setFps(effectiveFps(it.requestedFps)) }
             rescheduleFrame()
         }
     }
@@ -185,13 +222,16 @@ class SunshineFrameDispatcher {
             handoffP95Ms = p95 / 1_000_000.0,
             handoffMaxMs = (sorted.lastOrNull() ?: 0L) / 1_000_000.0,
             captureAgeMs = if (lastCaptureNs == 0L) null else (System.nanoTime() - lastCaptureNs) / 1_000_000.0,
+            sourceReportedRefreshRate = sourceRefreshRate.takeIf { sourceIsVirtual },
+            sourceObservedFps = demonstratedSourceFps,
+            sourceFrameLimit = virtualSourceFrameLimit,
             targets = clientTargets.map { com.alkaidlab.sunshine.data.FrameTargetDiagnostics(
-                it.width, it.height, it.requestedFps, minOf(it.requestedFps, settings.maxFps), it.measuredFps,
+                it.width, it.height, it.requestedFps, effectiveFps(it.requestedFps), it.measuredFps,
                 it.threadId, it.measuredHandoffMs,
                 CaptureGeometry.orientedFit(sourceWidth, sourceHeight, it.width, it.height,
                     CaptureGeometry.compatibilityTurn(sourceWidth, sourceHeight, it.width, it.height, sourceRotation, settings.rotationCompat && !sourceIsVirtual)).let { vp ->
                     listOf(vp.x, vp.y, vp.width, vp.height)
-                }) }
+                }, it.budget.pendingCount, it.budget.expired, it.budget.encoderSkipped) }
         )
     }
 
@@ -203,6 +243,16 @@ class SunshineFrameDispatcher {
             restoreDummySurface()
             st.updateTexImage() // SurfaceTexture acquires the newest queued buffer.
             st.getTransformMatrix(texMatrix)
+            if (sourceIsVirtual && cadenceGeneration == sourceGeneration) {
+                sourceCadence.observe(st.timestamp)?.let { fps ->
+                    val previousLimit = virtualSourceFrameLimit
+                    demonstratedSourceFps = fps
+                    if (virtualSourceFrameLimit > previousLimit) {
+                        clientTargets.forEach { it.pacer.setFps(effectiveFps(it.requestedFps)) }
+                        sourceCadenceRaised?.invoke(sourceGeneration)
+                    }
+                }
+            }
             synchronized(telemetryLock) {
                 if (hasDrawnAnyTexture && clientTargets.isNotEmpty() && clientTargets.none { it.lastTextureVersion == textureVersion }) totalCoalesced++
                 windowCaptures++
@@ -220,15 +270,15 @@ class SunshineFrameDispatcher {
     private val framePumpRunnable = Runnable {
         frameScheduled = false
         if (!isRunning || !hasDrawnAnyTexture) return@Runnable
-        val nowNs = System.nanoTime()
         for (target in clientTargets) {
-            if (!target.pacer.isDue(nowNs)) continue
-            if (!settings.repeatFrames && target.lastTextureVersion == textureVersion) continue
+            val dueNs = nextSubmissionNs(target) ?: continue
+            if (System.nanoTime() < dueNs) continue
             val startNs = System.nanoTime()
             // Every submission, including a static-frame repeat, shares the same monotonic clock.
             val timestamp = maxOf(startNs, target.lastPresentationNs + 1)
             val repeated = target.lastTextureVersion == textureVersion
             if (renderSingleTarget(target, timestamp)) {
+                if (target.threadId > 0) target.budget.submitted(timestamp)
                 val elapsedNs = System.nanoTime() - startNs
                 target.lastPresentationNs = timestamp
                 target.lastTextureVersion = textureVersion
@@ -264,8 +314,7 @@ class SunshineFrameDispatcher {
     private fun scheduleFrame() {
         val handler = glHandler ?: return
         if (!isRunning || !hasDrawnAnyTexture || frameScheduled) return
-        val eligible = clientTargets.filter { settings.repeatFrames || it.lastTextureVersion != textureVersion }
-        val dueNs = eligible.minOfOrNull { it.pacer.nextFrameNs } ?: return
+        val dueNs = clientTargets.mapNotNull { nextSubmissionNs(it) }.minOrNull() ?: return
         val delayNs = (dueNs - System.nanoTime()).coerceAtLeast(0)
         frameScheduled = handler.postDelayed(framePumpRunnable, (delayNs + 999_999L) / 1_000_000L)
     }
@@ -276,6 +325,12 @@ class SunshineFrameDispatcher {
         scheduleFrame()
     }
 
+    private fun nextSubmissionNs(target: ClientTarget): Long? {
+        val deadline = FramePacer.nextSubmissionNs(target.pacer.nextFrameNs, target.lastPresentationNs,
+            target.lastTextureVersion == textureVersion, settings.repeatFrames, sourceIsVirtual) ?: return null
+        return if (target.threadId <= 0) deadline else maxOf(deadline, target.budget.nextAvailableNs(System.nanoTime()))
+    }
+
     @Synchronized
     fun start(width: Int, height: Int): Surface {
         if (!isRunning && glThread != null) throw IllegalStateException("Previous GL dispatcher is still stopping")
@@ -283,7 +338,7 @@ class SunshineFrameDispatcher {
         sourceWidth = if (width > 0) width else 1920
         sourceHeight = if (height > 0) height else 1080
 
-        val thread = HandlerThread("Sunshine-GL-Dispatcher")
+        val thread = HandlerThread("Sunshine-GL-Dispatcher", android.os.Process.THREAD_PRIORITY_DISPLAY)
         thread.start()
         glThread = thread
         val handler = Handler(thread.looper)
@@ -384,7 +439,7 @@ class SunshineFrameDispatcher {
                 }
                 val requestedFps = if (fps > 0) fps.coerceAtMost(240) else 60
                 clientTargets.add(ClientTarget(surface, null, width, height, requestedFps,
-                    FramePacer(minOf(requestedFps, settings.maxFps)), threadId))
+                    FramePacer(effectiveFps(requestedFps)), threadId))
                 SunshineLogManager.log("DISPATCHER", "Added ${width}x$height @ ${requestedFps}fps encoder; active=${clientTargets.size}")
             }
             // A new client is immediately due, including when the captured screen is static.
@@ -696,6 +751,9 @@ class SunshineFrameDispatcher {
             destroyTargetEgl(target)
             return false
         }
+        // Encoder surfaces have their own monotonic presentation deadlines.
+        // Do not additionally serialize every client's swap on display vsync.
+        EGL14.eglSwapInterval(dpy, 0)
 
         return try {
             val targetW = target.width

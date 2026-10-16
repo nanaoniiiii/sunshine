@@ -24,7 +24,7 @@ public final class NativeServer {
     public static native void submitPin(String pin);
     public static native void cleanup();
     public static native void configureVideo(int minimum, int maximum, int maxFps);
-    public static native void configureCanvas(int width, int height, boolean followOrientation);
+    public static native void configureCanvas(int width, int height, boolean followOrientation, int sourceFps);
     public static native void configureEncoders(String avc, String hevc, String[] avcNames, String[] hevcNames);
     public static native String videoSnapshot();
     public static native boolean controlVideo(long sessionId, int operation, int value);
@@ -48,11 +48,30 @@ public final class NativeServer {
         return 0;
     }
     public static boolean prepareApp(int appId) { return SunshineEngineBridge.prepareApp(appId); }
+    public static int getBitrateMode(String encoderName, String mime) {
+        try {
+            for (MediaCodecInfo codec : new MediaCodecList(MediaCodecList.ALL_CODECS).getCodecInfos()) {
+                if (codec.isEncoder() && codec.getName().equals(encoderName) &&
+                        codec.getCapabilitiesForType(mime).getEncoderCapabilities().isBitrateModeSupported(
+                                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)) {
+                    return MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR;
+                }
+            }
+        } catch (RuntimeException ignored) { }
+        return MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR;
+    }
     public static void onPinRequested() { SunshineEngineBridge.pinRequested(); }
     public static void onRemoteInput() { SunshineEngineBridge.remoteInput(); }
+    public static int setWorkerPriority(int priority) {
+        try { android.os.Process.setThreadPriority(priority); } catch (RuntimeException ignored) { }
+        return android.os.Process.getThreadPriority(android.os.Process.myTid());
+    }
+    public static void onVideoFrameProgress(long threadId, long presentationTimeUs, boolean released) {
+        SunshineEngineBridge.videoFrameProgress(threadId, presentationTimeUs, released);
+    }
     public static void createVirtualDisplay(int width, int height, int fps, int audioMs,
-            Surface surface, boolean audio, int appId, String clientId) {
-        SunshineEngineBridge.streamStarted(width, height, fps, audioMs, surface, audio, appId, clientId);
+            Surface surface, boolean audio, int appId, String clientId, String clientAddress) {
+        SunshineEngineBridge.streamStarted(width, height, fps, audioMs, surface, audio, appId, clientId, clientAddress);
     }
     public static void stopVirtualDisplay() { SunshineEngineBridge.streamStopped(); }
     public static boolean pauseVirtualDisplay() { return SunshineEngineBridge.streamPaused(); }

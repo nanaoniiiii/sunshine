@@ -155,6 +155,9 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
                 else runtime.createVirtualScreen().message
         }
     }
+    fun setVirtualScreenPanelOff(off: Boolean) {
+        viewModelScope.launch { _statusMessage.value = runtime.setVirtualScreenPanelOff(off).message }
+    }
     fun fullscreenSession(sessionId: Long) {
         viewModelScope.launch {
             _statusMessage.value = runtime.fullscreenSession(sessionId).message

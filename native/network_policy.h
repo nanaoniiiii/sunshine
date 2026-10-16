@@ -29,18 +29,43 @@ inline std::optional<FecReport> parse_fec_report(std::string_view bytes) {
 }
 inline int nominal_budget(int video_kbps, int fec) { return int((int64_t(video_kbps) * (100 + fec) + 99) / 100); }
 inline int encoding_budget(int total_kbps, int fec) { return int(int64_t(total_kbps) * 100 / (100 + fec)); }
-inline int pacing_budget(int video_fec_kbps) { return video_fec_kbps+std::min(500,video_fec_kbps/10); }
-// An oversized IDR paced at the average bitrate can outlive the bounded queue,
-// causing an endless IDR/drop cycle. Allow a bounded recovery burst, targeting
-// 40ms and capped at 80Mbps. Encoder/FEC average budgets remain unchanged.
-inline int keyframe_pacing_kbps(int base, uint64_t wire_bytes, bool idr) {
-    if (!idr) return base;
-    auto burst = int(std::min<uint64_t>(80000, (wire_bytes * 8 + 39) / 40));
+// Shape bursts, not the encoder's long-term average. Leave room for parity
+// rounding, codec VBV variation and scheduler overhead instead of creating a
+// second rate-control queue behind the encoder. This is an 80Mbps-or-higher
+// instantaneous burst rate, not a claim about the peer's measured bandwidth.
+inline int pacing_budget(int video_fec_kbps) { return std::max(80000,video_fec_kbps*2+500); }
+// Scene-change P-frames can exceed IDRs in size. Bound the burst estimate for
+// every frame, targeting 20ms and capped at 160Mbps without lowering the base.
+inline int frame_pacing_kbps(int base, uint64_t wire_bytes) {
+    auto burst = int(std::min<uint64_t>(160000, (wire_bytes * 8 + 19) / 20));
     return std::max(base, burst);
+}
+// The protocol supports four FEC blocks. Preserve upstream's three-block split
+// for ordinary large frames, but use the fourth when needed to keep each block
+// within Reed-Solomon's 255-shard limit. Larger frames may still exceed it.
+inline size_t video_fec_blocks(size_t packets,size_t percentage,size_t minimum_parity) {
+    if(packets<=90)return 1;
+    auto capacity=std::max<size_t>(1,std::min(255-std::min<size_t>(254,minimum_parity),25500/(100+percentage)));
+    return std::clamp<size_t>((packets+capacity-1)/capacity,3,4);
 }
 inline int64_t pacing_delay_ns(uint64_t packets, uint64_t packet_bytes, int kbps) {
     return int64_t(packets * packet_bytes * 8000000ULL / uint64_t(std::max(1, kbps)));
 }
+// One instance per complete video frame, shared by its FEC blocks. A late
+// sender starts a new burst from now instead of catching up in a packet flood.
+struct DatagramPacer {
+    int kbps;
+    uint64_t packets=0;
+    static constexpr uint64_t burst_packets=16;
+    int64_t deadline_ns=0;
+    explicit DatagramPacer(int rate):kbps(rate) {}
+    int64_t wait_ns(int64_t now) const { return packets%burst_packets==0?std::max<int64_t>(0,deadline_ns-now):0; }
+    void account(size_t bytes,int64_t now) {
+        if(packets%burst_packets==0)deadline_ns=std::max(deadline_ns,now);
+        deadline_ns+=pacing_delay_ns(1,bytes,kbps);
+        ++packets;
+    }
+};
 struct NetworkPolicy {
     int fec = 20, base_fec = 20, total_budget = 0, pending_fec = -1, pending_target = 0;
     bool adaptive = false;

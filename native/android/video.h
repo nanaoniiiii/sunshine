@@ -6,9 +6,11 @@
 #include "video_colorspace.h"
 #include <vector>
 #include <optional>
+#include <functional>
 namespace video {
 struct packet_raw_t {
-    virtual ~packet_raw_t()=default;
+    virtual ~packet_raw_t(){if(released)released();}
+    std::function<void()> released;
     virtual bool is_idr()=0;
     virtual int64_t frame_index()=0;
     virtual uint8_t* data()=0;
@@ -16,6 +18,8 @@ struct packet_raw_t {
     struct replace_t { std::string_view old,_new; };
     std::vector<replace_t>* replacements=nullptr;
     void* channel_data=nullptr;
+    // A queued/in-flight packet must keep its session alive across disconnect.
+    std::shared_ptr<void> channel_owner;
     bool after_ref_frame_invalidation=false;
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
 };

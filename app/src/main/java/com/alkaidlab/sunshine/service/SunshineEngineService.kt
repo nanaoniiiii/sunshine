@@ -17,6 +17,18 @@ class SunshineEngineService : Service() {
     private var restartPending = false
     override fun onCreate() {
         super.onCreate()
+        // A foreground host binding alone does not give this separate process
+        // its own foreground-service state on Samsung screen-off policies.
+        // Share the existing server notification instead of adding a second one.
+        val notification = androidx.core.app.NotificationCompat.Builder(this, "sunshine_service_channel")
+            .setContentTitle("Sunshine 串流服务")
+            .setContentText("串流引擎运行中")
+            .setSmallIcon(com.alkaidlab.sunshine.R.mipmap.ic_launcher)
+            .setContentIntent(android.app.PendingIntent.getActivity(this, 0,
+                Intent(this, com.alkaidlab.sunshine.ui.MainActivity::class.java), android.app.PendingIntent.FLAG_IMMUTABLE))
+            .setOngoing(true)
+            .build()
+        startForeground(1001, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         // Native input callbacks run here, so the mapper needs this process's
         // actual physical display dimensions as well as the host capture size.
         InputBroker.setContext(this)
@@ -63,10 +75,10 @@ class SunshineEngineService : Service() {
         override fun configureVideo(minimum: Int, maximum: Int, maxFps: Int) {
             NativeServer.configureVideo(minimum, maximum, maxFps)
         }
-        override fun configureCanvas(sourceWidth: Int, sourceHeight: Int, followOrientation: Boolean, rotationCompat: Boolean, sourceDisplayId: Int) {
+        override fun configureCanvas(sourceWidth: Int, sourceHeight: Int, followOrientation: Boolean, rotationCompat: Boolean, sourceDisplayId: Int, sourceFps: Int) {
             com.alkaidlab.sunshine.engine.InputBroker.setSourceDisplay(sourceDisplayId, sourceWidth, sourceHeight)
             com.alkaidlab.sunshine.engine.InputBroker.setRotationCompatibility(rotationCompat)
-            NativeServer.configureCanvas(sourceWidth, sourceHeight, followOrientation)
+            NativeServer.configureCanvas(sourceWidth, sourceHeight, followOrientation, sourceFps)
         }
         override fun configureEncoders(avc: String, hevc: String, avcNames: Array<out String>, hevcNames: Array<out String>) {
             NativeServer.configureEncoders(avc, hevc, avcNames, hevcNames)
@@ -86,7 +98,7 @@ class SunshineEngineService : Service() {
 
     override fun onBind(intent: Intent): IBinder = binder
     override fun onUnbind(intent: Intent): Boolean { terminate(); return false }
-    override fun onDestroy() { terminate(); super.onDestroy() }
+    override fun onDestroy() { stopForeground(STOP_FOREGROUND_DETACH); terminate(); super.onDestroy() }
 
     private fun terminate() {
         // Never call exitServer() on the application's main thread; JNI may block or exit.

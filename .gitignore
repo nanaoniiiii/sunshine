@@ -22,3 +22,7 @@
 /*.png
 /*.xml
 /META-INF/
+
+# Device captures, private pairing data and locally extracted firmware analysis.
+/work/
+/tools/**/__pycache__/

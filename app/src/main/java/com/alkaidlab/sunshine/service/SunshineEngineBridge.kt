@@ -14,12 +14,12 @@ object SunshineEngineBridge {
     @Volatile var host: ISunshineEngineHost? = null
 
     @JvmStatic fun streamStarted(width: Int, height: Int, fps: Int, packetDuration: Int,
-                                 surface: Surface, audio: Boolean, appId: Int, clientId: String) {
+                                 surface: Surface, audio: Boolean, appId: Int, clientId: String, clientAddress: String) {
         synchronized(lock) {
             val threadId = Process.myTid().toLong()
             sessions.started(threadId)
             clientDimensions[threadId] = width to height
-            val capture = host?.streamStarted(threadId, width, height, fps, packetDuration, surface, audio, appId, clientId)
+            val capture = host?.streamStarted(threadId, width, height, fps, packetDuration, surface, audio, appId, clientId, clientAddress)
             InputBroker.setCaptureDimensions(capture?.getOrNull(0) ?: width, capture?.getOrNull(1) ?: height)
             InputBroker.setActiveClientDimensions(width, height)
         }
@@ -48,6 +48,9 @@ object SunshineEngineBridge {
     }
 
     @JvmStatic fun appCatalog(): String = host?.appCatalog() ?: "{\"apps\":[]}"
+    @JvmStatic fun videoFrameProgress(threadId: Long, presentationTimeUs: Long, released: Boolean) {
+        try { host?.videoFrameProgress(threadId, presentationTimeUs, released) } catch (_: RemoteException) {}
+    }
     @JvmStatic fun prepareApp(appId: Int): Boolean = host?.prepareApp(appId) == true
 
     @JvmStatic fun pinRequested() { host?.pinRequested() }

@@ -13,10 +13,25 @@ import java.util.concurrent.TimeUnit
 
 /** Shell-owned display adapter, launched by Sunshine's existing Shizuku authorization. */
 class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.Stub() {
+    // Shizuku 12.x instantiates user services with Class.newInstance(), while
+    // newer starters can supply Context. Both paths use the same shell adapter.
+    constructor() : this(legacySystemContext())
+
+    companion object {
+        private fun legacySystemContext(): Context {
+            val type = Class.forName("android.app.ActivityThread")
+            val activityThread = type.getMethod("currentActivityThread").invoke(null)
+                ?: type.getMethod("systemMain").invoke(null)
+            return type.getMethod("getSystemContext").invoke(activityThread) as Context
+        }
+    }
+
     private val shell = context.createPackageContext("com.android.shell", Context.CONTEXT_IGNORE_SECURITY)
     private val thread = HandlerThread("Sunshine-Virtual-Display").apply { start() }
     private val handler = Handler(thread.looper)
     private var display: VirtualDisplay? = null
+    private var nativeDexMirror: NativeDexMirror? = null
+    private var localDex: SamsungLocalDex? = null
     private var owner: IBinder? = null
     private val died = IBinder.DeathRecipient { destroy() }
     private var panelOff = false
@@ -35,20 +50,62 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     private var dexActive = false
     private val details = mutableListOf<String>()
 
+    @Synchronized override fun attachOwner(owner: IBinder) {
+        if (this.owner == owner) return
+        owner.linkToDeath(died, 0)
+        try { this.owner?.unlinkToDeath(died, 0) } catch (_: Exception) {}
+        this.owner = owner
+    }
+
     @Synchronized override fun createDisplay(width: Int, height: Int, density: Int, surface: Surface, mode: String, owner: IBinder,
         fps: Int, samsungDex: Boolean, highRefresh: Boolean): Int {
         require(width in 240..8192 && height in 240..8192 && density in 120..640)
         require(fps in 15..240)
         require(mode == "desktop")
         check(surface.isValid)
-        check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机，再创建虚拟屏" }
-        closeDisplay()
+        val nativeSamsung = samsungDex && Build.MANUFACTURER.equals("samsung", true)
+        check((nativeSamsung && NativeDexMirror.activeDisplay(shell) != null) ||
+            !(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机，再创建虚拟屏" }
+        // A prepared local receiver must survive the switch from primary capture to its DeX mirror.
+        val preparedLocal = localDex
+        localDex = null
+        try { closeDisplay() } finally { localDex = preparedLocal }
         try {
             this.mode = mode
             details.clear()
             dexRequested = samsungDex
             dexActive = false
             requestedRefreshRate = if (highRefresh) fps else 60
+            if (nativeSamsung) {
+                var nativeDisplay = NativeDexMirror.activeDisplay(shell)
+                if (nativeDisplay == null && NativeDexMirror.hasExternalConnection(shell)) {
+                    try {
+                        nativeDexRequest(1)
+                        for (attempt in 0 until 30) {
+                            nativeDisplay = NativeDexMirror.activeDisplay(shell)
+                            if (nativeDisplay != null) break
+                            Thread.sleep(100)
+                        }
+                        if (nativeDisplay == null) { nativeDexRequest(2); details.add("系统尚未进入 DeX，继续尝试第二屏桌面") }
+                    } catch (e: Exception) { details.add("系统 DeX 进入请求未完成：${(e.cause ?: e).message}") }
+                }
+                if (nativeDisplay != null) {
+                    try {
+                        nativeDexMirror = NativeDexMirror.create(nativeDisplay, width, height, surface)
+                        attachOwner(owner)
+                        dexActive = true
+                        launcher = "三星原生 DeX"
+                        refreshRateRequestSupported = false
+                        details.add(if (localDex != null) "正在串流无 HDMI 的本机原生 DeX；退出将关闭本次本机接收端"
+                            else "正在串流系统 DeX 第二屏；退出串流不会关闭原有 DeX 会话")
+                        return nativeDisplay.displayId
+                    } catch (e: Exception) {
+                        try { nativeDexMirror?.close() } catch (_: Exception) {}
+                        nativeDexMirror = null
+                        details.add("系统 DeX 采集未连接：${(e.cause ?: e).message}")
+                    }
+                }
+            }
             if (mode == "desktop") {
                 desktopBefore = setting("force_desktop_mode_on_external_displays")
                 freeformBefore = setting("enable_freeform_support")
@@ -64,8 +121,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             if (mode == "desktop") flags = flags or flag("VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS")
             display = createSurfaceDisplay(width, height, density, surface, flags)
                 ?: error("系统未创建虚拟屏")
-            this.owner = owner
-            owner.linkToDeath(died, 0)
+            attachOwner(owner)
             wake = (shell.getSystemService(Context.POWER_SERVICE) as PowerManager).newWakeLock(
                 PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "Sunshine:VirtualScreen").apply { acquire() }
             virtualWake = (shell.createDisplayContext(display!!.display).getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -113,8 +169,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         try {
             mode = "screen_off"
             launcher = "原主屏画面"
-            this.owner = owner
-            owner.linkToDeath(died, 0)
+            attachOwner(owner)
             wake = (shell.getSystemService(Context.POWER_SERVICE) as PowerManager)
                 .newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "Sunshine:MainScreenStreaming").apply { acquire() }
             panelOff = true
@@ -124,6 +179,17 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             closeDisplay()
             throw IllegalStateException((e.cause ?: e).message, e)
         }
+    }
+
+    @Synchronized override fun setMainPanelOff(off: Boolean): Boolean {
+        check(mode == "desktop" && (display != null || nativeDexMirror != null)) { "请先创建独立第二屏" }
+        check(owner?.isBinderAlive == true) { "串流宿主已退出" }
+        if (off) check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
+        // Preserve the virtual display, owner watch and wake resources. Putting
+        // display 0 to sleep would let OEM policies demote active stream workers.
+        setPanelPower(if (off) 0 else 2)
+        panelOff = off
+        return true
     }
 
     // A Shizuku UserService has no registered Android application process. The
@@ -138,6 +204,11 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         } finally { process.destroy() }
     }
     private fun setting(key: String): String? = command("settings", "get", "global", key).takeUnless { it == "null" }
+    private fun nativeDexRequest(state: Int) {
+        command("am", "broadcast", "--user", "0", "-a", "com.samsung.android.desktopmode.action.DESKTOP_MODE_UPDATE_REQUEST",
+            "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_STATE", state.toString(),
+            "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_SOURCE", "3")
+    }
     private fun putSetting(key: String, value: String?) {
         if (value == null) command("settings", "delete", "global", key)
         else command("settings", "put", "global", key, value)
@@ -205,7 +276,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
 
     @Synchronized override fun launchApp(component: String): Boolean {
         val value = ComponentName.unflattenFromString(component) ?: return false
-        val id = if (mode == "screen_off" && panelOff) Display.DEFAULT_DISPLAY else display?.display?.displayId ?: return false
+        val id = inputDisplayId() ?: return false
         return start(value, id, mode == "desktop")
     }
 
@@ -229,20 +300,28 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     @Synchronized override fun closeDisplay() {
         var restoreError: Exception? = null
         if (panelOff) try { setPanelPower(2); panelOff = false } catch (e: Exception) { restoreError = e }
+        try { nativeDexMirror?.close() } catch (e: Exception) { restoreError = e } finally { nativeDexMirror = null }
+        try { localDex?.close() } catch (e: Exception) { restoreError = e } finally { localDex = null }
         try { virtualWake?.release() } catch (_: Exception) {}; virtualWake = null
         try { wake?.release() } catch (_: Exception) {}; wake = null
         try { display?.release() } catch (_: Exception) {}; display = null
-        try { owner?.unlinkToDeath(died, 0) } catch (_: Exception) {}; owner = null
+        // Keep the host death watch while idle, including across display changes.
         if (settingsChanged) {
             putSetting("force_desktop_mode_on_external_displays", desktopBefore)
             putSetting("enable_freeform_support", freeformBefore)
             settingsChanged = false
         }
-        if (restoreError != null) throw IllegalStateException("主屏恢复失败：${restoreError.message}", restoreError)
+        dexActive = false
+        launcher = ""
+        details.clear()
+        if (restoreError != null) throw IllegalStateException("显示恢复失败：${restoreError.message}", restoreError)
     }
 
+    private fun inputDisplayId(): Int? = if (mode == "screen_off" && panelOff) Display.DEFAULT_DISPLAY
+        else nativeDexMirror?.source?.displayId ?: display?.display?.displayId
+
     private fun send(event: InputEvent): Boolean { return try {
-        val id = if (mode == "screen_off" && panelOff) Display.DEFAULT_DISPLAY else display?.display?.displayId ?: return false
+        val id = inputDisplayId() ?: return false
         InputEvent::class.java.getMethod("setDisplayId", Int::class.javaPrimitiveType).invoke(event, id)
         if (input == null) {
             val manager = shell.getSystemService(Context.INPUT_SERVICE)
@@ -257,11 +336,44 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         return send(KeyEvent(now, now, if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
             keyCode, 0, modifiers, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD))
     }
-    @Synchronized override fun snapshot(): String = JSONObject().put("display_id", if (mode == "screen_off" && panelOff) 0 else display?.display?.displayId ?: -1)
-        .put("protocol_version", 3).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
+    @Synchronized override fun snapshot(): String {
+        val nativeDisplay = nativeDexMirror?.source ?: NativeDexMirror.activeDisplay(shell)
+        val nativeMetrics = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        nativeDisplay?.getRealMetrics(nativeMetrics)
+        return JSONObject().put("display_id", inputDisplayId() ?: -1)
+        .put("protocol_version", 6).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
+        .put("local_dex_pending", localDex != null && nativeDexMirror == null)
+        .put("local_dex_ready", localDex != null && nativeDisplay != null)
+        .put("native_dex_width", nativeMetrics.widthPixels).put("native_dex_height", nativeMetrics.heightPixels)
+        .put("local_dex_stage", localDex?.stage ?: "idle").put("local_dex_error", localDex?.failure?.message ?: "")
         .put("launcher", launcher).put("mode", mode).put("panel_off", panelOff)
-        .put("requested_refresh_rate", requestedRefreshRate).put("actual_refresh_rate", display?.display?.refreshRate ?: 0f)
+        .put("requested_refresh_rate", requestedRefreshRate).put("actual_refresh_rate", (nativeDexMirror?.source ?: display?.display)?.refreshRate ?: 0f)
+        .put("system_dex_mirror", nativeDexMirror != null)
         .put("refresh_rate_request_supported", refreshRateRequestSupported).put("dex_requested", dexRequested)
         .put("dex_active", dexActive).put("detail", details.joinToString("；")).toString()
+    }
     override fun destroy() { try { closeDisplay() } finally { thread.quitSafely(); System.exit(0) } }
+
+    @Synchronized override fun prepareLocalDex(owner: IBinder): Boolean {
+        if (!Build.MANUFACTURER.equals("samsung", true) || NativeDexMirror.activeDisplay(shell) != null ||
+            NativeDexMirror.hasExternalConnection(shell)) return false
+        localDex?.let { return true }
+        val manager = shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val wifi = DisplayManager::class.java.getMethod("getWifiDisplayStatus").invoke(manager)
+        check(wifi.javaClass.getMethod("getActiveDisplayState").invoke(wifi) == 0) { "请先结束现有无线投屏" }
+        val receiver = SamsungLocalDex(shell)
+        try {
+            receiver.start()
+            attachOwner(owner)
+            localDex = receiver
+            command("am", "broadcast", "--user", "0", "-a", "com.samsung.android.desktopmode.action.DESKTOP_MODE_UPDATE_REQUEST",
+                "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_STATE", "1",
+                "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_SOURCE", "0")
+            return true
+        } catch (error: Exception) {
+            receiver.close(); localDex = null
+            throw error
+        }
+    }
 }

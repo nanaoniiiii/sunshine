@@ -3,7 +3,7 @@ import android.view.Surface;
 import android.view.MotionEvent;
 
 interface ISunshineEngineHost {
-    int[] streamStarted(long threadId, int width, int height, int fps, int packetDuration, in Surface surface, boolean audio, int appId, String clientId);
+    int[] streamStarted(long threadId, int width, int height, int fps, int packetDuration, in Surface surface, boolean audio, int appId, String clientId, String clientAddress);
     String appCatalog();
     boolean prepareApp(int appId);
     void streamStopped(long threadId, long revision);
@@ -17,4 +17,5 @@ interface ISunshineEngineHost {
     boolean streamPaused(long threadId);
     boolean streamResized(long threadId, int width, int height, in Surface surface);
     float[] readAudio(int count, int mode);
+    oneway void videoFrameProgress(long threadId, long presentationTimeUs, boolean released);
 }
