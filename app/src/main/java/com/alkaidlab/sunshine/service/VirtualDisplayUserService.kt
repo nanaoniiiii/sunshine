@@ -505,6 +505,9 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             command("am", "broadcast", "--user", "0", "-a", "com.samsung.android.desktopmode.action.DESKTOP_MODE_UPDATE_REQUEST",
                 "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_STATE", "1",
                 "--ei", "com.samsung.android.desktopmode.extra.DESKTOP_MODE_SOURCE", "0")
+            // Samsung's service owns its non-exported discovery activity; the
+            // system request above is the supported entry, never direct start.
+            dexRouteDetail = "请在三星 DeX 列表选择 Sunshine Local DeX，再确认立即开始；首次使用还可能需要接受三星的 DeX 使用说明"
             return true
         } catch (error: Exception) {
             receiver.close(); localDex = null

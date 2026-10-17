@@ -25,6 +25,13 @@ object FullscreenDisplay {
         return if ((current % 2 == 1) == targetOdd) current else if (targetOdd) 1 else 0
     }
 
+    /** Android renamed these wm subcommands; match whole help tokens, not suffixes. */
+    fun rotationCommand(help: String, fixed: Boolean = false): String? {
+        val names = if (fixed) listOf("fixed-to-user-rotation", "set-fix-to-user-rotation")
+            else listOf("user-rotation", "set-user-rotation")
+        return names.firstOrNull { Regex("(?m)^\\s*${Regex.escape(it)}(?:\\s|$)").containsMatchIn(help) }
+    }
+
     fun parseOverride(output: String): Snapshot? {
         val physical = Regex("Physical size: (\\d+)x(\\d+)").find(output) ?: return null
         val match = Regex("Override size: (\\d+)x(\\d+)").find(output)

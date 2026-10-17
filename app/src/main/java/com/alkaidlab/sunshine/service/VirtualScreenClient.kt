@@ -23,10 +23,12 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         .version((installVersion xor (installVersion ushr 32)).toInt())
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
+            val pending = waiting ?: return
+            if (!pending.isActive) return
             val controller = ISunshineDisplayController.Stub.asInterface(service)
             remote = controller
             service.linkToDeath({ remote = null; disconnected() }, 0)
-            waiting?.complete(controller)
+            pending.complete(controller)
         }
         override fun onServiceDisconnected(name: ComponentName) { remote = null; disconnected() }
     }
@@ -41,6 +43,14 @@ class VirtualScreenClient(private val context: Context, private val disconnected
             check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 8) { "显示服务版本过旧，请重新绑定" }
             service.attachOwner(owner)
             service
+        } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+            try { Shizuku.unbindUserService(args, connection, true) } catch (_: Exception) {}
+            remote = null
+            throw IllegalStateException("Shizuku 显示服务未能启动。请打开 Shizuku／Stellar 管理器，取消其休眠或后台限制，返回 Sunshine 后重试；应用授权无需重置。", error)
+        } catch (error: Exception) {
+            try { Shizuku.unbindUserService(args, connection, true) } catch (_: Exception) {}
+            remote = null
+            throw error
         } finally { waiting = null }
     }
     suspend fun create(width: Int, height: Int, density: Int, surface: Surface, mode: String, fps: Int, samsungDex: Boolean, highRefresh: Boolean): Int =

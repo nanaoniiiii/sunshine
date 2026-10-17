@@ -13,6 +13,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -70,6 +74,10 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         viewModel.checkSystemPermissions()
+        // Keep first-install system prompts sequential. Starting capture
+        // consent over an active runtime-permission dialog can cancel it.
+        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null)
+            requestMediaProjection()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,8 +98,17 @@ class MainActivity : ComponentActivity() {
 
         ensureAppOpsPermissions()
         SunshineService.start(this)
-        if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
-            requestMediaProjection()
+
+        lifecycleScope.launch {
+            val reset = com.alkaidlab.sunshine.service.DesktopUiResetGate()
+            com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().virtualScreenState.collect { state ->
+                if (reset.update(state.active, state.busy, state.mode)) {
+                    // Samsung can restore a freeform activity with a stale
+                    // input root after DeX. Recreate only the UI; capture and
+                    // consent belong to the foreground service.
+                    window.decorView.post { if (!isFinishing && !isChangingConfigurations) recreate() }
+                }
+            }
         }
 
         setContent {
@@ -151,8 +168,24 @@ class MainActivity : ComponentActivity() {
     private fun requestMediaProjection() {
         if (projectionRequestPending) return
         projectionRequestPending = true
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
+        lifecycleScope.launch {
+            try {
+                // Android 13 can revoke this UID's grant if a newly starting
+                // sibling process announces a dataSync FGS afterwards. Finish
+                // engine startup before asking for the first capture grant.
+                withTimeout(12000) { com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().engineReady.first { it } }
+                if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() != null) {
+                    projectionRequestPending = false
+                    return@launch
+                }
+                val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
+            } catch (error: Exception) {
+                projectionRequestPending = false
+                if (error is kotlinx.coroutines.CancellationException && error !is kotlinx.coroutines.TimeoutCancellationException) throw error
+                android.widget.Toast.makeText(this@MainActivity, "串流服务尚未就绪，请稍后点击允许屏幕录制重试", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun requestShizukuPermission() {

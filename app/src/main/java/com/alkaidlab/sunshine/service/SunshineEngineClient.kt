@@ -63,9 +63,10 @@ class SunshineEngineClient(private val context: Context) {
                     if (!current()) return
                     runtime.onStreamStopped(threadId)
                 }
-                mainHandler.post {
-                    if (current() && !runtime.isStreaming.value) scheduleRecovery(revision)
-                }
+                // A normal disconnect is not an engine fault. Killing the idle
+                // process also revokes MediaProjection on some Samsung builds.
+                // Preserve the healthy engine and consent for the next client;
+                // explicit recovery and Binder death still handle actual faults.
             }
             override fun appCatalog(): String = if (current()) runtime.nativeAppsJson() else "{\"apps\":[]}"
             override fun prepareApp(appId: Int): Boolean = current() && runtime.prepareApp(appId)
@@ -108,6 +109,7 @@ class SunshineEngineClient(private val context: Context) {
                 scope.launch {
                     try {
                         if (!enabled || generation != epoch) return@launch
+                        remote.setCaptureAuthorized(runtime.getMediaProjection() != null)
                         remote.configureEncoders(runtime.encoderH264, runtime.encoderHevc,
                             EncoderCapabilities.encoders.filter { it.mime == "video/avc" }.map { it.name }.distinct().toTypedArray(),
                             EncoderCapabilities.encoders.filter { it.mime == "video/hevc" }.map { it.name }.distinct().toTypedArray())
@@ -117,6 +119,9 @@ class SunshineEngineClient(private val context: Context) {
                         remote.configureCanvas(capture[0], capture[1], rotation.follow,
                             rotation.compatibility, runtime.sourceDisplayId, sourceFrameLimit(runtime))
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
+                        synchronized(runtime) {
+                            if (enabled && generation == epoch) runtime.setEngineReady(true)
+                        }
                         SunshineLogManager.log("ENGINE", "Native engine connected (generation $epoch)")
                     } catch (e: RemoteException) {
                         mainHandler.post { disconnected(epoch) }
@@ -138,6 +143,7 @@ class SunshineEngineClient(private val context: Context) {
         if (generation != epoch) return
         val runtime = SunshineRuntimeManager.getInstance()
         synchronized(runtime) {
+            runtime.setEngineReady(false)
             ++generation // Reject late callbacks from the dead process.
             runtime.onEngineDisconnected()
         }
@@ -183,6 +189,14 @@ class SunshineEngineClient(private val context: Context) {
         return try { remote.submitPin(pin); true } catch (_: RemoteException) { false }
     }
 
+    fun setCaptureAuthorized(authorized: Boolean) {
+        // Do not block the host main thread while the engine marshals its FGS
+        // transition to its own main thread.
+        scope.launch { try { engine?.setCaptureAuthorized(authorized) } catch (e: RemoteException) {
+            SunshineLogManager.log("ENGINE_WARN", "Capture foreground sync failed: ${e.message}")
+        } }
+    }
+
     fun startAudio(samplesPerPacket: Int) {
         val remote = engine ?: return
         scope.launch {
@@ -225,6 +239,7 @@ class SunshineEngineClient(private val context: Context) {
     } catch (_: RemoteException) { false }
 
     fun stop() {
+        SunshineRuntimeManager.getInstance().setEngineReady(false)
         closed = true
         enabled = false
         ++generation

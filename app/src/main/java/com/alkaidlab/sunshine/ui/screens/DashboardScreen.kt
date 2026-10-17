@@ -39,6 +39,7 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
     val battery by viewModel.isBatteryOptimizedIgnored.collectAsState()
     var moreNetwork by rememberSaveable { mutableStateOf(false) }
     var moreMetrics by rememberSaveable { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding,
         verticalArrangement = Arrangement.spacedBy(20.dp)) {
@@ -78,6 +79,19 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                         if (virtualScreen.active) Text(if (virtualScreen.mode == "screen_off") "主屏息屏串流 · 原主屏画面与操作"
                             else "虚拟屏 ${virtualScreen.width} × ${virtualScreen.height} · ${virtualScreen.launcher}",
                             color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
+                        if (virtualScreen.busy && virtualScreen.detail.isNotBlank())
+                            Text(virtualScreen.detail, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
+                        if (virtualScreen.error != null)
+                            Text(virtualScreen.error.orEmpty(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                        if (virtualScreen.error?.contains("Shizuku 显示服务未能启动") == true)
+                            TextButton(onClick = {
+                                val launch = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                                    .setComponent(android.content.ComponentName("moe.shizuku.privileged.api", "moe.shizuku.manager.MainActivity"))
+                                try { context.startActivity(launch) } catch (_: Exception) {
+                                    android.widget.Toast.makeText(context, "请打开正在提供授权的 Shizuku／Stellar 管理器", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("打开 Shizuku 管理器后重试") }
                     } else PrimaryButton(onClick = onOpenPairing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.AddLink, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp)); Text("配对新设备")

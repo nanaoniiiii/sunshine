@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit
 
 internal data class UpdateState(val release: ReleaseApk? = null, val checking: Boolean = false,
     val downloading: Boolean = false, val progress: Int = -1, val ready: Boolean = false,
-    val message: String = "自动检查 GitHub 发布版本，也可手动检查。")
+    val message: String = "自动检查官网发布版本，也可手动检查。")
 
 /** One owner in the UI process; no networking or download polling in the stream engine. */
 internal object AppUpdater {
@@ -85,7 +85,7 @@ internal object AppUpdater {
     suspend fun check(force: Boolean): Boolean = lock.withLock {
         if (mutableState.value.downloading || mutableState.value.ready) return@withLock true
         if (!force && System.currentTimeMillis() - prefs.getLong("last_check", 0) < INTERVAL) return@withLock true
-        mutableState.value = mutableState.value.copy(checking = true, message = "正在检查 GitHub 新版本…")
+        mutableState.value = mutableState.value.copy(checking = true, message = "正在检查新版本…")
         try {
             val release = fetchLatest()
             prefs.edit().putLong("last_check", System.currentTimeMillis()).putString("release", release?.let(gson::toJson)).apply()
@@ -101,6 +101,11 @@ internal object AppUpdater {
     }
 
     private fun fetchLatest(): ReleaseApk? {
+        try {
+            return ReleasePolicy.website(readPublicPage(ReleasePolicy.WEBSITE), BuildConfig.VERSION_NAME, Build.SUPPORTED_ABIS.toList())
+        } catch (error: Exception) {
+            com.alkaidlab.sunshine.service.SunshineLogManager.log("UPDATE", "Website update source unavailable: ${error.javaClass.simpleName}; trying GitHub")
+        }
         val request = Request.Builder().url(ReleasePolicy.API).header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", "Sunshine-Android/${BuildConfig.VERSION_NAME}").build()
         try {
@@ -121,8 +126,8 @@ internal object AppUpdater {
 
     private fun readPublicPage(url: String): String = client.newCall(Request.Builder().url(url)
         .header("User-Agent", "Sunshine-Android/${BuildConfig.VERSION_NAME}").build()).execute().use { response ->
-        check(response.isSuccessful) { "GitHub 发布页返回 HTTP ${response.code}" }
-        val body = response.body ?: error("GitHub 发布页内容为空")
+        check(response.isSuccessful) { "更新服务返回 HTTP ${response.code}" }
+        val body = response.body ?: error("更新服务内容为空")
         check(body.contentLength() <= 1048576) { "发布列表过大" }
         val bytes = body.byteStream().use { it.readBytesLimited(1048576) }
         bytes.toString(Charsets.UTF_8)

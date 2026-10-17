@@ -32,6 +32,7 @@ object InputBroker {
     }
     @Synchronized private fun invalidateGeometry(id: Int) { geometryCache.displayChanged(id) }
     @JvmStatic @Synchronized fun setSourceDisplay(id: Int, width: Int, height: Int) {
+        if (sourceDisplayId != id || captureWidth != width || captureHeight != height) reset()
         sourceDisplayId = id
         geometryCache.sourceChanged(id)
         setCaptureDimensions(width, height)

@@ -17,6 +17,17 @@ class SunshineEngineService : Service() {
     private var restartPending = false
     override fun onCreate() {
         super.onCreate()
+        InputBroker.setContext(this)
+        // Bound service: wait for the host's consent snapshot before announcing
+        // any FGS type. Android 13 observes each process's type changes and can
+        // revoke the UID's projection when this process announces dataSync only.
+    }
+    private var foregroundType = -1
+    private fun updateCaptureForeground(authorized: Boolean) {
+        if (!authorized && foregroundType and android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION != 0 && foregroundType != -1) return
+        val type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+            if (authorized) android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION else 0
+        if (type == foregroundType) return
         // A foreground host binding alone does not give this separate process
         // its own foreground-service state on Samsung screen-off policies.
         // Share the existing server notification instead of adding a second one.
@@ -33,12 +44,17 @@ class SunshineEngineService : Service() {
                 Intent(this, SunshineService::class.java).setAction(SunshineService.ACTION_EXIT_DESKTOP),
                 android.app.PendingIntent.FLAG_IMMUTABLE))
             .build()
-        startForeground(1001, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        // Native input callbacks run here, so the mapper needs this process's
-        // actual physical display dimensions as well as the host capture size.
-        InputBroker.setContext(this)
+        startForeground(1001, notification, type)
+        foregroundType = type
     }
     private val binder = object : ISunshineEngine.Stub() {
+        override fun setCaptureAuthorized(authorized: Boolean) {
+            val done = java.util.concurrent.CountDownLatch(1)
+            var failure: RuntimeException? = null
+            mainHandler.post { try { updateCaptureForeground(authorized) } catch (e: RuntimeException) { failure = e } finally { done.countDown() } }
+            check(done.await(3, java.util.concurrent.TimeUnit.SECONDS)) { "引擎前台状态同步超时" }
+            failure?.let { throw it }
+        }
         override fun start(host: ISunshineEngineHost, name: String, cert: String, key: String,
                            state: String, hevc: Boolean) {
             synchronized(SunshineEngineBridge.lock) {

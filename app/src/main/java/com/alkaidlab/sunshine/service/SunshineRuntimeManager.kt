@@ -58,6 +58,9 @@ class SunshineRuntimeManager private constructor() {
     private val frameDispatcher = SunshineFrameDispatcher()
     private val captureHandler = Handler(Looper.getMainLooper())
     private val _virtualScreenState = MutableStateFlow(VirtualScreenState())
+    private val _engineReady = MutableStateFlow(false)
+    val engineReady: StateFlow<Boolean> = _engineReady.asStateFlow()
+    fun setEngineReady(ready: Boolean) { _engineReady.value = ready }
     val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
     private var virtualScreenClient: VirtualScreenClient? = null
     @Volatile private var preparingLocalDex = false
@@ -497,6 +500,7 @@ class SunshineRuntimeManager private constructor() {
 
     fun setMediaProjection(projection: MediaProjection?) {
         this.mediaProjection = projection
+        engineClient?.setCaptureAuthorized(projection != null)
         SunshineLogManager.log("MEDIA_PROJ", if (projection != null) "MediaProjection set" else "MediaProjection cleared")
     }
 
@@ -538,7 +542,8 @@ class SunshineRuntimeManager private constructor() {
                 check(withContext(Dispatchers.IO) { client.blankMain() }) { "无法关闭主屏显示面板" }
                 check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "连接已结束" }
                 _virtualScreenState.value = VirtualScreenState(active = true, displayId = 0,
-                    width = frameDispatcher.sourceWidth, height = frameDispatcher.sourceHeight, mode = mode, launcher = "原主屏画面")
+                    width = frameDispatcher.sourceWidth, height = frameDispatcher.sourceHeight, mode = mode, launcher = "原主屏画面",
+                    mainPanelOff = true)
                 SunshineLogManager.log("SCREEN_OFF_STREAM", "Physical panel blanked; original display and input remain active")
                 return@withContext FullscreenDisplay.Result(true, "已开始主屏息屏串流，继续显示原主屏画面")
             }
@@ -549,9 +554,20 @@ class SunshineRuntimeManager private constructor() {
                     val route = org.json.JSONObject(client.snapshot()).optString("dex_route_detail")
                     _virtualScreenState.value = _virtualScreenState.value.copy(detail = route.ifBlank { "请在三星 DeX 列表选择 Sunshine Local DeX，并确认立即开始" })
                     var ready = false
-                    for (attempt in 0 until 240) {
+                    // This includes human interaction with Samsung's device list,
+                    // consent and first-use pages. A one-minute deadline can tear
+                    // down the receiver while the user is still confirming it.
+                    val confirmationDeadline = android.os.SystemClock.uptimeMillis() + 180_000
+                    while (android.os.SystemClock.uptimeMillis() < confirmationDeadline) {
                         check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "连接已结束" }
                         val status = withContext(Dispatchers.IO) { org.json.JSONObject(client.snapshot()) }
+                        val stage = status.optString("local_dex_stage")
+                        val hint = when {
+                            stage.contains("main_channel") || stage.contains("connection_allowed") -> "请确认三星系统弹出的立即开始；正在建立本机 DeX"
+                            stage.startsWith("wfd_") -> "三星 DeX 已连接，正在等待系统桌面显示"
+                            else -> route.ifBlank { "请在三星 DeX 列表选择 Sunshine Local DeX，再确认立即开始" }
+                        }
+                        if (_virtualScreenState.value.detail != hint) _virtualScreenState.value = _virtualScreenState.value.copy(detail = hint)
                         check(status.optString("local_dex_error").isEmpty()) { "本机 DeX：${status.optString("local_dex_error")}" }
                         if (status.optBoolean("local_dex_ready")) { ready = true; break }
                         kotlinx.coroutines.delay(250)
@@ -920,8 +936,8 @@ class SunshineRuntimeManager private constructor() {
     private fun fullscreenBackend(rememberOriginal: Boolean = false): FullscreenDisplay.Backend {
         // Some Android versions print valid wm help with exit code -1 (255); mutations still require 0.
         val help = PrivilegedShell.run(arrayOf("wm", "help"), acceptedExitCodes = setOf(0, 1, 255)).orEmpty()
-        val fixedCommand = if (help.contains("set-fix-to-user-rotation")) "set-fix-to-user-rotation"
-            else if (help.contains("fixed-to-user-rotation")) "fixed-to-user-rotation" else null
+        val fixedCommand = FullscreenDisplay.rotationCommand(help, fixed = true)
+        val rotationCommand = FullscreenDisplay.rotationCommand(help)
         return object : FullscreenDisplay.Backend {
             override fun rotation() = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
             override fun snapshot(): FullscreenDisplay.Snapshot? {
@@ -936,9 +952,9 @@ class SunshineRuntimeManager private constructor() {
             }
             override fun setFixedRotation(enabled: Boolean): Boolean = fixedCommand != null &&
                 PrivilegedShell.run(arrayOf("wm", fixedCommand, if (enabled) "enabled" else "disabled"), 3000) != null
-            override fun setRotation(rotation: Int, autoRotate: Boolean): Boolean =
-                PrivilegedShell.run(if (autoRotate) arrayOf("wm", "set-user-rotation", "free")
-                    else arrayOf("wm", "set-user-rotation", "lock", rotation.toString()), 3000) != null
+            override fun setRotation(rotation: Int, autoRotate: Boolean): Boolean = rotationCommand != null &&
+                PrivilegedShell.run(if (autoRotate) arrayOf("wm", rotationCommand, "free")
+                    else arrayOf("wm", rotationCommand, "lock", rotation.toString()), 3000) != null
             override fun setOverride(size: FullscreenDisplay.Size?) =
                 PrivilegedShell.run(arrayOf("wm", "size", size?.toString() ?: "reset"), 3000) != null
             override fun awaitDisplay(size: FullscreenDisplay.Size): Boolean {

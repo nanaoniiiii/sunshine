@@ -22,7 +22,26 @@ internal class SamsungLocalDex(private val context: Context) : AutoCloseable {
         try { receiver.start() } catch (error: Exception) { close(); throw error }
     }
 
-    override fun close() { val receiver = peer; peer = null; receiver?.close() }
+    @android.annotation.SuppressLint("WrongConstant") // Samsung's desktopmode service is absent from SDK constants.
+    override fun close() {
+        val receiver = peer ?: return
+        val originalDisplayId = NativeDexMirror.activeDisplay(context)?.displayId
+        peer = null
+        receiver.close()
+        // Closing the loopback socket starts an asynchronous Samsung display
+        // teardown. Do not advertise a new peer while its previous display is
+        // still disabling; that leaves the new request attached to stale state.
+        val manager = context.getSystemService("desktopmode") ?: return
+        val deadline = android.os.SystemClock.uptimeMillis() + 8000
+        while (android.os.SystemClock.uptimeMillis() < deadline) {
+            val state = manager.javaClass.getMethod("getDesktopModeState").invoke(manager) ?: return
+            if (state.javaClass.getMethod("getEnabled").invoke(state) == 2) return
+            val current = NativeDexMirror.activeDisplay(context)
+            if (current != null && originalDisplayId != null && current.displayId != originalDisplayId) return
+            Thread.sleep(100)
+        }
+        error("三星 DeX 正在结束上一次连接，请稍后重试")
+    }
 
     companion object {
         fun supported(context: Context): Boolean {

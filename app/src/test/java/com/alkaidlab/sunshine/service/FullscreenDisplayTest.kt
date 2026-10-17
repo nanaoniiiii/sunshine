@@ -4,6 +4,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FullscreenDisplayTest {
+    @Test fun recognizeAndroid13RotationCommandsFromHelp() {
+        val help = "  user-rotation [-d DISPLAY_ID] [free|lock] [rotation]\n" +
+            "  fixed-to-user-rotation [-d DISPLAY_ID] [enabled|disabled|default]\n"
+        assertEquals("user-rotation", FullscreenDisplay.rotationCommand(help))
+        assertEquals("fixed-to-user-rotation", FullscreenDisplay.rotationCommand(help, fixed = true))
+    }
+    @Test fun retainOlderRotationCommandsAndRejectHelpErrors() {
+        val help = "  set-user-rotation [free|lock] [rotation]\n  set-fix-to-user-rotation [enabled|disabled]\n"
+        assertEquals("set-user-rotation", FullscreenDisplay.rotationCommand(help))
+        assertEquals("set-fix-to-user-rotation", FullscreenDisplay.rotationCommand(help, fixed = true))
+        assertNull(FullscreenDisplay.rotationCommand("Unknown command: user-rotation"))
+        assertNull(FullscreenDisplay.rotationCommand("  fixed-to-user-rotation [enabled|disabled]"))
+    }
     private class Display : FullscreenDisplay.Backend {
         var overrideSize: FullscreenDisplay.Size? = null
         var angle = 0

@@ -77,7 +77,7 @@
         <service
             android:name=".service.SunshineEngineService"
             android:process=":engine"
-            android:foregroundServiceType="dataSync"
+            android:foregroundServiceType="dataSync|mediaProjection"
             android:exported="false" />
 
         <service android:name=".update.UpdateCheckJobService" android:exported="true"

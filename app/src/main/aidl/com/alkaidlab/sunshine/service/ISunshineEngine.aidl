@@ -12,4 +12,5 @@ interface ISunshineEngine {
     void configureEncoders(String avc, String hevc, in String[] avcNames, in String[] hevcNames);
     String videoSnapshot();
     boolean controlVideo(long sessionId, int operation, int value);
+    void setCaptureAuthorized(boolean authorized);
 }

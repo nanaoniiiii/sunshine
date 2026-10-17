@@ -28,7 +28,7 @@ fun AppUpdateCard() {
         Button(onClick = { AppUpdater.open() }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
             Text(if (state.ready) "安装已下载的更新" else if (state.release != null) "查看新版本" else "检查更新")
         }
-        Text("启动时和后台定期自动检查 GitHub 发布版本，发现更新后发送通知。",
+        Text("启动时和后台定期检查官网更新，发现后通知；在应用内下载安装。历史版本保留在 GitHub。",
             style = MaterialTheme.typography.bodySmall)
     }
 }
