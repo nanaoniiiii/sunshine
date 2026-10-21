@@ -101,7 +101,7 @@ def main():
             assert path.is_relative_to(root) and path != root
             if path.is_file():
                 path.unlink()
-    for name in ('worker.mjs', 'update-service.mjs'):
+    for name in ('worker.mjs', 'update-service.mjs', 'release-publish.mjs'):
         shutil.copyfile(Path(__file__).resolve().parents[1] / 'website' / name, target / name)
     config.update(main='./worker.mjs')
     config['assets'].update(binding='ASSETS', run_worker_first=['/updates/*', '/downloads/*'])

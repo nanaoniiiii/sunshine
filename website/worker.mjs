@@ -1,2 +1,3 @@
 import {createHandler} from './update-service.mjs';
-export default createHandler();
+import {createPublisher} from './release-publish.mjs';
+export default createHandler({publisher: createPublisher()});
