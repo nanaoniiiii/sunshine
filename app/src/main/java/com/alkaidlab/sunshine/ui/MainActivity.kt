@@ -101,7 +101,17 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             val reset = com.alkaidlab.sunshine.service.DesktopUiResetGate()
+            var desktopWasVisible = false
             com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().virtualScreenState.collect { state ->
+                if (state.active && !state.busy && state.mode == "desktop") desktopWasVisible = true
+                if (desktopWasVisible && state.active && !state.busy && state.mode == "screen_off" && state.retainedDisplayId > 0) {
+                    desktopWasVisible = false
+                    // Samsung's always-on-top host popup can survive a primary
+                    // HOME key. Hide our UI as well so the phone HOME is visible.
+                    @Suppress("DEPRECATION")
+                    if (windowManager.defaultDisplay.displayId == 0) moveTaskToBack(true)
+                }
+                if (!state.active && !state.busy) desktopWasVisible = false
                 if (reset.update(state.active, state.busy, state.mode)) {
                     // Samsung can restore a freeform activity with a stale
                     // input root after DeX. Recreate only the UI; capture and

@@ -74,11 +74,13 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                             Icon(if (virtualScreen.active) Icons.Default.Close else Icons.Default.DesktopWindows, null, modifier = Modifier.size(20.dp))
                             Spacer(Modifier.width(8.dp)); Text(if (virtualScreen.busy) "切换显示中…" else if (virtualScreen.active) {
                                 if (virtualScreen.mode == "screen_off") "恢复主屏" else "退出虚拟屏"
-                            } else if (config?.virtualScreenMode == "screen_off") "主屏息屏串流" else "创建虚拟屏")
+                            } else "开启虚拟屏")
                         }
                         if (virtualScreen.active) Text(if (virtualScreen.mode == "screen_off") "主屏息屏串流 · 原主屏画面与操作"
                             else "虚拟屏 ${virtualScreen.width} × ${virtualScreen.height} · ${virtualScreen.launcher}",
                             color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
+                        else Text(if (config?.virtualScreenMode == "desktop") "第二屏桌面模式已开启 · ${if (config?.virtualScreenDesktop == "system") "设备自带桌面" else "Sunshine 桌面"}"
+                            else "默认息屏串流 · 继续显示手机原有内容", color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
                         if (virtualScreen.busy && virtualScreen.detail.isNotBlank())
                             Text(virtualScreen.detail, color = MaterialTheme.colorScheme.onPrimaryContainer, style = MaterialTheme.typography.bodyMedium)
                         if (virtualScreen.error != null)

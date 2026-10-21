@@ -5,6 +5,16 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SettingsDraftTest {
+    @Test fun virtualScreenStartsWithPrimaryPanelOffUntilSecondDesktopIsExplicitlyEnabled() {
+        assertEquals("screen_off", SettingsDraft.from(ConfigResponse())["virtual_screen_mode"])
+        assertEquals("screen_off", SettingsDraft.from(ConfigResponse(virtualScreenDesktop = "system"))["virtual_screen_mode"])
+        assertEquals("desktop", SettingsDraft.from(ConfigResponse(virtualScreenMode = "desktop"))["virtual_screen_mode"])
+    }
+    @Test fun desktopDefaultsToSunshineAndKeepsExplicitSystemChoice() {
+        assertEquals("sunshine", SettingsDraft.from(ConfigResponse(experimentalSamsungDex = "true"))["virtual_screen_desktop"])
+        assertEquals("system", SettingsDraft.from(ConfigResponse(virtualScreenDesktop = "system"))["virtual_screen_desktop"])
+        assertFalse(SettingsDraft.from(ConfigResponse()).values.containsKey("experimental_samsung_dex"))
+    }
     @Test fun pollingNeverOverwritesUnsavedInputEvenIfServerChanges() {
         val old = ConfigResponse()
         val draft = SettingsDraft.from(old).withValue("max_stream_fps", "12")

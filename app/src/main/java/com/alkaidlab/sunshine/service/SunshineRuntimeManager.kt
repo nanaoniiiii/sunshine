@@ -526,13 +526,14 @@ class SunshineRuntimeManager private constructor() {
             val parts = line.trim().takeUnless { it.startsWith("#") }?.split('=', limit = 2)
             if (parts?.size == 2) parts[0].trim() to parts[1].trim() else null
         }.toMap()
-        val mode = props["virtual_screen_mode"].takeIf { it == "screen_off" } ?: "desktop"
+        val mode = if (props["virtual_screen_mode"] == "desktop") "desktop" else "screen_off"
         val density = props["virtual_screen_density"]?.toIntOrNull()?.coerceIn(120, 640) ?: 240
         val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == session.videoThreadId }
         val width = native?.requestedWidth?.takeIf { it > 0 } ?: session.width
         val height = native?.requestedHeight?.takeIf { it > 0 } ?: session.height
         val refreshRate = minOf(native?.requestedFps?.takeIf { it > 0 } ?: session.fps, streamingSettings.value.maxFps).coerceIn(15, 240)
-        val samsungDex = props["experimental_samsung_dex"] == "true"
+        val systemDesktop = props["virtual_screen_desktop"] == "system"
+        val samsungDex = systemDesktop && Build.MANUFACTURER.equals("samsung", true)
         val highRefresh = props["experimental_desktop_high_refresh"] != "false"
         _virtualScreenState.value = VirtualScreenState(busy = true, width = width, height = height, mode = mode)
         try {
@@ -576,25 +577,18 @@ class SunshineRuntimeManager private constructor() {
                     preparingLocalDex = false
                 }
             }
-            // Capture the existing DeX at its native size. Each client already
-            // fits/scales this texture into its independently negotiated canvas;
-            // fitting once into the first client's aspect ratio would waste
-            // composition work and add a second letterbox on other clients.
-            val ready = if (samsungDex) org.json.JSONObject(client.snapshot()) else null
-            val captureWidth = ready?.optInt("native_dex_width")?.takeIf { it in 1..8192 } ?: width
-            val captureHeight = ready?.optInt("native_dex_height")?.takeIf { it in 1..8192 } ?: height
+            // Resize the real external DeX workspace before allocating the capture
+            // surface. Primary/tablet DeX keeps its existing main-screen dimensions.
+            val ready = org.json.JSONObject(withContext(Dispatchers.IO) { client.configureDesktop(width, height, samsungDex) })
+            val captureWidth = if (samsungDex) ready.optInt("native_dex_width").takeIf { it in 1..8192 } ?: width else width
+            val captureHeight = if (samsungDex) ready.optInt("native_dex_height").takeIf { it in 1..8192 } ?: height else height
             virtualDisplay?.release(); virtualDisplay = null
             val surface = frameDispatcher.resizeCaptureSync(captureWidth, captureHeight) ?: error("无法切换虚拟屏采集画布")
-            val id = withContext(Dispatchers.IO) { client.create(captureWidth, captureHeight, density, surface, mode, refreshRate, samsungDex, highRefresh) }
+            val id = withContext(Dispatchers.IO) { client.create(captureWidth, captureHeight, density, surface, mode, refreshRate, systemDesktop, highRefresh) }
             val created = org.json.JSONObject(client.snapshot())
             check(id > 0 || (id == 0 && created.optBoolean("system_dex_mirror") && created.optBoolean("dex_active"))) { "系统没有返回有效的桌面显示 ID" }
             check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "创建期间连接已结束" }
-            val controlsReady = withContext(Dispatchers.IO) { client.showControls {
-                SunshineLogManager.log("VIRTUAL_EXIT", "Requested by desktop control")
-                fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
-            } }
             val snapshot = org.json.JSONObject(client.snapshot())
-            check(controlsReady) { "无法显示退出控制条，已恢复主屏：${snapshot.optString("detail")}" }
             snapshot.optString("local_dex_stage").takeIf { it.startsWith("wfd_status:") }?.let {
                 SunshineLogManager.log("DEX_TRANSPORT", it.removePrefix("wfd_status:"))
             }
@@ -604,7 +598,8 @@ class SunshineRuntimeManager private constructor() {
                 actualRefreshRate = snapshot.optDouble("actual_refresh_rate", 0.0).toFloat(),
                 refreshRateRequestSupported = snapshot.optBoolean("refresh_rate_request_supported"),
                 dexRequested = samsungDex, dexActive = snapshot.optBoolean("dex_active"), detail = snapshot.optString("detail"),
-                systemDexMirror = snapshot.optBoolean("system_dex_mirror"), desktopControls = snapshot.optBoolean("desktop_controls"))
+                systemDexMirror = snapshot.optBoolean("system_dex_mirror"), desktopControls = false,
+                retainedDisplayId = snapshot.optInt("retained_display_id", -1))
             frameDispatcher.setVirtualSource(true, snapshot.optDouble("actual_refresh_rate", 60.0).toFloat())
             frameDispatcher.sourceRotation = 0
             engineClient?.configureCanvas(captureWidth, captureHeight, false, false)
@@ -664,6 +659,58 @@ class SunshineRuntimeManager private constructor() {
 
     suspend fun virtualDesktopAction(action: String, taskId: Int = -1): Boolean = withContext(Dispatchers.IO) {
         if (!_virtualScreenState.value.active) false else virtualScreenClient?.action(action, taskId) == true
+    }
+
+    suspend fun leaveSunshineDesktop(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
+        val previous = _virtualScreenState.value
+        if (!previous.active || previous.mode != "desktop" || previous.systemDexMirror)
+            return@withContext FullscreenDisplay.Result(false, "当前没有 Sunshine 虚拟桌面")
+        if (previous.busy) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
+        if (!_fullscreenBusy.compareAndSet(false, true))
+            return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
+        _virtualScreenState.value = previous.copy(busy = true)
+        var physicalBefore: FullscreenDisplay.Snapshot? = null
+        val restorePrefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE)
+        val alreadySaved = restorePrefs?.contains("original") == true
+        try {
+            check(activeSessions.isNotEmpty()) { "连接已结束" }
+            // Reconnect capture to the phone before blanking its physical panel.
+            _virtualScreenState.value = previous.copy(busy = true, mode = "screen_off", displayId = Display.DEFAULT_DISPLAY,
+                launcher = "手机主屏（保留虚拟屏）")
+            restorePhysicalCapture()
+            val fit = withContext(Dispatchers.IO) {
+                val backend = fullscreenBackend(rememberOriginal = true)
+                physicalBefore = backend.snapshot()
+                FullscreenDisplay.apply(FullscreenDisplay.Size(previous.width, previous.height), backend) {
+                    activeSessions.isNotEmpty()
+                }
+            }
+            check(fit.applied) { fit.message }
+            check(withContext(Dispatchers.IO) { displayClient().action("leave") }) { "未能返回手机主屏" }
+            _virtualScreenState.value = previous.copy(busy = true, mode = "screen_off", displayId = Display.DEFAULT_DISPLAY,
+                launcher = "手机主屏（保留虚拟屏）", mainPanelOff = true)
+            SunshineLogManager.log("VIRTUAL_HOME_EXIT", "Secondary HOME released; primary captured fullscreen with retained display and panel off")
+            FullscreenDisplay.Result(true, "已返回手机主屏，保留虚拟屏和全屏息屏串流")
+        } catch (error: Exception) {
+            // A capture switch failure must never advertise an old secondary
+            // display while the dispatcher is already mirroring the primary.
+            withContext(Dispatchers.IO) { runCatching { virtualScreenClient?.close() } }
+            _virtualScreenState.value = VirtualScreenState(busy = true, error = error.message)
+            val restored = withContext(Dispatchers.IO) {
+                physicalBefore?.let { FullscreenDisplay.restore(it, fullscreenBackend()) } ?: true
+            }
+            if (restored && !alreadySaved) restorePrefs?.edit()?.remove("original")?.commit()
+            runCatching { restorePhysicalCapture() }
+            FullscreenDisplay.Result(false, if (restored) error.message ?: "退出桌面失败"
+                else "退出桌面失败，原主屏显示设置未恢复，请检查 Shizuku")
+        } finally {
+            _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
+            _fullscreenBusy.value = false
+            if (activeSessions.isEmpty()) {
+                if (_virtualScreenState.value.active) exitVirtualScreen()
+                restoreFullscreenIfIdle()
+            }
+        }
     }
 
     suspend fun setVirtualScreenPanelOff(off: Boolean): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
@@ -770,42 +817,10 @@ class SunshineRuntimeManager private constructor() {
         _perfFlow.value = getPerfSnapshot()
         startTelemetryLoop()
 
-        // Create VirtualDisplay feeding frameDispatcher on main thread
-        Handler(Looper.getMainLooper()).post {
-            if (activeSessions.none { it.videoThreadId == callerThreadId && it.surface === surface }) return@post
-            val mp = mediaProjection
-            if (_virtualScreenState.value.active || _virtualScreenState.value.busy) {
-                frameDispatcher.addSurface(surface, width, height, fps, callerThreadId)
-            } else if (mp != null) {
-                if (!frameDispatcher.isRunning || virtualDisplay == null) {
-                    try {
-                        val captureSize = displayCaptureSize(width, height)
-                        val inputSurface = frameDispatcher.start(captureSize[0], captureSize[1])
-                        val densityDpi = context?.resources?.displayMetrics?.densityDpi ?: 300
-                        virtualDisplay?.release()
-                        virtualDisplay = mp.createVirtualDisplay(
-                            "SunshineVirtualDisplay",
-                            captureSize[0],
-                            captureSize[1],
-                            densityDpi,
-                            android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                            inputSurface,
-                            null,
-                            null
-                        )
-                        SunshineLogManager.log("VD", "VirtualDisplay captures ${captureSize[0]}x${captureSize[1]} display pixels; client=${width}x$height @ ${densityDpi}dpi")
-                    } catch (e: Exception) {
-                        SunshineLogManager.log("VD_ERR", "Error initializing VirtualDisplay/Dispatcher: ${e.message}")
-                    }
-                }
-
-                syncCaptureSize()
-                // Register client surface into frame dispatcher with target FPS
-                frameDispatcher.addSurface(surface, width, height, fps, callerThreadId)
-                SunshineLogManager.log("VD", "Client ($cName) surface registered into frame dispatcher")
-            } else {
-                SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
-            }
+        // Codec rotation may replace the initial Surface before this task runs.
+        captureHandler.post {
+            attachCurrentStreamSurface(callerThreadId, session.startTime)
+            if (activeSessions.none { it.videoThreadId == callerThreadId && it.startTime == session.startTime }) return@post
 
             // Start Audio capture if requested
             if (shouldSendAudio) {
@@ -814,6 +829,33 @@ class SunshineRuntimeManager private constructor() {
                 SunshineLogManager.log("AUDIO", "Client requested no audio")
             }
         }
+    }
+
+    @Synchronized
+    private fun attachCurrentStreamSurface(threadId: Long, startTime: Long) {
+        val session = activeSessions.firstOrNull { it.videoThreadId == threadId && it.startTime == startTime } ?: return
+        val surface = session.surface?.takeIf { it.isValid } ?: return
+        val mp = mediaProjection
+        if (_virtualScreenState.value.active || _virtualScreenState.value.busy) {
+            frameDispatcher.addSurface(surface, session.width, session.height, session.fps, threadId)
+        } else if (mp != null) {
+            try {
+                if (!frameDispatcher.isRunning || virtualDisplay == null) {
+                    val size = displayCaptureSize(session.width, session.height)
+                    val inputSurface = frameDispatcher.start(size[0], size[1])
+                    val density = context?.resources?.displayMetrics?.densityDpi ?: 300
+                    virtualDisplay?.release()
+                    virtualDisplay = mp.createVirtualDisplay("SunshineVirtualDisplay", size[0], size[1], density,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, inputSurface, null, null)
+                    SunshineLogManager.log("VD", "VirtualDisplay captures ${size[0]}x${size[1]} display pixels; client=${session.width}x${session.height} @ ${density}dpi")
+                }
+                syncCaptureSize()
+                frameDispatcher.addSurface(surface, session.width, session.height, session.fps, threadId)
+                SunshineLogManager.log("VD", "Client (${session.clientName}) current surface registered into frame dispatcher")
+            } catch (error: Exception) {
+                SunshineLogManager.log("VD_ERR", "Error initializing VirtualDisplay/Dispatcher: ${error.message}")
+            }
+        } else SunshineLogManager.log("VD_WARN", "MediaProjection is null, cannot create VirtualDisplay yet")
     }
 
     @Synchronized
@@ -832,7 +874,8 @@ class SunshineRuntimeManager private constructor() {
         if (width <= 0 || height <= 0 || !surface.isValid) return false
         session.surface?.let { frameDispatcher.removeSurfaceSync(it) }
         activeSessions[activeSessions.indexOf(session)] = session.copy(width = width, height = height, surface = surface)
-        frameDispatcher.addSurface(surface, width, height, session.fps, callerThreadId)
+        if (frameDispatcher.isRunning) frameDispatcher.addSurface(surface, width, height, session.fps, callerThreadId)
+        else captureHandler.post { attachCurrentStreamSurface(callerThreadId, session.startTime) }
         lastWidth = width
         lastHeight = height
         _activeSessionsFlow.value = activeSessions.toList()

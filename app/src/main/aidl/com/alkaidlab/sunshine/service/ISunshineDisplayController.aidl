@@ -3,7 +3,7 @@ import android.view.Surface;
 import android.view.MotionEvent;
 import com.alkaidlab.sunshine.service.ISunshineDesktopCallback;
 interface ISunshineDisplayController {
-    int createDisplay(int width, int height, int density, in Surface surface, String mode, IBinder owner, int fps, boolean samsungDex, boolean highRefresh) = 0;
+    int createDisplay(int width, int height, int density, in Surface surface, String mode, IBinder owner, int fps, boolean systemDesktop, boolean highRefresh) = 0;
     void closeDisplay() = 1;
     boolean launchApp(String component) = 2;
     boolean injectMotion(in MotionEvent event) = 3;
@@ -16,5 +16,6 @@ interface ISunshineDisplayController {
     boolean showDesktopControls(ISunshineDesktopCallback callback) = 10;
     String desktopTasks() = 11;
     boolean desktopAction(String action, int taskId) = 12;
+    String configureDesktop(int width, int height, boolean samsungDex, IBinder owner) = 13;
     void destroy() = 16777114;
 }

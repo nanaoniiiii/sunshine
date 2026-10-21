@@ -48,9 +48,10 @@ fun FaqScreen(onBack: () -> Unit = {}) {
             PageHeader("常见问题", "全屏、横屏、配对与 Shizuku 授权")
         }
         item { FaqTopic("主屏息屏与第二屏桌面", expanded == "virtual", { expanded = if (expanded == "virtual") null else "virtual" }) {
-            HelpText("先连接 Moonlight，再在设置的虚拟屏串流栏选择模式。主屏息屏串流关闭物理屏幕面板，接收端继续使用手机原有主页与应用；点击恢复主屏即可重新亮屏。")
-            HelpText("第二屏桌面模式按 Moonlight 请求的分辨率创建独立虚拟屏，使用全屏 Sunshine 虚拟桌面。三星 DeX 可在设置最下方的实验性功能中开启，也可查看第二屏实际刷新率。主屏息屏不影响第二屏显示与操作。桌面显示密度可在设置中调整，退出并重新创建后生效。")
-            HelpText("在主页或虚拟桌面点击退出虚拟屏可恢复主屏串流。最后一个接收端断开时自动退出并恢复显示设置。")
+            HelpText("先连接 Moonlight，再点击首页“开启虚拟屏”。默认只关闭手机物理面板，接收端继续显示手机原有内容。需要独立桌面时，在设置 → 虚拟屏打开“第二屏桌面模式”，下方才会展开两个桌面选项。点击恢复主屏即可重新亮屏。")
+            HelpText("第二屏桌面模式有两项选择：默认全屏 Sunshine，临时作为虚拟屏主页，返回和主页键不会退出；设备系统桌面使用三星 DeX 或设备提供的次级主页，保留系统桌面。分辨率按创建时 Moonlight 的请求设置。平板可以自行开启 DeX 后直接串流主屏。")
+            HelpText("Sunshine 桌面的“退出桌面”返回手机主屏主页，按当前尺寸维持全屏，保留虚拟屏资源并关闭手机面板继续串流。要关闭整个虚拟屏并恢复面板，请使用主机主页、通知或 Ctrl+Alt+Esc。最后一个接收端断开时自动退出并恢复显示设置。")
+            HelpText("S20+ 当前 Android 13 固件的原生 DeX 竖屏会隐藏部分任务栏按钮。这项未修复，保留三星原生任务栏。")
         } }
         item { FaqTopic("Moonlight 画面不全屏或竖屏变成小块", expanded == "fullscreen", { expanded = if (expanded == "fullscreen") null else "fullscreen" }) {
             HelpText("1. 先核对 Sunshine 主页中该连接的请求分辨率。竖屏内容应请求竖屏宽高（例如 1440×3168），横屏应请求横屏宽高；仅旋转客户端页面不会重新协商视频尺寸。修改 Moonlight 分辨率后退出并重新连接。")

@@ -188,9 +188,10 @@ class SunshineApiServer(
             autoRotate = confMap["auto_rotate"] ?: "true",
             rotationCompat = confMap["rotation_compat"] ?: "false",
             autoScale = confMap["auto_scale"] ?: "true",
-            virtualScreenMode = confMap["virtual_screen_mode"] ?: "desktop",
+            virtualScreenMode = confMap["virtual_screen_mode"] ?: "screen_off",
+            virtualScreenDesktop = confMap["virtual_screen_desktop"] ?: "sunshine",
             virtualScreenDensity = confMap["virtual_screen_density"] ?: "240",
-            experimentalSamsungDex = confMap["experimental_samsung_dex"] ?: "false",
+            experimentalSamsungDex = (confMap["virtual_screen_desktop"] == "system").toString(),
             experimentalDesktopHighRefresh = confMap["experimental_desktop_high_refresh"] ?: "true",
             addressFamily = confMap["address_family"] ?: "both",
             maxStreamFps = confMap["max_stream_fps"] ?: "240",
@@ -209,6 +210,10 @@ class SunshineApiServer(
                 gson.toJson(SimpleStatusResponse("false", error = "Configuration must be an object with scalar values"))) }
         val current = parseProperties(configFile.readText()).toMutableMap()
         current.putAll(incoming)
+        // Old clients' explicit DeX toggles select the same profile. Existing
+        // installations without the new choice still default to Sunshine HOME.
+        if ("virtual_screen_desktop" !in incoming && "experimental_samsung_dex" in incoming)
+            current["virtual_screen_desktop"] = if (incoming["experimental_samsung_dex"] == "true") "system" else "sunshine"
         StreamingSettings.validate(current)?.let { error ->
             return@synchronized newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
                 gson.toJson(SimpleStatusResponse("false", error = error)))

@@ -11,7 +11,7 @@ data class VirtualScreenState(val active: Boolean = false, val busy: Boolean = f
     val width: Int = 0, val height: Int = 0, val mode: String = "desktop", val launcher: String = "", val error: String? = null,
     val requestedRefreshRate: Int = 0, val actualRefreshRate: Float = 0f, val refreshRateRequestSupported: Boolean = false,
     val dexRequested: Boolean = false, val dexActive: Boolean = false, val detail: String = "", val systemDexMirror: Boolean = false,
-    val mainPanelOff: Boolean = false, val desktopControls: Boolean = false)
+    val mainPanelOff: Boolean = false, val desktopControls: Boolean = false, val retainedDisplayId: Int = -1)
 
 class VirtualScreenClient(private val context: Context, private val disconnected: () -> Unit) {
     private var remote: ISunshineDisplayController? = null
@@ -40,7 +40,7 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         Shizuku.bindUserService(args, connection)
         return try {
             val service = withTimeout(8000) { promise.await() }
-            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 8) { "显示服务版本过旧，请重新绑定" }
+            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 10) { "显示服务版本过旧，请重新绑定" }
             service.attachOwner(owner)
             service
         } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
@@ -53,18 +53,16 @@ class VirtualScreenClient(private val context: Context, private val disconnected
             throw error
         } finally { waiting = null }
     }
-    suspend fun create(width: Int, height: Int, density: Int, surface: Surface, mode: String, fps: Int, samsungDex: Boolean, highRefresh: Boolean): Int =
-        connect().createDisplay(width, height, density, surface, mode, owner, fps, samsungDex, highRefresh)
+    suspend fun create(width: Int, height: Int, density: Int, surface: Surface, mode: String, fps: Int, systemDesktop: Boolean, highRefresh: Boolean): Int =
+        connect().createDisplay(width, height, density, surface, mode, owner, fps, systemDesktop, highRefresh)
     suspend fun blankMain(): Boolean = connect().blankMainScreen(owner)
     suspend fun prepareLocalDex(): Boolean = connect().prepareLocalDex(owner)
+    suspend fun configureDesktop(width: Int, height: Int, samsungDex: Boolean): String =
+        connect().configureDesktop(width, height, samsungDex, owner)
     suspend fun setMainPanelOff(off: Boolean): Boolean = connect().setMainPanelOff(off)
     fun close() { remote?.closeDisplay() }
     fun snapshot(): String = remote?.snapshot().orEmpty()
     fun launch(component: String): Boolean = remote?.launchApp(component) == true
-    fun showControls(exit: () -> Unit): Boolean = remote?.showDesktopControls(object : ISunshineDesktopCallback.Stub() {
-        override fun requestExit() = exit()
-        override fun reportStatus(status: String) { SunshineLogManager.log("DESKTOP_CONTROL", status.take(512)) }
-    }) == true
     fun tasks(): String = remote?.desktopTasks() ?: "[]"
     fun action(action: String, taskId: Int = -1): Boolean = remote?.desktopAction(action, taskId) == true
     fun motion(event: MotionEvent): Boolean = remote?.injectMotion(event) == true

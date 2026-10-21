@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class StreamingSettingsTest {
+    @Test fun desktopChoiceOnlyAcceptsSunshineOrSystem() {
+        assertNull(StreamingSettings.validate(mapOf("virtual_screen_desktop" to "sunshine")))
+        assertNull(StreamingSettings.validate(mapOf("virtual_screen_desktop" to "system")))
+        assertNotNull(StreamingSettings.validate(mapOf("virtual_screen_desktop" to "dex")))
+        assertNotNull(StreamingSettings.validate(mapOf("virtual_screen_desktop" to "")))
+    }
     @Test fun experimentalOptionsRequireExplicitBooleans() {
         assertNull(StreamingSettings.validate(mapOf("experimental_samsung_dex" to "true", "experimental_desktop_high_refresh" to "false")))
         assertNotNull(StreamingSettings.validate(mapOf("experimental_samsung_dex" to "yes")))

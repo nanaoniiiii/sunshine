@@ -16,7 +16,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -27,13 +26,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** A real secondary HOME, with a host-owned escape path also visible above launched apps. */
+/** Session-scoped secondary HOME. Back at the root keeps the desktop in place. */
 class VirtualDesktopActivity : ComponentActivity() {
     private var page by mutableStateOf("apps")
     private fun onRequestedDisplay(intent: Intent): Boolean {
         val expected = intent.getIntExtra("desktop_display_id", -1)
         @Suppress("DEPRECATION") val actual = windowManager.defaultDisplay.displayId
-        if (expected >= 0 && expected != actual) {
+        if (actual == 0 || (expected >= 0 && expected != actual)) {
             android.util.Log.e("SunshineDesktop", "Desktop redirected to display $actual; expected $expected")
             finish()
             return false
@@ -53,6 +52,7 @@ class VirtualDesktopActivity : ComponentActivity() {
             SunshineTheme {
                 val runtime = SunshineRuntimeManager.getInstance()
                 val state by runtime.virtualScreenState.collectAsState()
+                var joinedSession by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
                 val snacks = remember { SnackbarHostState() }
                 var apps by remember { mutableStateOf<List<ResolveInfo>>(emptyList()) }
@@ -60,15 +60,20 @@ class VirtualDesktopActivity : ComponentActivity() {
                 var query by remember { mutableStateOf("") }
                 var refresh by remember { mutableIntStateOf(0) }
                 var loading by remember { mutableStateOf(true) }
-                var confirmExit by remember { mutableStateOf(false) }
-                val controlSpace = if (LocalConfiguration.current.screenWidthDp >= 600) 144.dp else 0.dp
-                fun exit() { scope.launch { val result = runtime.exitVirtualScreen(); if (!result.applied) snacks.showSnackbar(result.message) } }
+                fun exit() { scope.launch {
+                    val result = runtime.leaveSunshineDesktop()
+                    if (result.applied) finish() else snacks.showSnackbar(result.message)
+                } }
                 fun launch(component: ComponentName) { scope.launch {
                     if (!runtime.launchVirtualApp(component.flattenToString())) snacks.showSnackbar("应用未能在此屏幕打开，请重试或从最近任务切换")
                 } }
                 fun settings(action: String) {
                     val component = Intent(action).resolveActivity(packageManager)
                     if (component != null) launch(component) else scope.launch { snacks.showSnackbar("此设备没有对应的设置入口") }
+                }
+                LaunchedEffect(state.active, state.busy) {
+                    if (state.active) joinedSession = true
+                    if (joinedSession && !state.active && !state.busy) finishAndRemoveTask()
                 }
                 LaunchedEffect(refresh) {
                     loading = true
@@ -89,35 +94,31 @@ class VirtualDesktopActivity : ComponentActivity() {
                         }
                     }
                 }
-                BackHandler { if (page != "apps") page = "apps" else confirmExit = true }
-                if (confirmExit) AlertDialog(onDismissRequest = { confirmExit = false }, title = { Text("退出桌面？") },
-                    text = { Text("恢复主屏画面并保留 Sunshine 串流连接。") },
-                    confirmButton = { TextButton(onClick = { confirmExit = false; exit() }) { Text("退出桌面") } },
-                    dismissButton = { TextButton(onClick = { confirmExit = false }) { Text("继续使用") } })
+                BackHandler { page = "apps"; query = "" }
                 Scaffold(snackbarHost = { SnackbarHost(snacks) }, bottomBar = {
                     Surface(tonalElevation = 4.dp) {
                         Row(Modifier.fillMaxWidth().navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { scope.launch { runtime.virtualDesktopAction("back") } }) { Text("返回") }
-                            OutlinedButton(onClick = { page = "apps"; scope.launch { runtime.virtualDesktopAction("home") } }) { Text("全部应用") }
-                            OutlinedButton(onClick = { scope.launch { runtime.virtualDesktopAction("tasks") } }) { Text("最近任务") }
-                            OutlinedButton(onClick = { scope.launch { runtime.virtualDesktopAction("quick") } }) { Text("快捷控制") }
+                            OutlinedButton(onClick = { page = "apps"; query = "" }) { Text("返回") }
+                            OutlinedButton(onClick = { page = "apps"; query = "" }) { Text("全部应用") }
+                            OutlinedButton(onClick = { page = "tasks"; refresh++ }) { Text("最近任务") }
+                            OutlinedButton(onClick = { page = "quick" }) { Text("快捷控制") }
                             FilledTonalButton(onClick = { exit() }, enabled = !state.busy) { Text("退出桌面") }
                         }
                     }
                 }) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(end = controlSpace), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                             Column(Modifier.weight(1f)) {
-                                Text(if (state.dexActive) state.launcher else "Sunshine 桌面", style = MaterialTheme.typography.titleLarge)
+                                Text("Sunshine 桌面", style = MaterialTheme.typography.titleLarge)
                                 Text("${state.width} × ${state.height} · ${if (page == "tasks") "此屏幕的最近任务" else if (page == "quick") "快捷控制" else "全部应用"}", style = MaterialTheme.typography.bodyMedium)
                             }
                             FilledTonalButton(onClick = { exit() }, enabled = !state.busy) { Text("退出桌面") }
                         }
                         if (state.detail.isNotBlank()) Text(state.detail, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                        Text("右上角 Sunshine 控制条可在其他应用上返回、切换和退出；键盘 Ctrl + Alt + Esc 也可退出。", style = MaterialTheme.typography.bodySmall)
+                        Text("返回和主页键停留在此桌面。“退出桌面”返回手机主屏，保留虚拟屏与全屏息屏串流；主机端或 Ctrl + Alt + Esc 可结束虚拟屏。", style = MaterialTheme.typography.bodySmall)
                         if (page == "apps") {
-                            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(end = controlSpace), singleLine = true, label = { Text("搜索应用") })
+                            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("搜索应用") })
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 TextButton(onClick = { refresh++ }) { Text("刷新应用") }
                                 TextButton(onClick = { settings(android.provider.Settings.ACTION_SETTINGS) }) { Text("系统设置") }
@@ -149,7 +150,7 @@ class VirtualDesktopActivity : ComponentActivity() {
                             Text("三星原生 DeX 使用系统任务栏和通知栏。普通第二屏是否有系统通知栏由固件决定；这里提供应用、设置和退出入口。")
                             for ((label, action) in listOf("网络设置" to android.provider.Settings.ACTION_WIFI_SETTINGS, "显示设置" to android.provider.Settings.ACTION_DISPLAY_SETTINGS, "声音设置" to android.provider.Settings.ACTION_SOUND_SETTINGS, "系统设置" to android.provider.Settings.ACTION_SETTINGS))
                                 OutlinedButton(onClick = { settings(action) }, Modifier.fillMaxWidth()) { Text(label) }
-                            FilledTonalButton(onClick = { exit() }, Modifier.fillMaxWidth()) { Text("恢复主屏，查看系统通知") }
+                            FilledTonalButton(onClick = { exit() }, Modifier.fillMaxWidth()) { Text("退出 Sunshine 桌面，保留全屏") }
                         }
                     }
                 }

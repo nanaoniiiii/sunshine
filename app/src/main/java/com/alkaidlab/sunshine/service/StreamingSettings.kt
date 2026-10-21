@@ -30,6 +30,7 @@ data class StreamingSettings(
                 properties[key]?.let { if (it !in listOf("true", "false")) return "$key must be true or false" }
             }
             properties["virtual_screen_mode"]?.let { if (it !in listOf("desktop", "screen_off")) return "virtual_screen_mode must be desktop or screen_off" }
+            properties["virtual_screen_desktop"]?.let { if (it !in listOf("sunshine", "system")) return "virtual_screen_desktop must be sunshine or system" }
             if (properties.any { (key, value) -> key.contains('\n') || key.contains('\r') || key.contains('=') ||
                         value.contains('\n') || value.contains('\r') }) return "Configuration must contain single-line values"
             return null
