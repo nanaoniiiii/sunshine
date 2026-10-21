@@ -99,18 +99,13 @@ def main():
             'tag_name': tag, 'draft': False, 'prerelease': bool(release['prerelease']),
             'published_at': release['published_at'], 'body': (release.get('body') or '')[:12000], 'assets': assets}}
         result = publish_request('/updates/publish', 'POST', json.dumps(manifest, ensure_ascii=False).encode(), secret, 'application/json')
+        if result.get('published') != tag or not re.fullmatch(r'v\d{4}\.\d{2}\.\d{2}\.\d{1,6}', result.get('latest') or ''):
+            raise RuntimeError('Official site did not acknowledge the complete release')
         print(json.dumps(result), flush=True)
-    for attempt in range(12):
-        try:
-            with urllib.request.urlopen(ORIGIN + '/updates/latest.json', timeout=20) as response:
-                live = json.load(response)
-            if live['release']['tag_name'] == result['latest']:
-                print('Verified public official-site manifest: ' + live['release']['tag_name'])
-                return
-        except (urllib.error.URLError, TimeoutError, KeyError):
-            pass
-        time.sleep(10)
-    raise RuntimeError('Uploads completed but public manifest is not visible yet; retry the workflow')
+    # The authenticated commit validates every stored receipt before acknowledging
+    # publication. Anonymous clients can have separate CDN bot policies and must
+    # not turn a completed upload into a failed release or trigger duplicate work.
+    print('Verified authenticated official-site publication: ' + result['published'])
 
 
 if __name__ == '__main__':
