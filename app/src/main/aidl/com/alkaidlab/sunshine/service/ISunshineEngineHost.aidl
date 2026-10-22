@@ -18,4 +18,6 @@ interface ISunshineEngineHost {
     boolean streamResized(long threadId, int width, int height, in Surface surface);
     float[] readAudio(int count, int mode);
     oneway void videoFrameProgress(long threadId, long presentationTimeUs, boolean released);
+    oneway void controllerState(int id, int buttons, float lx, float ly, float rx, float ry, float lt, float rt);
+    oneway void controllerRemoved(int id);
 }
