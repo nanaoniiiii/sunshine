@@ -118,6 +118,7 @@ class SunshineApiServer(
                 uri == "/api/clients/unpair-all" && method == Method.POST -> handleUnpairAll()
                 uri == "/api/pin" && method == Method.POST -> handleSubmitPin(session)
                 uri == "/api/runtime/sessions" && method == Method.GET -> handleGetRuntimeSessions()
+                uri == "/api/controller" && method == Method.GET -> jsonResponse(com.alkaidlab.sunshine.controller.ControllerAdapter.status.value)
                 uri == "/api/virtual-screen" && method == Method.GET -> jsonResponse(SunshineRuntimeManager.getInstance().virtualScreenState.value)
                 uri == "/api/virtual-screen/create" && method == Method.POST -> {
                     val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().createVirtualScreen() }
