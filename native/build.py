@@ -100,9 +100,10 @@ def main():
             dest = ROOT.parent / 'app/src/main/jniLibs' / abi
             dest.mkdir(parents=True, exist_ok=True)
             shutil.copy2(build / 'libsunshine.so', dest / 'libsunshine.so')
+            shutil.copy2(build / 'libsunshine_controller.so', dest / 'libsunshine_controller.so')
             for lib in ['libssl.so', 'libcrypto.so']:
                 shutil.copy2(ssl_prefix / 'lib' / lib, dest / lib)
-            for lib in ['libsunshine.so', 'libssl.so', 'libcrypto.so']:
+            for lib in ['libsunshine.so', 'libsunshine_controller.so', 'libssl.so', 'libcrypto.so']:
                 run([strip, '--strip-unneeded', dest / lib])
             hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(dest.glob('*.so'))}
             (work / f'{abi}-hashes.json').write_text(json.dumps(hashes, indent=2))
