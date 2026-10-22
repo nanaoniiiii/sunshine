@@ -306,7 +306,8 @@ extern "C" JNIEXPORT void JNICALL JNI_NAME(start)(JNIEnv* env,jclass){
         }
         config::video.av1_mode=1;
         config::sunshine.flags[config::flag::PIN_STDIN]=false;
-        config::input.controller=false;
+        config::input.controller=true;
+        config::input.back_button_timeout=std::chrono::milliseconds(-1);
         if(http::init()!=0){android_host::report_error("Unable to prepare pairing credentials");return;}
         auto platform=platf::init();auto input=input::init();
         // Upstream input dispatch relies on this pool preserving event order.
