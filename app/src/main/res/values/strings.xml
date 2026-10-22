@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">Sunshine</string>
     <string name="app_subtitle">Foundation-Sunshine Android</string>
+    <string name="controller_navigation_description">让手柄按控件层级选择、确认和切换菜单，并显示焦点框与扳机快捷圆环。随 Sunshine 服务启停，不过滤键盘或替换其他无障碍服务。</string>
 </resources>

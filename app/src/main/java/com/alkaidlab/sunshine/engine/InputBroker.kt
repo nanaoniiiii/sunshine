@@ -12,6 +12,12 @@ import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 
 /** Android events are delivered by the host's existing Shizuku input service. */
 object InputBroker {
+    @JvmStatic fun controllerState(id: Int, buttons: Int, lx: Float, ly: Float, rx: Float, ry: Float, lt: Float, rt: Float) {
+        try { com.alkaidlab.sunshine.service.SunshineEngineBridge.host?.controllerState(id, buttons, lx, ly, rx, ry, lt, rt) } catch (_: android.os.RemoteException) {}
+    }
+    @JvmStatic fun controllerRemoved(id: Int) {
+        try { com.alkaidlab.sunshine.service.SunshineEngineBridge.host?.controllerRemoved(id) } catch (_: android.os.RemoteException) {}
+    }
     private var context: Context? = null
     private var captureWidth = 1
     private var captureHeight = 1
