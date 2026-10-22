@@ -252,13 +252,19 @@ void touch(client_input_t* input,const touch_port_t& port,const touch_input_t& t
 void pen(client_input_t* input,const touch_port_t& port,const pen_input_t& pen){
     touch_input_t t{pen.eventType,pen.rotation,0,pen.x,pen.y,pen.pressureOrDistance,pen.contactAreaMajor,pen.contactAreaMinor};touch(input,port,t);
 }
-void gamepad(input_t&,int,const gamepad_state_t&){}
+void gamepad(input_t&,int id,const gamepad_state_t& state){
+    jvalue args[8]; args[0].i=id; args[1].i=state.buttonFlags;
+    args[2].f=std::clamp(state.lsX/32767.f,-1.f,1.f); args[3].f=std::clamp(-state.lsY/32767.f,-1.f,1.f);
+    args[4].f=std::clamp(state.rsX/32767.f,-1.f,1.f); args[5].f=std::clamp(-state.rsY/32767.f,-1.f,1.f);
+    args[6].f=state.lt/255.f; args[7].f=state.rt/255.f;
+    android_host::input_event("controllerState","(IIFFFFFF)V",args);
+}
 void gamepad_touch(input_t&,const gamepad_touch_t&){}
 void gamepad_motion(input_t&,const gamepad_motion_t&){}
 void gamepad_battery(input_t&,const gamepad_battery_t&){}
-int alloc_gamepad(input_t&,const gamepad_id_t&,const gamepad_arrival_t&,feedback_queue_t){return -1;}
-void free_gamepad(input_t&,int){}
+int alloc_gamepad(input_t&,const gamepad_id_t& id,const gamepad_arrival_t&,feedback_queue_t){return id.globalIndex>=0&&id.globalIndex<32?0:-1;}
+void free_gamepad(input_t&,int id){jvalue args[1];args[0].i=id;android_host::input_event("controllerRemoved","(I)V",args);}
 platform_caps::caps_t get_capabilities(){return platform_caps::pen_touch;}
-std::vector<std::string_view>& supported_gamepads(){static std::vector<std::string_view> values{"none"};return values;}
+std::vector<std::string_view>& supported_gamepads(){static std::vector<std::string_view> values{"auto","x360"};return values;}
 namespace publish {std::unique_ptr<deinit_t> start(){return nullptr;}}
 }
