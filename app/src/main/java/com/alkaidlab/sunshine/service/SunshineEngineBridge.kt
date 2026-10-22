@@ -62,11 +62,13 @@ object SunshineEngineBridge {
     }
 
     private var lastInputCallback = 0L
-    @JvmStatic @Synchronized fun remoteInput() {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (now - lastInputCallback < 250) return
-        lastInputCallback = now
-        try { host?.remoteInput() } catch (_: RemoteException) {}
+    @JvmStatic fun remoteInput() {
+        synchronized(lock) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastInputCallback < 250) return
+            lastInputCallback = now
+            try { host?.remoteInput() } catch (_: RemoteException) {}
+        }
     }
 
     fun injectMotion(event: MotionEvent): Boolean {
