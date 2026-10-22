@@ -90,7 +90,13 @@ class SunshineEngineClient(private val context: Context) {
                 try { if (current()) runtime.injectMotionEvent(event) } finally { event.recycle() }
             }
             override fun keyboardEvent(keyCode: Int, down: Boolean, modifiers: Int) {
-                if (current()) runtime.handleKeyboardEvent(keyCode, down, modifiers)
+                if (current() && !com.alkaidlab.sunshine.controller.ControllerAdapter.remoteKey(keyCode, down, modifiers)) runtime.handleKeyboardEvent(keyCode, down, modifiers)
+            }
+            override fun controllerState(id: Int, buttons: Int, lx: Float, ly: Float, rx: Float, ry: Float, lt: Float, rt: Float) {
+                if (current()) com.alkaidlab.sunshine.controller.ControllerAdapter.remoteState(id, buttons, lx, ly, rx, ry, lt, rt)
+            }
+            override fun controllerRemoved(id: Int) {
+                if (current()) com.alkaidlab.sunshine.controller.ControllerAdapter.remoteRemoved(id)
             }
             override fun streamPaused(threadId: Long): Boolean = current() && runtime.pauseStreamSurface(threadId)
             override fun streamResized(threadId: Long, width: Int, height: Int, surface: Surface): Boolean =
@@ -142,6 +148,7 @@ class SunshineEngineClient(private val context: Context) {
     private fun disconnected(epoch: Long) {
         if (generation != epoch) return
         val runtime = SunshineRuntimeManager.getInstance()
+        com.alkaidlab.sunshine.controller.ControllerAdapter.releaseRemoteControllers()
         synchronized(runtime) {
             runtime.setEngineReady(false)
             ++generation // Reject late callbacks from the dead process.
