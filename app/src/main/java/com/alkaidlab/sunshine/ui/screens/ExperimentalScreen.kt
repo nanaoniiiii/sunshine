@@ -14,6 +14,8 @@ import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
 
 @Composable
 fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
+    var testingController by remember { mutableStateOf(false) }
+    if (testingController) { ControllerTestScreen { testingController = false }; return }
     val draft by viewModel.settingsDraft.collectAsState()
     val state by viewModel.virtualScreenState.collectAsState()
     val saveError by viewModel.settingsSaveError.collectAsState()
@@ -22,12 +24,13 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
             TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) {
                 Icon(Icons.Default.ArrowBack, null); Spacer(Modifier.width(8.dp)); Text("返回设置")
             }
-            PageHeader("实验性功能", "第二屏桌面与高刷新率")
+            PageHeader("实验性功能", "全局手柄 / 遥控适配器与第二屏")
         }
         if (saveError != null) item { SectionCard("设置未保存", Icons.Default.ErrorOutline) {
             Text(saveError.orEmpty(), color = AccentRed)
             TextButton(onClick = viewModel::retrySettingsSave) { Text("重试") }
         } }
+        item { ControllerSettings { testingController = true } }
         item { SectionCard("三星 DeX", Icons.Default.DesktopWindows) {
             Text("在设置 → 虚拟屏打开“第二屏桌面模式”，再选择设备自带桌面（DeX 等）。默认开启虚拟屏只进行主屏息屏串流。",
                 color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
