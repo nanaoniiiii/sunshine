@@ -282,14 +282,7 @@ class SunshineRuntimeManager private constructor() {
         try {
             val confFile = java.io.File(c.filesDir, "sunshine.conf")
             if (confFile.exists()) {
-                val props = mutableMapOf<String, String>()
-                confFile.readLines().forEach { line ->
-                    val t = line.trim()
-                    if (t.isNotEmpty() && !t.startsWith("#") && t.contains("=")) {
-                        val parts = t.split("=", limit = 2)
-                        props[parts[0].trim()] = parts[1].trim()
-                    }
-                }
+                val props = SunshineConfParser.parse(confFile.readLines())
                 encoderH264 = props["encoder_h264"] ?: "auto"
                 encoderHevc = props["encoder_hevc"] ?: "auto"
                 engineClient?.configureEncoders(encoderH264, encoderHevc)
