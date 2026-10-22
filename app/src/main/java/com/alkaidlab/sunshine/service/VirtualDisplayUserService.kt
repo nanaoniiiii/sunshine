@@ -424,11 +424,15 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         !result.contains("Error:") && !result.contains("Error type")
     } catch (_: Exception) { false }
 
+    /** Reads the hidden ActivityManager displayId field; null when the OEM build lacks it. */
+    private fun taskDisplayId(task: android.app.ActivityManager.RunningTaskInfo): Int? =
+        runCatching { task.javaClass.getField("displayId").getInt(task) }.getOrNull()
+
     private fun awaitForeground(component: ComponentName, displayId: Int): Boolean {
         repeat(15) {
             @Suppress("DEPRECATION")
             val tasks = (shell.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getRunningTasks(100)
-            val first = tasks.firstOrNull { task -> runCatching { task.javaClass.getField("displayId").getInt(task) == displayId }.getOrDefault(false) }
+            val first = tasks.firstOrNull { task -> taskDisplayId(task) == displayId }
             if (first?.topActivity == component) return true
             Thread.sleep(100)
         }
@@ -449,7 +453,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             @Suppress("DEPRECATION")
             val tasks = (shell.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getRunningTasks(100)
             if (tasks.any { task ->
-                task.topActivity?.packageName == value.packageName && runCatching { task.javaClass.getField("displayId").getInt(task) == id }.getOrDefault(false)
+                task.topActivity?.packageName == value.packageName && taskDisplayId(task) == id
             }) return true
             Thread.sleep(100)
         }
