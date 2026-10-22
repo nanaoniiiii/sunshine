@@ -6,6 +6,10 @@ import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 import rikka.shizuku.Shizuku
 
 class SunshineApp : Application() {
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_RUNNING_LOW) com.alkaidlab.sunshine.ui.desktop.DesktopArtworkCache.clear()
+    }
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {
         SunshineLogManager.log("SHIZUKU", "Shizuku binder received")

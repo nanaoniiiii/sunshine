@@ -181,6 +181,7 @@ class SunshineService : Service() {
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 }
                 startForeground(NOTIFICATION_ID, buildNotification("正在初始化推流服务..."), foregroundType)
+                com.alkaidlab.sunshine.controller.ControllerAdapter.start(this)
                 if (resultData != null && SunshineRuntimeManager.getInstance().getMediaProjection() == null) {
                     try {
                         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -358,6 +359,7 @@ class SunshineService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        com.alkaidlab.sunshine.controller.ControllerAdapter.stop()
         engineClient.stop()
         SunshineRuntimeManager.getInstance().engineClient = null
         SunshineRuntimeManager.getInstance().releaseAll()

@@ -7,7 +7,7 @@
 - [universal](https://nanaoni.tech/downloads/latest/universal.apk)
 - [GitHub Release](https://github.com/nanaoniiiii/sunshine/releases/latest)
 
-当前公开版本为 v2026.10.21.2。官网按发布时推送的副本提供安装包，访客访问更新清单或下载文件时不再查询 GitHub，也不临时从 GitHub 回源下载。
+当前版本以官网已推送的更新清单为准。官网按发布时推送的副本提供安装包，访客访问更新清单或下载文件时不再查询 GitHub，也不临时从 GitHub 回源下载。
 
 ## 发布流程
 
