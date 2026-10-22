@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.display.VirtualDisplay
 import android.hardware.display.DisplayManager
-import android.graphics.Point
 import android.view.Display
 import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
@@ -67,6 +66,16 @@ class SunshineRuntimeManager private constructor() {
     val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     val virtualSourceFrameLimit: Int get() = frameDispatcher.virtualSourceFrameLimit
     private var captureDisplayManager: DisplayManager? = null
+    private val captureCanvasSync = CaptureCanvasSync(
+        context = { context },
+        displayManager = { captureDisplayManager },
+        virtualScreenState = { _virtualScreenState },
+        virtualDisplay = { virtualDisplay },
+        frameDispatcher = frameDispatcher,
+        engineClient = { engineClient },
+        autoRotateEnabled = { autoRotateEnabled },
+        rotationCompatEnabled = { rotationCompatEnabled },
+    )
     private val _fullscreenBusy = MutableStateFlow(false)
     private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
@@ -77,7 +86,7 @@ class SunshineRuntimeManager private constructor() {
                 fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
         }
         override fun onDisplayChanged(displayId: Int) {
-            if (displayId == Display.DEFAULT_DISPLAY) syncCaptureSize()
+            if (displayId == Display.DEFAULT_DISPLAY) captureCanvasSync.syncCaptureSize()
             val current = _virtualScreenState.value
             if (current.active && current.mode == "desktop" && current.displayId == displayId) {
                 captureDisplayManager?.getDisplay(displayId)?.let { display ->
@@ -116,54 +125,6 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    private fun displayCaptureSize(fallbackWidth: Int, fallbackHeight: Int): IntArray {
-        _virtualScreenState.value.takeIf { it.active && it.mode == "desktop" }?.let { return intArrayOf(it.width, it.height) }
-        val primarySize = Point()
-        @Suppress("DEPRECATION") captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(primarySize)
-        if (primarySize.x > 0 && primarySize.y > 0) return intArrayOf(primarySize.x, primarySize.y)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val manager = context?.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
-            val bounds = manager?.maximumWindowMetrics?.bounds
-            if (bounds != null && bounds.width() > 0 && bounds.height() > 0)
-                return intArrayOf(bounds.width(), bounds.height())
-        }
-        val size = Point()
-        captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(size)
-        return if (size.x > 0 && size.y > 0) intArrayOf(size.x, size.y)
-        else intArrayOf(fallbackWidth.coerceAtLeast(1), fallbackHeight.coerceAtLeast(1))
-    }
-
-    /** A low-resolution or differently oriented first client must never shrink later clients. */
-    private fun syncCaptureSize(): Boolean {
-        if ((_virtualScreenState.value.active && _virtualScreenState.value.mode == "desktop") || _virtualScreenState.value.busy) return true
-        val display = virtualDisplay ?: return false
-        if (!frameDispatcher.isRunning) return false
-        frameDispatcher.sourceRotation = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
-        val size = displayCaptureSize(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
-        if (size[0] == frameDispatcher.sourceWidth && size[1] == frameDispatcher.sourceHeight) {
-            engineClient?.configureCanvas(size[0], size[1], autoRotateEnabled, rotationCompatEnabled)
-            return true
-        }
-        val oldWidth = frameDispatcher.sourceWidth
-        val oldHeight = frameDispatcher.sourceHeight
-        try {
-            display.surface = null
-            val resizedSurface = frameDispatcher.resizeCaptureSync(size[0], size[1])
-                ?: throw IllegalStateException("Capture surface resize failed")
-            display.resize(size[0], size[1], context?.resources?.displayMetrics?.densityDpi ?: 300)
-            display.surface = resizedSurface
-            engineClient?.configureCanvas(size[0], size[1], autoRotateEnabled, rotationCompatEnabled)
-            SunshineLogManager.log("VD", "Capture resized to ${size[0]}x${size[1]} (display pixels)")
-            return true
-        } catch (e: Exception) {
-            try {
-                display.resize(oldWidth, oldHeight, context?.resources?.displayMetrics?.densityDpi ?: 300)
-                display.surface = frameDispatcher.resizeCaptureSync(oldWidth, oldHeight)
-            } catch (_: Exception) {}
-            SunshineLogManager.log("VD_ERR", "Capture resize failed: ${e.message}")
-            return false
-        }
-    }
     private var appSessionGuard: AppSessionGuard? = null
     private fun ensureAppGuard(): AppSessionGuard? {
         if (appSessionGuard == null) context?.let { ctx ->
@@ -297,7 +258,7 @@ class SunshineRuntimeManager private constructor() {
                 autoRotateEnabled = (props["auto_rotate"] ?: "true") != "false"
                 rotationCompatEnabled = props["rotation_compat"] == "true"
                 val capture = if (frameDispatcher.isRunning) intArrayOf(frameDispatcher.sourceWidth, frameDispatcher.sourceHeight)
-                    else displayCaptureSize(1, 1)
+                    else captureCanvasSync.displayCaptureSize(1, 1)
                 engineClient?.configureCanvas(capture[0], capture[1], autoRotateEnabled, rotationCompatEnabled)
                 autoScaleEnabled = (props["auto_scale"] ?: "true") != "false"
                 configuredMaxBitrate = (props["max_bitrate"]?.toIntOrNull() ?: 50000).coerceIn(1000, 150000)
@@ -506,7 +467,7 @@ class SunshineRuntimeManager private constructor() {
 
     fun getMediaProjection(): MediaProjection? = mediaProjection
 
-    fun getCaptureDimensions(width: Int, height: Int): IntArray = displayCaptureSize(width, height)
+    fun getCaptureDimensions(width: Int, height: Int): IntArray = captureCanvasSync.displayCaptureSize(width, height)
 
     private fun displayClient(): VirtualScreenClient {
         return virtualScreenClient ?: VirtualScreenClient(checkNotNull(context)) {
@@ -621,7 +582,7 @@ class SunshineRuntimeManager private constructor() {
     private fun restorePhysicalCapture() {
         frameDispatcher.setVirtualSource(false)
         val mp = mediaProjection ?: return
-        val dimensions = displayCaptureSize(lastWidth, lastHeight)
+        val dimensions = captureCanvasSync.displayCaptureSize(lastWidth, lastHeight)
         val surface = frameDispatcher.resizeCaptureSync(dimensions[0], dimensions[1]) ?: return
         virtualDisplay?.release()
         virtualDisplay = mp.createVirtualDisplay("SunshineVirtualDisplay", dimensions[0], dimensions[1],
@@ -841,7 +802,7 @@ class SunshineRuntimeManager private constructor() {
         } else if (mp != null) {
             try {
                 if (!frameDispatcher.isRunning || virtualDisplay == null) {
-                    val size = displayCaptureSize(session.width, session.height)
+                    val size = captureCanvasSync.displayCaptureSize(session.width, session.height)
                     val inputSurface = frameDispatcher.start(size[0], size[1])
                     val density = context?.resources?.displayMetrics?.densityDpi ?: 300
                     virtualDisplay?.release()
@@ -849,7 +810,7 @@ class SunshineRuntimeManager private constructor() {
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, inputSurface, null, null)
                     SunshineLogManager.log("VD", "VirtualDisplay captures ${size[0]}x${size[1]} display pixels; client=${session.width}x${session.height} @ ${density}dpi")
                 }
-                syncCaptureSize()
+                captureCanvasSync.syncCaptureSize()
                 frameDispatcher.addSurface(surface, session.width, session.height, session.fps, threadId)
                 SunshineLogManager.log("VD", "Client (${session.clientName}) current surface registered into frame dispatcher")
             } catch (error: Exception) {
@@ -1002,7 +963,7 @@ class SunshineRuntimeManager private constructor() {
                 PrivilegedShell.run(arrayOf("wm", "size", size?.toString() ?: "reset"), 3000) != null
             override fun awaitDisplay(size: FullscreenDisplay.Size): Boolean {
                 repeat(30) {
-                    val current = displayCaptureSize(0, 0)
+                    val current = captureCanvasSync.displayCaptureSize(0, 0)
                     if (current[0] == size.width && current[1] == size.height) return true
                     Thread.sleep(50)
                 }
@@ -1012,7 +973,7 @@ class SunshineRuntimeManager private constructor() {
                 val latch = CountDownLatch(1)
                 var synced = false
                 captureHandler.post {
-                    try { synced = !frameDispatcher.isRunning || virtualDisplay == null || syncCaptureSize() }
+                    try { synced = !frameDispatcher.isRunning || virtualDisplay == null || captureCanvasSync.syncCaptureSize() }
                     finally { latch.countDown() }
                 }
                 return latch.await(6, TimeUnit.SECONDS) && synced
