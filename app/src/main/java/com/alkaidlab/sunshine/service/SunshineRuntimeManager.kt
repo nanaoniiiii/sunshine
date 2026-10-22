@@ -369,7 +369,7 @@ class SunshineRuntimeManager private constructor() {
                     prevTxTimeMs = nowMs
 
                     // 3. Auto-detect connected peer IPs from /proc/net/tcp & /proc/net/tcp6
-                    val peerIps = detectConnectedPeerIps()
+                    val peerIps = NetworkPeerProbe.detectConnectedPeerIps()
                     if (peerIps.isNotEmpty()) {
                         lastDiscoveredClient = peerIps.last()
                     }
@@ -378,7 +378,7 @@ class SunshineRuntimeManager private constructor() {
                     val probeIp = activeSessions.lastOrNull()?.clientIp?.takeIf { it != "127.0.0.1" }
                         ?: peerIps.lastOrNull()
                     if (probeIp != null && probeIp != "127.0.0.1") {
-                        val rtt = measurePingRttMs(probeIp, timeRegex)
+                        val rtt = NetworkPeerProbe.measurePingRttMs(probeIp, timeRegex)
                         if (rtt != null && rtt > 0.0) {
                             lastNetworkLatencyMs = rtt
                             lastNetworkProbeIp = probeIp
@@ -439,63 +439,6 @@ class SunshineRuntimeManager private constructor() {
             telemetryThread?.interrupt()
         } catch (_: Throwable) {}
         telemetryThread = null
-    }
-
-    private fun detectConnectedPeerIps(): List<String> {
-        val result = linkedSetOf<String>()
-        val sunshinePortsHex = setOf("BB70", "BB75", "BB8A", "BB7E") // 47984, 47989, 48010, 47998
-        listOf("/proc/net/tcp6", "/proc/net/tcp").forEach { path ->
-            try {
-                java.io.File(path).forEachLine { line ->
-                    val parts = line.trim().split(Regex("\\s+"))
-                    if (parts.size >= 4) {
-                        val local = parts[1].uppercase()
-                        val remote = parts[2].uppercase()
-                        val localPort = local.substringAfter(":", "")
-                        if (localPort in sunshinePortsHex) {
-                            val remHex = remote.substringBefore(":", "")
-                            val ip = decodeProcHexIp(remHex)
-                            if (ip != null && ip != "127.0.0.1" && ip != "0.0.0.0" && !ip.startsWith("0:")) {
-                                result.add(ip)
-                            }
-                        }
-                    }
-                }
-            } catch (_: Throwable) {}
-        }
-        return result.toList()
-    }
-
-    private fun decodeProcHexIp(hex: String): String? {
-        return try {
-            if (hex.length == 8) {
-                val b0 = hex.substring(6, 8).toInt(16)
-                val b1 = hex.substring(4, 6).toInt(16)
-                val b2 = hex.substring(2, 4).toInt(16)
-                val b3 = hex.substring(0, 2).toInt(16)
-                if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0) null else "$b0.$b1.$b2.$b3"
-            } else if (hex.length == 32 && hex.startsWith("0000000000000000FFFF0000")) {
-                decodeProcHexIp(hex.substring(24, 32))
-            } else null
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun measurePingRttMs(ip: String, timeRegex: Regex): Double? {
-        var proc: java.lang.Process? = null
-        return try {
-            proc = ProcessBuilder("ping", "-c", "1", "-W", "1", ip).redirectErrorStream(true).start()
-            if (!proc.waitFor(800, java.util.concurrent.TimeUnit.MILLISECONDS)) return null
-            timeRegex.find(proc.inputStream.bufferedReader().readText())?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            null
-        } catch (_: Exception) {
-            null
-        } finally {
-            proc?.destroy()
-        }
     }
 
     fun setMediaProjection(projection: MediaProjection?) {
@@ -764,7 +707,7 @@ class SunshineRuntimeManager private constructor() {
                         shouldSendAudio: Boolean, callerThreadId: Long, appId: Int = 1, clientId: String = "", clientAddress: String = "") {
         val sessionIndex = activeSessions.size + 1
         reloadConfig()
-        val peerIps = detectConnectedPeerIps()
+        val peerIps = NetworkPeerProbe.detectConnectedPeerIps()
         if (peerIps.isNotEmpty()) {
             lastDiscoveredClient = peerIps.last()
         }
