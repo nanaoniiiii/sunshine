@@ -1,7 +1,9 @@
 package com.alkaidlab.sunshine.service
 
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.hardware.display.VirtualDisplay
 import android.hardware.display.DisplayManager
 import android.graphics.Point
@@ -29,7 +31,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import rikka.shizuku.Shizuku
 import java.lang.reflect.Method
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -70,6 +71,20 @@ class SunshineRuntimeManager private constructor() {
     private val _fullscreenBusy = MutableStateFlow(false)
     private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
+    private val fullscreenDisplayController = FullscreenDisplayController(object : FullscreenDisplayController.Host {
+        override fun captureDisplayRotation(): Int =
+            captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
+        override fun contentResolver(): ContentResolver? = context?.contentResolver
+        override fun captureDisplaySize(width: Int, height: Int): IntArray = displayCaptureSize(width, height)
+        override fun isFrameDispatcherRunning(): Boolean = frameDispatcher.isRunning
+        override fun hasVirtualDisplay(): Boolean = virtualDisplay != null
+        override fun syncCaptureSize(): Boolean = this@SunshineRuntimeManager.syncCaptureSize()
+        override fun postToCaptureHandler(action: () -> Unit) {
+            captureHandler.post(action)
+        }
+        override fun fullscreenRestorePrefs(): SharedPreferences? =
+            context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE)
+    })
     private val captureDisplayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
         override fun onDisplayRemoved(displayId: Int) {
@@ -679,7 +694,7 @@ class SunshineRuntimeManager private constructor() {
                 launcher = "手机主屏（保留虚拟屏）")
             restorePhysicalCapture()
             val fit = withContext(Dispatchers.IO) {
-                val backend = fullscreenBackend(rememberOriginal = true)
+                val backend = fullscreenDisplayController.backend(rememberOriginal = true)
                 physicalBefore = backend.snapshot()
                 FullscreenDisplay.apply(FullscreenDisplay.Size(previous.width, previous.height), backend) {
                     activeSessions.isNotEmpty()
@@ -697,7 +712,7 @@ class SunshineRuntimeManager private constructor() {
             withContext(Dispatchers.IO) { runCatching { virtualScreenClient?.close() } }
             _virtualScreenState.value = VirtualScreenState(busy = true, error = error.message)
             val restored = withContext(Dispatchers.IO) {
-                physicalBefore?.let { FullscreenDisplay.restore(it, fullscreenBackend()) } ?: true
+                physicalBefore?.let { FullscreenDisplay.restore(it, fullscreenDisplayController.backend()) } ?: true
             }
             if (restored && !alreadySaved) restorePrefs?.edit()?.remove("original")?.commit()
             runCatching { restorePhysicalCapture() }
@@ -967,59 +982,6 @@ class SunshineRuntimeManager private constructor() {
     fun controlVideo(sessionId: Long, operation: Int, value: Int = 0): Boolean =
         engineClient?.controlVideo(sessionId, operation, value) == true
 
-    private fun rememberFullscreenDisplay(before: FullscreenDisplay.Snapshot) {
-        val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: error("No host context")
-        if (prefs.contains("original")) return
-        val data = org.json.JSONObject().put("width", before.override?.width ?: 0)
-            .put("height", before.override?.height ?: 0).put("userRotation", before.userRotation)
-            .put("autoRotate", before.autoRotate).put("fixedRotation", before.fixedRotation)
-        check(prefs.edit().putString("original", data.toString()).commit())
-    }
-
-    private fun fullscreenBackend(rememberOriginal: Boolean = false): FullscreenDisplay.Backend {
-        // Some Android versions print valid wm help with exit code -1 (255); mutations still require 0.
-        val help = PrivilegedShell.run(arrayOf("wm", "help"), acceptedExitCodes = setOf(0, 1, 255)).orEmpty()
-        val fixedCommand = FullscreenDisplay.rotationCommand(help, fixed = true)
-        val rotationCommand = FullscreenDisplay.rotationCommand(help)
-        return object : FullscreenDisplay.Backend {
-            override fun rotation() = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
-            override fun snapshot(): FullscreenDisplay.Snapshot? {
-                val output = PrivilegedShell.run(arrayOf("wm", "size")) ?: return null
-                val windows = PrivilegedShell.run(arrayOf("dumpsys", "window", "displays")) ?: return null
-                val fixed = FullscreenDisplay.parseFixedRotation(windows) ?: return null
-                val resolver = context?.contentResolver ?: return null
-                return FullscreenDisplay.parseOverride(output)?.copy(rotation = rotation(), fixedRotation = fixed,
-                    autoRotate = android.provider.Settings.System.getInt(resolver, "accelerometer_rotation", 0) != 0,
-                    userRotation = android.provider.Settings.System.getInt(resolver, "user_rotation", rotation()))
-                    ?.also { if (rememberOriginal) rememberFullscreenDisplay(it) }
-            }
-            override fun setFixedRotation(enabled: Boolean): Boolean = fixedCommand != null &&
-                PrivilegedShell.run(arrayOf("wm", fixedCommand, if (enabled) "enabled" else "disabled"), 3000) != null
-            override fun setRotation(rotation: Int, autoRotate: Boolean): Boolean = rotationCommand != null &&
-                PrivilegedShell.run(if (autoRotate) arrayOf("wm", rotationCommand, "free")
-                    else arrayOf("wm", rotationCommand, "lock", rotation.toString()), 3000) != null
-            override fun setOverride(size: FullscreenDisplay.Size?) =
-                PrivilegedShell.run(arrayOf("wm", "size", size?.toString() ?: "reset"), 3000) != null
-            override fun awaitDisplay(size: FullscreenDisplay.Size): Boolean {
-                repeat(30) {
-                    val current = displayCaptureSize(0, 0)
-                    if (current[0] == size.width && current[1] == size.height) return true
-                    Thread.sleep(50)
-                }
-                return false
-            }
-            override fun syncCapture(): Boolean {
-                val latch = CountDownLatch(1)
-                var synced = false
-                captureHandler.post {
-                    try { synced = !frameDispatcher.isRunning || virtualDisplay == null || syncCaptureSize() }
-                    finally { latch.countDown() }
-                }
-                return latch.await(6, TimeUnit.SECONDS) && synced
-            }
-        }
-    }
-
     private fun restoreFullscreenIfIdle() {
         val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: return
         if (!prefs.contains("original")) return
@@ -1033,7 +995,7 @@ class SunshineRuntimeManager private constructor() {
                     FullscreenDisplay.Size(data.getInt("width"), data.getInt("height")) else null
                 val before = FullscreenDisplay.Snapshot(size, 0, autoRotate = data.getBoolean("autoRotate"),
                     userRotation = data.getInt("userRotation"), fixedRotation = data.getBoolean("fixedRotation"))
-                if (FullscreenDisplay.restore(before, fullscreenBackend())) {
+                if (FullscreenDisplay.restore(before, fullscreenDisplayController.backend())) {
                     prefs.edit().remove("original").commit()
                     SunshineLogManager.log("FULLSCREEN", "Restored original display after all clients exited")
                 }
@@ -1055,7 +1017,7 @@ class SunshineRuntimeManager private constructor() {
                 return@withContext FullscreenDisplay.Result(false, "屏幕采集尚未就绪，请稍后重试")
             fun isCurrent(): Boolean = activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime } &&
                 engineClient?.videoSessions()?.any { it.sessionId == sessionId } == true
-            val backend = fullscreenBackend(rememberOriginal = true)
+            val backend = fullscreenDisplayController.backend(rememberOriginal = true)
             val result = FullscreenDisplay.apply(FullscreenDisplay.Size(selected.width, selected.height), backend, ::isCurrent)
             SunshineLogManager.log("FULLSCREEN", "Session $sessionId: ${result.message}")
             result
