@@ -11,7 +11,7 @@
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
 
-**[v2026.10.23.1：主机桌面与全局手柄适配](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.23.1)**：Sunshine 桌面采用横向应用栏、右侧图标与四周颜色延伸、跟随焦点的大标题和图标任务卡片。全局适配器随 Sunshine 服务启动，支持手机直连与 Moonlight 接收端手柄，提供系统导航、鼠标和游戏原生三种模式、LT／RT 即时圆环、实验室自定义绑定和实时测试页。详见[使用说明](docs/controller-adapter.md)与[实机验证范围](docs/validation/controller-desktop-2026-10-23.md)。
+**[v2026.10.23.2：主机桌面与全局手柄适配](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.23.2)**：Sunshine 桌面采用横向应用栏、右侧图标与四周颜色延伸、跟随焦点的大标题和图标任务卡片。全局适配器随 Sunshine 服务启动，支持手机直连与 Moonlight 接收端手柄，提供系统导航、鼠标和游戏原生三种模式、LT／RT 即时圆环、实验室自定义绑定和实时测试页。补丁更正主屏电源菜单的系统调用。详见[使用说明](docs/controller-adapter.md)与[实机验证范围](docs/validation/controller-desktop-2026-10-23.md)。
 
 **[v2026.10.21.2 已发布](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.21.2)**：开启虚拟屏默认仅关闭手机面板并串流原主屏。设置中打开「第二屏桌面模式」后，才展开 Sunshine／设备自带桌面双选。退出 Sunshine 桌面会返回手机主页，保留虚拟屏与全屏息屏串流；移除常驻悬浮窗。S20+ 原生 DeX 逻辑分辨率已验证 2560×1440 和 1440×3168，竖屏任务栏缺键未修复，保留三星原生任务栏。152 项应用测试通过。详见[桌面模式与分辨率验收](docs/validation/desktop-profiles-2026-10-21.md)。
 
