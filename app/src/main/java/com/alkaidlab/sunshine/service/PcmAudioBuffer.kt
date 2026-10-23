@@ -22,9 +22,21 @@ class PcmAudioBuffer(capacityFloats: Int) {
         head = (head + overflow) % samples.size
         size -= overflow
         val offset = available - retained
-        for (i in 0 until retained) samples[(head + size + i) % samples.size] = source[offset + i]
+        // Bulk copy instead of a per-sample modulo store: identical element
+        // order, only fewer index computations on the audio hot path.
+        copyRingIn(source, offset, retained)
         size += retained
         dataAvailable.signalAll()
+    }
+
+    /** Copies [length] floats from [source] at [srcOffset] into the ring tail. */
+    private fun copyRingIn(source: FloatArray, srcOffset: Int, length: Int) {
+        if (length <= 0) return
+        val start = (head + size) % samples.size
+        val firstLen = minOf(length, samples.size - start)
+        System.arraycopy(source, srcOffset, samples, start, firstLen)
+        val rest = length - firstLen
+        if (rest > 0) System.arraycopy(source, srcOffset + firstLen, samples, 0, rest)
     }
 
     fun read(count: Int): FloatArray = lock.withLock { readLocked(count) }
@@ -32,7 +44,11 @@ class PcmAudioBuffer(capacityFloats: Int) {
     private fun readLocked(count: Int): FloatArray {
         val length = minOf(count.coerceAtLeast(0), size) / 2 * 2
         val result = FloatArray(length)
-        for (i in result.indices) result[i] = samples[(head + i) % samples.size]
+        // Bulk copy instead of a per-sample modulo load: identical channel order.
+        val firstLen = minOf(length, samples.size - head)
+        System.arraycopy(samples, head, result, 0, firstLen)
+        val rest = length - firstLen
+        if (rest > 0) System.arraycopy(samples, 0, result, firstLen, rest)
         head = (head + length) % samples.size
         size -= length
         return result
