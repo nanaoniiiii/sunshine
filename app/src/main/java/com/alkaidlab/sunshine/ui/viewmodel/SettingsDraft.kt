@@ -27,7 +27,5 @@ data class SettingsDraft(val values: Map<String, String>) {
             "max_bitrate" to c.maxBitrate, "min_bitrate" to c.minBitrate, "port" to c.port,
             "web_port" to c.webPort, "address_family" to c.addressFamily, "max_stream_fps" to c.maxStreamFps,
             "repeat_frames" to c.repeatFrames, "audio_buffer_ms" to c.audioBufferMs, "wifi_low_latency" to c.wifiLowLatency))
-        fun reconcile(draft: SettingsDraft?, previous: ConfigResponse?, current: ConfigResponse): SettingsDraft =
-            if (draft == null || (previous != null && draft == from(previous))) from(current) else draft
     }
 }
