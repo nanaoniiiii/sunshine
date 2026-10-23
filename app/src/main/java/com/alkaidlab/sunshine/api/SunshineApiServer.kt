@@ -372,7 +372,7 @@ class SunshineApiServer(
             return jsonResponse(SimpleStatusResponse("false", "PIN is empty"))
         }
 
-        SunshineLogManager.log("PIN", "Submitting PIN: $pin")
+        SunshineLogManager.log("PIN", "Submitting PIN")
         val ok = SunshineRuntimeManager.getInstance().submitPin(pin)
         return if (ok) {
             jsonResponse(SimpleStatusResponse("true", "PIN submitted"))
@@ -447,3 +447,4 @@ class SunshineApiServer(
         return result
     }
 }
+
