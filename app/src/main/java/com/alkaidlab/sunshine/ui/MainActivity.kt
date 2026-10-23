@@ -48,6 +48,7 @@ enum class NavigationTab(val title: String, val icon: ImageVector) {
 }
 
 class MainActivity : ComponentActivity() {
+    private val trustedKeyguard = com.alkaidlab.sunshine.service.TrustedKeyguardDismissal()
 
     private val viewModel: SunshineViewModel by viewModels()
     private var projectionRequestPending = false
@@ -158,9 +159,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        trustedKeyguard.onForeground(this)
         ensureAppOpsPermissions()
         viewModel.checkSystemPermissions()
         viewModel.fetchAll()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) trustedKeyguard.onForeground(this)
     }
 
     private fun ensureAppOpsPermissions() {

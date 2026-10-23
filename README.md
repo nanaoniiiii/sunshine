@@ -7,9 +7,11 @@
 [![Website](https://img.shields.io/badge/官网-nanaoni.tech-335BCC)](https://nanaoni.tech)
 [![Shizuku](https://img.shields.io/badge/远程输入-Shizuku-6750A4)](https://github.com/RikkaApps/Shizuku)
 
-**[访问官网](https://nanaoni.tech) · [下载安装包](https://github.com/nanaoniiiii/sunshine/releases/latest) · [常见问题](docs/faq.md) · [反馈问题](https://github.com/nanaoniiiii/sunshine/issues)**
+**[官网下载](https://nanaoni.tech) · [GitHub Releases](https://github.com/nanaoniiiii/sunshine/releases/latest) · [常见问题](docs/faq.md) · [反馈问题](https://github.com/nanaoniiiii/sunshine/issues)**
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
+
+**[v2026.10.24.3：受信任锁屏与桌面退出修复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.24.3)**：修正手机已受信任时仍误报需要解锁、阻止虚拟屏／DeX 启动的问题；通过系统接口收起无需身份验证的锁屏层，使退出 Sunshine 桌面回到手机主页，并保留虚拟屏、全屏与息屏串流。筛选合入音频缓冲、日志、配对接口和依赖清理改动。225 项应用测试通过，S20+ 的三种显示模式与退出恢复完成实测。详见[优化筛选与局部收益](docs/reviews/developer-optimizations-2026-10-24.md)和[实机验收范围](docs/validation/reviewed-optimizations-2026-10-24.md)。
 
 **[v2026.10.23.2：主机桌面与全局手柄适配](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.23.2)**：Sunshine 桌面采用横向应用栏、右侧图标与四周颜色延伸、跟随焦点的大标题和图标任务卡片。全局适配器随 Sunshine 服务启动，支持手机直连与 Moonlight 接收端手柄，提供系统导航、鼠标和游戏原生三种模式、LT／RT 即时圆环、实验室自定义绑定和实时测试页。补丁更正主屏电源菜单的系统调用。详见[使用说明](docs/controller-adapter.md)与[实机验证范围](docs/validation/controller-desktop-2026-10-23.md)。
 
@@ -63,7 +65,7 @@
 ## 快速开始（以 Moonlight 为例）
 
 1. 准备 Android 10 或以上手机／平板，以及能运行 Moonlight 的电脑、手机或其他客户端，两端接入同一可互通的局域网。
-2. 在 [Releases](https://github.com/nanaoniiiii/sunshine/releases/latest) 下载 APK：多数现代手机选 `arm64-v8a`；32 位 ARM 选 `armeabi-v7a`；不确定时选 `universal`。若通用包以 ZIP 提供，请先解压其中的 APK 再安装。
+2. 从[官网](https://nanaoni.tech)下载安装包，也可使用 [GitHub Releases](https://github.com/nanaoniiiii/sunshine/releases/latest)：多数现代手机选 `arm64-v8a`；32 位 ARM 选 `armeabi-v7a`；不确定时选 `universal`。若通用包以 ZIP 提供，请先解压其中的 APK 再安装。
 3. 安装并启动 [Shizuku](https://github.com/RikkaApps/Shizuku/releases)，按[官方手册](https://shizuku.rikka.app/zh-hans/guide/setup/)完成无线调试或电脑 USB 启动。
 4. 打开 Sunshine，在主页授予 Shizuku 及提示的录屏、录音、通知权限，确认服务运行，记下主机 IP。
 5. 在 Moonlight 添加该 IP，点击主机，在 Sunshine 弹窗或“设备”页输入 **Moonlight 显示的 4 位 PIN**，然后选择桌面或应用开始串流。

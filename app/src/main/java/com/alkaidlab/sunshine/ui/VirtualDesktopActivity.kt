@@ -69,11 +69,12 @@ import kotlinx.coroutines.withContext
 
 /** Temporary HOME for the owned ordinary secondary display; OEM DeX HOME is untouched. */
 class VirtualDesktopActivity : ComponentActivity() {
+    private val trustedKeyguard = com.alkaidlab.sunshine.service.TrustedKeyguardDismissal()
     companion object { @Volatile var foregroundDisplayId = -1; private set }
-    override fun onResume() { super.onResume(); @Suppress("DEPRECATION") foregroundDisplayId = windowManager.defaultDisplay.displayId }
+    override fun onResume() { super.onResume(); trustedKeyguard.onForeground(this); @Suppress("DEPRECATION") foregroundDisplayId = windowManager.defaultDisplay.displayId }
     override fun onPause() { foregroundDisplayId = -1; super.onPause() }
     private var desktopWindowFocused by mutableStateOf(false)
-    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); desktopWindowFocused = hasFocus }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); desktopWindowFocused = hasFocus; if (hasFocus) trustedKeyguard.onForeground(this) }
     private var page by mutableStateOf("apps")
     private var navigationRevision by mutableIntStateOf(0)
     private fun onRequestedDisplay(intent: Intent): Boolean {
