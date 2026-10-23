@@ -84,4 +84,10 @@
 
 最终收尾：所有串流连接结束，虚拟屏、保留显示与本地 DeX 接收端均已清理；物理面板 On。配置恢复 `screen_off / sunshine`，除版本字段外与初始配置一致；全局强制桌面恢复 1、USB 保持亮屏恢复原 0、主屏 override 恢复原 `1080×2400`。用户手动配对后的最终列表为两条，初始配对记录仍在，没有清理新增项。零客户端时服务、输入适配器和系统导航仍就绪。所有本轮手机临时诊断文件已删除，电脑 Moonlight 主程序保留。
 
+## 正式发布与官网
+
+最终包已在北京时间 2026-10-24 公开为 [v2026.10.24.3](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.24.3)，Release 目标为功能提交 `beeacf669fcf7fd344ae20d65467c0bbe9f83feb`。[官网同步工作流](https://github.com/nanaoniiiii/sunshine/actions/runs/40012633746) 成功，公开更新清单已切到该版本，三个 APK 的线上名称、大小、摘要与本地一致。
+
+三个官网 APK 均从电脑完整下载并通过 SHA-256；当前 S20+ 使用系统 curl 完整收到 7,321,630 字节 arm64 APK，用时约 4.057 秒，摘要同样一致。数据对应当前设备／网络样本，详见[本次发布下载核验](official-download-throughput-2026-10-24.md)。
+
 设备截图、原始日志、配对列表和配置快照仅保留在本地忽略目录 `work/review-validation/`。
