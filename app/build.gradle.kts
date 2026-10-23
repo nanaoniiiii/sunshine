@@ -54,6 +54,27 @@ android {
         }
     }
 
+    testOptions {
+        unitTests {
+            // 让 Robolectric 单测能读到 manifest / resources / assets
+            isIncludeAndroidResources = true
+            // JDK 17+ 跑 Robolectric 4.17 必需：开放 JDK 内部模块访问（robolectric.org/getting-started 官方要求）
+            all {
+                it.jvmArgs(
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                    "--add-opens=java.base/java.net=ALL-UNNAMED",
+                    "--add-opens=java.base/java.security=ALL-UNNAMED",
+                    "--add-opens=java.base/java.text=ALL-UNNAMED",
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+                )
+            }
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -90,6 +111,8 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Robolectric：在 JVM 上跑 Android 框架 API 相关的单测（如 EncoderCapabilities 的 MediaCodecList 枚举）
+    testImplementation("org.robolectric:robolectric:4.17")
     // Core & Kotlin
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
