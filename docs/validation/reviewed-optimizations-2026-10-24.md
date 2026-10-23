@@ -4,7 +4,7 @@
 
 ## v2026.10.24.1 升级、授权与配对
 
-此前安装命令曾被自动审批拒绝。用户明确要求“开始验证”后，正常重试 `adb install --user 0 -r` 成功，未清数据、卸载或重新配对。安装后包管理器确认版本为 `20261041`；设备上实际安装的 base APK SHA-256 为 `ee8a2c9ce15762e026e9675a68dab69c5e2fa2709015dee1b8a261013b116c67`，与已验证的 arm64 候选一致。
+此前安装命令曾被执行工具以 `blocked by policy` 拒绝。用户明确要求“开始验证”后，正常重试 `adb install --user 0 -r` 成功，未清数据、卸载或重新配对。安装后包管理器确认版本为 `20261041`；设备上实际安装的 base APK SHA-256 为 `ee8a2c9ce15762e026e9675a68dab69c5e2fa2709015dee1b8a261013b116c67`，与已验证的 arm64 候选一致。
 
 | 项目 | 当前结果 |
 | --- | --- |
@@ -47,6 +47,8 @@
 
 修正版已覆盖安装到主用户并成功打开，包管理器确认 `v2026.10.24.2 / 20261042`，仍能在同一 `deviceLocked=0 / Keyguard showing=true` 状态下触屏操作设置。实机设置确认：“虚拟屏”栏目中的“第二屏桌面模式”关闭时隐藏桌面选择，打开后出现默认 Sunshine 与设备自带 DeX 两个选项，布局和文字完整。
 
-自动审批拒绝了随后准备连接及启动电脑 Moonlight 的命令，仅返回 `blocked by policy`，未改写重试启动串流。已请求用户完成电脑连接，等待继续修正版的 DeX 创建、普通虚拟桌面、默认息屏和接收端输入检查。旧候选的实际串流读数不转记为修正版结果。候选尚未公开发布；之前正式版的[三种显示模式验证](fresh-install-permissions-2026-10-23.md)也不代替修正版创建验收。
+执行工具拒绝了随后准备连接及启动电脑 Moonlight 的复合命令，仅返回 `blocked by policy`，未改写重试启动串流。已请求用户完成电脑连接，等待继续修正版的 DeX 创建、普通虚拟桌面、默认息屏和接收端输入检查。旧候选的实际串流读数不转记为修正版结果。候选尚未公开发布；之前正式版的[三种显示模式验证](fresh-install-permissions-2026-10-23.md)也不代替修正版创建验收。
+
+拒绝来源的表述另作更正：当前会话及本地配置均为 `approval_policy=never / sandbox_mode=danger-full-access`；本地常规命令规则只有允许项。日志能定位到 `codex_core::tools::router` 记录执行前的 `CreateProcess … Rejected … blocked by policy`，没有具体审核理由或对应的 Auto-review 决策记录。按照 [OpenAI 官方 Auto-review 说明](https://learn.chatgpt.com/docs/sandboxing/auto-review)，`never` 不触发其交互式审批审核。因此不能把这次错误确定归因为该 Auto-review 功能、用户缺少授权，或 Moonlight 本身被禁用；具体命中哪一步及哪条策略仍未知。
 
 设备截图、原始日志、配对列表和配置快照仅保留在本地忽略目录 `work/review-validation/`。
