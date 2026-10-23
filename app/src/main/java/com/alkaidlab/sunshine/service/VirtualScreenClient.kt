@@ -35,6 +35,7 @@ class VirtualScreenClient(private val context: Context, private val disconnected
     suspend fun connect(): ISunshineDisplayController {
         remote?.takeIf { it.asBinder().isBinderAlive }?.let { return it }
         check(PrivilegedShell.available()) { "创建虚拟屏需要 Shizuku 授权" }
+        ShizukuServiceBootstrap.prepare(context)
         val promise = CompletableDeferred<ISunshineDisplayController>()
         waiting = promise
         Shizuku.bindUserService(args, connection)
@@ -44,6 +45,7 @@ class VirtualScreenClient(private val context: Context, private val disconnected
             service.attachOwner(owner)
             service
         } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
+            ShizukuServiceBootstrap.invalidate()
             try { Shizuku.unbindUserService(args, connection, true) } catch (_: Exception) {}
             remote = null
             throw IllegalStateException("Shizuku 显示服务未能启动。请打开 Shizuku／Stellar 管理器，取消其休眠或后台限制，返回 Sunshine 后重试；应用授权无需重置。", error)
