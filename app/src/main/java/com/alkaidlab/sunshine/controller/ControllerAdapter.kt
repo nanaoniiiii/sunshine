@@ -446,10 +446,15 @@ object ControllerAdapter {
                 else if (global != null) ControllerNavigationService.global(global, runtime.sourceDisplayId, fallback)
                 else fallback()
             }
-        } else if (action == ControllerAction.NOTIFICATIONS || action == ControllerAction.POWER) {
-            val operation = if (action == ControllerAction.POWER) "power" else "notifications"
-            val applied = try { service?.systemAction(operation, runtime.sourceDisplayId) == true } catch (_: Exception) { false }
-            if (!applied && action == ControllerAction.NOTIFICATIONS && state.active && !state.systemDexMirror) scope.launch { runtime.virtualDesktopAction("quick") }
+        } else if (action == ControllerAction.POWER) {
+            ControllerNavigationService.global(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_POWER_DIALOG,
+                runtime.sourceDisplayId) {
+                report(if (runtime.sourceDisplayId != 0) "请退出第二屏桌面，在主屏打开系统电源菜单"
+                    else "系统电源菜单需要已连接的无障碍控件导航服务")
+            }
+        } else if (action == ControllerAction.NOTIFICATIONS) {
+            val applied = try { service?.systemAction("notifications", runtime.sourceDisplayId) == true } catch (_: Exception) { false }
+            if (!applied && state.active && !state.systemDexMirror) scope.launch { runtime.virtualDesktopAction("quick") }
             else if (!applied) report("当前系统未开放${action.title}，可使用主页键离开应用")
         }
     }
