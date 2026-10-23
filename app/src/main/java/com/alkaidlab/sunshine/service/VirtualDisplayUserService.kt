@@ -614,6 +614,12 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     override fun destroy() { try { closeDisplay() } finally { thread.quitSafely(); System.exit(0) } }
 
     @Synchronized override fun prepareLocalDex(owner: IBinder): Boolean {
+        // Discovery/consent cannot be completed behind a secure keyguard.
+        // An already-running native DeX remains capturable while the phone locks.
+        if (Build.MANUFACTURER.equals("samsung", true) && NativeDexMirror.activeDisplay(shell) == null)
+            check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
+                "请先解锁主机，再确认三星 DeX 启动；无需重置 Sunshine 授权"
+            }
         attachOwner(owner)
         disableAndroidDesktop()
         if (!Build.MANUFACTURER.equals("samsung", true) || NativeDexMirror.activeDisplay(shell) != null ||
