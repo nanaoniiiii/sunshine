@@ -63,6 +63,26 @@ class SunshineRuntimeManager private constructor() {
     fun setEngineReady(ready: Boolean) { _engineReady.value = ready }
     val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
     private var virtualScreenClient: VirtualScreenClient? = null
+    private val captureRestorer = VirtualCaptureRestorer(object : VirtualCaptureRestorer.Host {
+        override val mediaProjection: MediaProjection? get() = this@SunshineRuntimeManager.mediaProjection
+        override val context: Context? get() = this@SunshineRuntimeManager.context
+        override var virtualDisplay: VirtualDisplay?
+            get() = this@SunshineRuntimeManager.virtualDisplay
+            set(value) { this@SunshineRuntimeManager.virtualDisplay = value }
+        override fun captureDisplaySize(fallbackWidth: Int, fallbackHeight: Int): IntArray =
+            displayCaptureSize(fallbackWidth, fallbackHeight)
+        override fun lastKnownWidth(): Int = lastWidth
+        override fun lastKnownHeight(): Int = lastHeight
+        override fun setVirtualSourceActive(active: Boolean) { frameDispatcher.setVirtualSource(active) }
+        override fun resizeCapture(width: Int, height: Int): Surface? =
+            frameDispatcher.resizeCaptureSync(width, height)
+        override fun setSourceRotation(rotation: Int) { frameDispatcher.sourceRotation = rotation }
+        override fun physicalDisplayRotation(): Int =
+            captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
+        override fun configureCanvas(width: Int, height: Int) {
+            engineClient?.configureCanvas(width, height, autoRotateEnabled, rotationCompatEnabled)
+        }
+    })
     @Volatile private var preparingLocalDex = false
     val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     val virtualSourceFrameLimit: Int get() = frameDispatcher.virtualSourceFrameLimit
@@ -610,25 +630,13 @@ class SunshineRuntimeManager private constructor() {
             withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
             val message = DisplayFailureMessage.from(error)
             _virtualScreenState.value = VirtualScreenState(busy = true, error = message)
-            if (mode == "desktop") restorePhysicalCapture()
+            if (mode == "desktop") captureRestorer.restorePhysicalCapture()
             SunshineLogManager.log("VIRTUAL_SCREEN_ERR", message)
             FullscreenDisplay.Result(false, "虚拟屏未创建：$message")
         } finally {
             preparingLocalDex = false
             _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
         }
-    }
-
-    private fun restorePhysicalCapture() {
-        frameDispatcher.setVirtualSource(false)
-        val mp = mediaProjection ?: return
-        val dimensions = displayCaptureSize(lastWidth, lastHeight)
-        val surface = frameDispatcher.resizeCaptureSync(dimensions[0], dimensions[1]) ?: return
-        virtualDisplay?.release()
-        virtualDisplay = mp.createVirtualDisplay("SunshineVirtualDisplay", dimensions[0], dimensions[1],
-            context?.resources?.displayMetrics?.densityDpi ?: 300, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, surface, null, null)
-        frameDispatcher.sourceRotation = captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.rotation ?: 0
-        engineClient?.configureCanvas(dimensions[0], dimensions[1], autoRotateEnabled, rotationCompatEnabled)
     }
 
     suspend fun exitVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
@@ -639,13 +647,13 @@ class SunshineRuntimeManager private constructor() {
         try {
             withContext(Dispatchers.IO) { virtualScreenClient?.close() }
             _virtualScreenState.value = VirtualScreenState(busy = true)
-            if (previous.mode == "desktop") restorePhysicalCapture()
+            if (previous.mode == "desktop") captureRestorer.restorePhysicalCapture()
             SunshineLogManager.log("VIRTUAL_SCREEN", "Released display mode; physical capture restored")
             FullscreenDisplay.Result(true, "已退出虚拟屏并恢复主屏")
         } catch (e: Exception) {
             _virtualScreenState.value = if (previous.mode == "screen_off") previous.copy(busy = true, error = e.message)
                 else VirtualScreenState(busy = true, error = e.message)
-            if (previous.mode == "desktop") try { restorePhysicalCapture() } catch (_: Exception) {}
+            if (previous.mode == "desktop") try { captureRestorer.restorePhysicalCapture() } catch (_: Exception) {}
             FullscreenDisplay.Result(false, "虚拟屏退出时出现问题：${e.message}")
         } finally { _virtualScreenState.value = _virtualScreenState.value.copy(busy = false) }
     }
@@ -678,7 +686,7 @@ class SunshineRuntimeManager private constructor() {
             // Reconnect capture to the phone before blanking its physical panel.
             _virtualScreenState.value = previous.copy(busy = true, mode = "screen_off", displayId = Display.DEFAULT_DISPLAY,
                 launcher = "手机主屏（保留虚拟屏）")
-            restorePhysicalCapture()
+            captureRestorer.restorePhysicalCapture()
             val fit = withContext(Dispatchers.IO) {
                 val backend = fullscreenBackend(rememberOriginal = true)
                 physicalBefore = backend.snapshot()
@@ -701,7 +709,7 @@ class SunshineRuntimeManager private constructor() {
                 physicalBefore?.let { FullscreenDisplay.restore(it, fullscreenBackend()) } ?: true
             }
             if (restored && !alreadySaved) restorePrefs?.edit()?.remove("original")?.commit()
-            runCatching { restorePhysicalCapture() }
+            runCatching { captureRestorer.restorePhysicalCapture() }
             FullscreenDisplay.Result(false, if (restored) error.message ?: "退出桌面失败"
                 else "退出桌面失败，原主屏显示设置未恢复，请检查 Shizuku")
         } finally {
