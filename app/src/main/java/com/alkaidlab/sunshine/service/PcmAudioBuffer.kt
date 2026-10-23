@@ -22,7 +22,11 @@ class PcmAudioBuffer(capacityFloats: Int) {
         head = (head + overflow) % samples.size
         size -= overflow
         val offset = available - retained
-        for (i in 0 until retained) samples[(head + size + i) % samples.size] = source[offset + i]
+        // Wrap-aware bulk copy instead of per-element modulo stores; write() runs ~100x/sec on the capture thread.
+        val start = (head + size) % samples.size
+        val first = minOf(retained, samples.size - start)
+        System.arraycopy(source, offset, samples, start, first)
+        if (first < retained) System.arraycopy(source, offset + first, samples, 0, retained - first)
         size += retained
         dataAvailable.signalAll()
     }
@@ -32,7 +36,9 @@ class PcmAudioBuffer(capacityFloats: Int) {
     private fun readLocked(count: Int): FloatArray {
         val length = minOf(count.coerceAtLeast(0), size) / 2 * 2
         val result = FloatArray(length)
-        for (i in result.indices) result[i] = samples[(head + i) % samples.size]
+        val first = minOf(length, samples.size - head)
+        System.arraycopy(samples, head, result, 0, first)
+        if (first < length) System.arraycopy(samples, 0, result, first, length - first)
         head = (head + length) % samples.size
         size -= length
         return result
