@@ -27,9 +27,13 @@ class SunshineApiServer(
     private val appsFile: File get() = File(filesDir, "apps.json")
     private val stateFile: File get() = File(filesDir, "sunshine_state.json")
 
-    // Atomic snapshot read: AtomicFile.rename-swap writes never expose a truncated file to readers.
-    private fun readStateSnapshot(): String =
+    // Atomic snapshot read, serialized with stateLock: AtomicFile.openRead() treats an in-flight
+    // write as an abandoned transaction and deletes/renames over the base file the writer is
+    // writing to, silently losing the update — so reads must never race writes (synchronized is
+    // reentrant, so call sites that already hold stateLock are unaffected).
+    private fun readStateSnapshot(): String = synchronized(stateLock) {
         android.util.AtomicFile(stateFile).openRead().bufferedReader().use { it.readText() }
+    }
 
     private fun writeStateSnapshot(text: String) {
         val atomic = android.util.AtomicFile(stateFile)
