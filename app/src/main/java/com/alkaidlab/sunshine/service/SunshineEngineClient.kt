@@ -30,6 +30,8 @@ class SunshineEngineClient(private val context: Context) {
     private var certPath = ""
     private var keyPath = ""
     private var statePath = ""
+    // Reused: videoSessions() is polled via /api/diagnostics; Gson construction is not cheap.
+    private val gson = com.google.gson.Gson()
 
     fun start(name: String, cert: String, key: String, state: String) {
         mainHandler.post {
@@ -238,7 +240,7 @@ class SunshineEngineClient(private val context: Context) {
 
     fun videoSessions(): List<com.alkaidlab.sunshine.data.NativeVideoSession> = try {
         val json = engine?.videoSnapshot() ?: "[]"
-        com.google.gson.Gson().fromJson(json, Array<com.alkaidlab.sunshine.data.NativeVideoSession>::class.java).toList()
+        gson.fromJson(json, Array<com.alkaidlab.sunshine.data.NativeVideoSession>::class.java).toList()
     } catch (_: Exception) { emptyList() }
 
     fun controlVideo(sessionId: Long, operation: Int, value: Int = 0): Boolean = try {
