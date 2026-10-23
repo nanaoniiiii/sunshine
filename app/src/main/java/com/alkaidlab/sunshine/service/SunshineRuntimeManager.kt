@@ -516,6 +516,16 @@ class SunshineRuntimeManager private constructor() {
         }.also { virtualScreenClient = it }
     }
 
+    /** [VirtualScreenLifecycle] 回调到本类的状态/客户端/采集恢复。 */
+    private val virtualScreenLifecycleHost = object : VirtualScreenLifecycle.Host {
+        override fun virtualScreenState() = _virtualScreenState
+        override fun hasActiveSessions() = activeSessions.isNotEmpty()
+        override fun restorePhysicalCapture() = this@SunshineRuntimeManager.restorePhysicalCapture()
+        override fun displayClient() = this@SunshineRuntimeManager.displayClient()
+        override fun screenClient() = virtualScreenClient
+    }
+    private val virtualScreenLifecycle = VirtualScreenLifecycle(virtualScreenLifecycleHost)
+
     suspend fun createVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
         if (_virtualScreenState.value.busy || fullscreenBusy.value) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
         if (_virtualScreenState.value.active) return@withContext FullscreenDisplay.Result(true, "虚拟屏已创建")
@@ -630,24 +640,7 @@ class SunshineRuntimeManager private constructor() {
         engineClient?.configureCanvas(dimensions[0], dimensions[1], autoRotateEnabled, rotationCompatEnabled)
     }
 
-    suspend fun exitVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
-        if (_virtualScreenState.value.busy) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
-        if (!_virtualScreenState.value.active) return@withContext FullscreenDisplay.Result(true, "虚拟屏已退出")
-        val previous = _virtualScreenState.value
-        _virtualScreenState.value = previous.copy(busy = true)
-        try {
-            withContext(Dispatchers.IO) { virtualScreenClient?.close() }
-            _virtualScreenState.value = VirtualScreenState(busy = true)
-            if (previous.mode == "desktop") restorePhysicalCapture()
-            SunshineLogManager.log("VIRTUAL_SCREEN", "Released display mode; physical capture restored")
-            FullscreenDisplay.Result(true, "已退出虚拟屏并恢复主屏")
-        } catch (e: Exception) {
-            _virtualScreenState.value = if (previous.mode == "screen_off") previous.copy(busy = true, error = e.message)
-                else VirtualScreenState(busy = true, error = e.message)
-            if (previous.mode == "desktop") try { restorePhysicalCapture() } catch (_: Exception) {}
-            FullscreenDisplay.Result(false, "虚拟屏退出时出现问题：${e.message}")
-        } finally { _virtualScreenState.value = _virtualScreenState.value.copy(busy = false) }
-    }
+    suspend fun exitVirtualScreen(): FullscreenDisplay.Result = virtualScreenLifecycle.exitVirtualScreen()
 
     suspend fun launchVirtualApp(component: String): Boolean = withContext(Dispatchers.IO) {
         if (!_virtualScreenState.value.active) false else virtualScreenClient?.launch(component) == true
@@ -713,25 +706,7 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    suspend fun setVirtualScreenPanelOff(off: Boolean): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
-        val previous = _virtualScreenState.value
-        if (!previous.active || previous.mode != "desktop") return@withContext FullscreenDisplay.Result(false, "请先创建独立第二屏")
-        if (previous.busy) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
-        _virtualScreenState.value = previous.copy(busy = true)
-        try {
-            check(withContext(Dispatchers.IO) { displayClient().setMainPanelOff(off) }) { "主屏面板操作未完成" }
-            check(activeSessions.isNotEmpty()) { "连接已结束，正在恢复主屏" }
-            _virtualScreenState.value = previous.copy(busy = true, mainPanelOff = off, error = null)
-            SunshineLogManager.log("VIRTUAL_PANEL", "Physical main panel off=$off; virtual display ${previous.displayId} preserved")
-            FullscreenDisplay.Result(true, if (off) "主屏面板已关闭，第二屏继续串流" else "主屏面板已恢复")
-        } catch (error: Exception) {
-            _virtualScreenState.value = previous.copy(busy = true, error = (error.cause ?: error).message)
-            FullscreenDisplay.Result(false, "主屏面板操作失败：${(error.cause ?: error).message}")
-        } finally {
-            _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
-            if (activeSessions.isEmpty() && _virtualScreenState.value.active) exitVirtualScreen()
-        }
-    }
+    suspend fun setVirtualScreenPanelOff(off: Boolean): FullscreenDisplay.Result = virtualScreenLifecycle.setVirtualScreenPanelOff(off)
 
     fun submitPin(pin: String): Boolean {
         val cleanPin = pin.trim()
