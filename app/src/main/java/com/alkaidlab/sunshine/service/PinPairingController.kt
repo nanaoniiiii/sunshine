@@ -38,7 +38,8 @@ internal class PinPairingController(
             logger("PIN", "Native submitPin completed")
             true
         } catch (e: Throwable) {
-            logger("PIN_ERR", "Failed native submitPin: ${e.message}")
+            // The engine's exception message may echo the supplied secret.
+            logger("PIN_ERR", "Failed native submitPin: ${e.javaClass.simpleName}")
             false
         }
     }

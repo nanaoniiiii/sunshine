@@ -17,8 +17,8 @@ android {
         minSdk = 29
         targetSdk = 34
         // Calendar name: vYYYY.MM.DD.N; the independent code increases with each release.
-        versionCode = 20261040
-        versionName = "v2026.10.23.3"
+        versionCode = 20261041
+        versionName = "v2026.10.24.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -60,6 +60,7 @@ android {
             isIncludeAndroidResources = true
             // JDK 17+ 跑 Robolectric 4.17 必需：开放 JDK 内部模块访问（robolectric.org/getting-started 官方要求）
             all {
+                it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
                 it.jvmArgs(
                     "--add-opens=java.base/java.lang=ALL-UNNAMED",
                     "--add-opens=java.base/java.util=ALL-UNNAMED",

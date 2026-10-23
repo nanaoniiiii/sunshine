@@ -97,4 +97,18 @@ class PinPairingControllerTest {
         c.clear()
         assertNull(c.pinRequested.value)
     }
+
+    @Test fun logsNeverContainSubmittedValuesIncludingEngineErrors() {
+        for (input in listOf("7392", "malformed-secret-value")) {
+            val logs = mutableListOf<Pair<String, String>>()
+            val c = controller(submitToEngine = { throw IllegalStateException("rejected $input") }, logs = logs)
+            c.onPinRequested()
+            assertFalse(c.submitPin(input))
+            assertTrue(logs.isNotEmpty())
+            assertTrue(logs.none { input in it.second })
+        }
+        val logs = mutableListOf<Pair<String, String>>()
+        assertTrue(controller(logs = logs).submitPin("7392"))
+        assertTrue(logs.none { "7392" in it.second })
+    }
 }

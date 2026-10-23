@@ -6,7 +6,7 @@ import kotlin.math.ceil
 /** Producer timestamps only; callback bursts or codec frame repeats cannot raise the limit. */
 class SourceCadenceTracker {
     companion object {
-        // Static: observe() runs per captured frame on the GL thread; avoid a list allocation each call.
+        // Reused at cadence-window boundaries (about once a second), not on every frame.
         private val NOMINAL_RATES = intArrayOf(24, 25, 30, 48, 50, 60, 72, 75, 90, 96, 100, 120, 144, 165, 180, 200, 240)
     }
     var learnedFps = 0
