@@ -34,6 +34,7 @@ object ControllerAdapter {
     })
     private var service: IControllerService? = null
     private var binding = false
+    private var preparing = false
     private var bindingAt = 0L
     @Volatile private var wanted = false
     private var epoch = 0
@@ -154,8 +155,23 @@ object ControllerAdapter {
     } }
 
     private fun connect() {
-        if (!wanted || !enabled() || service != null || binding) return
+        if (!wanted || !enabled() || service != null || binding || preparing) return
         if (!PrivilegedShell.available()) { _status.value = _status.value.copy(ready = false, detail = "等待 Shizuku 授权，服务运行后自动重试"); return }
+        preparing = true
+        val preparationGeneration = epoch
+        _status.value = _status.value.copy(ready = false, detail = "正在准备授权管理器后台运行")
+        scope.launch {
+            try { ShizukuServiceBootstrap.prepare(context) }
+            finally { handler.post {
+                if (preparationGeneration == epoch) {
+                    preparing = false
+                    if (wanted && enabled() && service == null && !binding && PrivilegedShell.available()) bindService()
+                }
+            } }
+        }
+    }
+
+    private fun bindService() {
         binding = true; bindingAt = SystemClock.uptimeMillis()
         val generation = ++epoch
         val version = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
@@ -260,7 +276,7 @@ object ControllerAdapter {
         try { service?.destroy() } catch (_: Exception) {}
         val oldArgs = args; val oldConnection = connection
         if (oldArgs != null && oldConnection != null) try { rikka.shizuku.Shizuku.unbindUserService(oldArgs, oldConnection, true) } catch (_: Exception) {}
-        service = null; args = null; connection = null; binding = false
+        service = null; args = null; connection = null; binding = false; preparing = false
         acquired.clear(); reducers.clear(); virtualIds.clear(); radial.clear()
         _live.value = emptyList()
         reportCount = 0; maxReportDelay = 0; nextReportPublish = 0
@@ -581,7 +597,11 @@ object ControllerAdapter {
             if (!wanted) return
             try {
                 val now = SystemClock.uptimeMillis()
-                if (binding && now - bindingAt > 8000) { disconnect(); report("输入服务绑定超时，稍后自动重试") }
+                if (binding && now - bindingAt > 8000) {
+                    ShizukuServiceBootstrap.invalidate()
+                    disconnect()
+                    report("Shizuku 输入服务启动超时；请打开授权管理器，取消其休眠或后台限制，返回后自动重试")
+                }
                 if (service == null && !binding) connect()
                 val display = SunshineRuntimeManager.getInstance().sourceDisplayId
                 if (currentDisplay != display || now >= nextMetrics) {
