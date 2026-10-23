@@ -23,6 +23,7 @@ import com.alkaidlab.sunshine.data.AudioDiagnostics
 import com.alkaidlab.sunshine.data.DiagnosticsResponse
 import com.alkaidlab.sunshine.data.PerfResponse
 import com.alkaidlab.sunshine.data.RuntimeSession
+import com.alkaidlab.sunshine.data.NativeVideoSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -516,25 +517,35 @@ class SunshineRuntimeManager private constructor() {
         }.also { virtualScreenClient = it }
     }
 
+    /** [VirtualScreenPreflight] 回调到本类的状态/配置源。 */
+    private val virtualScreenPreflightHost = object : VirtualScreenPreflight.Host {
+        override fun virtualScreenBusy() = this@SunshineRuntimeManager._virtualScreenState.value.busy
+        override fun virtualScreenActive() = this@SunshineRuntimeManager._virtualScreenState.value.active
+        override fun fullscreenBusy() = this@SunshineRuntimeManager.fullscreenBusy.value
+        override fun activeSessions(): List<RuntimeSession> = this@SunshineRuntimeManager.activeSessions
+        override fun hostContext() = this@SunshineRuntimeManager.context
+        override fun hasMediaProjection() = this@SunshineRuntimeManager.mediaProjection != null
+        override fun frameDispatcherRunning() = this@SunshineRuntimeManager.frameDispatcher.isRunning
+        override fun maxFps() = this@SunshineRuntimeManager.streamingSettings.value.maxFps
+        override fun nativeVideoSession(threadId: Long): NativeVideoSession? =
+            this@SunshineRuntimeManager.engineClient?.videoSessions()?.firstOrNull { it.threadId == threadId }
+    }
+    private val virtualScreenPreflight = VirtualScreenPreflight(virtualScreenPreflightHost)
+
     suspend fun createVirtualScreen(): FullscreenDisplay.Result = withContext(Dispatchers.Main + NonCancellable) {
-        if (_virtualScreenState.value.busy || fullscreenBusy.value) return@withContext FullscreenDisplay.Result(false, "显示正在切换，请稍后重试")
-        if (_virtualScreenState.value.active) return@withContext FullscreenDisplay.Result(true, "虚拟屏已创建")
-        val session = activeSessions.firstOrNull() ?: return@withContext FullscreenDisplay.Result(false, "先连接 Moonlight，再创建虚拟屏")
-        val ctx = context ?: return@withContext FullscreenDisplay.Result(false, "服务未启动")
-        if (mediaProjection == null || !frameDispatcher.isRunning) return@withContext FullscreenDisplay.Result(false, "先允许屏幕录制并建立串流连接")
-        val props = java.io.File(ctx.filesDir, "sunshine.conf").readLines().mapNotNull { line ->
-            val parts = line.trim().takeUnless { it.startsWith("#") }?.split('=', limit = 2)
-            if (parts?.size == 2) parts[0].trim() to parts[1].trim() else null
-        }.toMap()
-        val mode = if (props["virtual_screen_mode"] == "desktop") "desktop" else "screen_off"
-        val density = props["virtual_screen_density"]?.toIntOrNull()?.coerceIn(120, 640) ?: 240
-        val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == session.videoThreadId }
-        val width = native?.requestedWidth?.takeIf { it > 0 } ?: session.width
-        val height = native?.requestedHeight?.takeIf { it > 0 } ?: session.height
-        val refreshRate = minOf(native?.requestedFps?.takeIf { it > 0 } ?: session.fps, streamingSettings.value.maxFps).coerceIn(15, 240)
-        val systemDesktop = props["virtual_screen_desktop"] == "system"
-        val samsungDex = systemDesktop && Build.MANUFACTURER.equals("samsung", true)
-        val highRefresh = props["experimental_desktop_high_refresh"] != "false"
+        val config = when (val preflight = virtualScreenPreflight.resolve()) {
+            is VirtualScreenPreflight.Outcome.Ready -> preflight.config
+            is VirtualScreenPreflight.Outcome.EarlyReturn -> return@withContext preflight.result
+        }
+        val session = config.session
+        val mode = config.mode
+        val density = config.density
+        val width = config.width
+        val height = config.height
+        val refreshRate = config.refreshRate
+        val systemDesktop = config.systemDesktop
+        val samsungDex = config.samsungDex
+        val highRefresh = config.highRefresh
         _virtualScreenState.value = VirtualScreenState(busy = true, width = width, height = height, mode = mode)
         try {
             val client = displayClient()
