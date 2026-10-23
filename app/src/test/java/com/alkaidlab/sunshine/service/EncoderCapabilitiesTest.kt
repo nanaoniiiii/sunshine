@@ -1,9 +1,11 @@
 package com.alkaidlab.sunshine.service
 
+import android.app.Application
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * Robolectric 基建的示例单测。
@@ -14,6 +16,10 @@ import org.robolectric.RobolectricTestRunner
  * 因为 shadow 环境与真机的编解码器列表本就不同。
  */
 @RunWith(RobolectricTestRunner::class)
+// 用无害的基类 Application 代替生产 manifest 声明的 SunshineApp：这些单测不需要
+// 生产启动流程（SunshineApp.onCreate 会初始化 AppUpdater并发起真实更新网络请求，
+// 还会填充进程级运行时单体，导致测试产生外部流量/状态泄漏或离线环境下不稳定）。
+@Config(application = Application::class)
 class EncoderCapabilitiesTest {
     @Test fun codecEnumerationDoesNotThrowAndEntriesAreWellFormed() {
         val encoders = EncoderCapabilities.encoders
