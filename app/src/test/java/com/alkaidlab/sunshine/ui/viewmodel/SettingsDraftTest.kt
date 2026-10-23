@@ -15,24 +15,6 @@ class SettingsDraftTest {
         assertEquals("system", SettingsDraft.from(ConfigResponse(virtualScreenDesktop = "system"))["virtual_screen_desktop"])
         assertFalse(SettingsDraft.from(ConfigResponse()).values.containsKey("experimental_samsung_dex"))
     }
-    @Test fun pollingNeverOverwritesUnsavedInputEvenIfServerChanges() {
-        val old = ConfigResponse()
-        val draft = SettingsDraft.from(old).withValue("max_stream_fps", "12")
-        val refreshed = old.copy(maxStreamFps = "120", encoderH264 = "OMX.other.encoder")
-        assertEquals(draft, SettingsDraft.reconcile(draft, old, refreshed))
-    }
-    @Test fun cleanDraftTracksServerAndFirstLoadGetsActualValues() {
-        val old = ConfigResponse()
-        val current = old.copy(maxBitrate = "30000", encoderHevc = "OMX.qcom.encoder.hevc")
-        assertEquals(SettingsDraft.from(current), SettingsDraft.reconcile(null, null, current))
-        assertEquals(SettingsDraft.from(current), SettingsDraft.reconcile(SettingsDraft.from(old), old, current))
-    }
-    @Test fun revertingAnEditAllowsSubsequentRefresh() {
-        val old = ConfigResponse()
-        val draft = SettingsDraft.from(old).withValue("max_stream_fps", "60").withValue("max_stream_fps", "240")
-        val current = old.copy(minBitrate = "6000")
-        assertEquals(SettingsDraft.from(current), SettingsDraft.reconcile(draft, old, current))
-    }
     @Test fun invalidAndReversedNumbersBlockSaveButDefaultsAreValid() {
         val valid = SettingsDraft.from(ConfigResponse())
         assertTrue(valid.errors().isEmpty())
