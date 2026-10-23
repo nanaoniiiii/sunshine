@@ -155,13 +155,9 @@ object InputBroker {
     }
     @JvmStatic @Synchronized fun scroll(horizontal: Int, vertical: Int) {
         val point = position(mouseX, mouseY, clientWidth, clientHeight)
-        val event = MotionEvent.obtain(0, SystemClock.uptimeMillis(), MotionEvent.ACTION_SCROLL, point.first, point.second, 0)
-        event.source = android.view.InputDevice.SOURCE_MOUSE
-        event.setLocation(point.first, point.second)
         // Scroll axes require the pointer-coordinate constructor.
         val props = arrayOf(MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_MOUSE })
         val coords = arrayOf(MotionEvent.PointerCoords().apply { x = point.first; y = point.second; setAxisValue(MotionEvent.AXIS_HSCROLL, horizontal / 120f); setAxisValue(MotionEvent.AXIS_VSCROLL, vertical / 120f) })
-        event.recycle()
         val wheel = MotionEvent.obtain(0, SystemClock.uptimeMillis(), MotionEvent.ACTION_SCROLL, 1, props, coords, 0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_MOUSE, 0)
         try { SunshineRuntimeManager.getInstance().injectMotionEvent(wheel) } finally { wheel.recycle() }
     }
