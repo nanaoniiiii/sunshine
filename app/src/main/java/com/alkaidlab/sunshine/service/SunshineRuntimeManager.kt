@@ -618,10 +618,11 @@ class SunshineRuntimeManager private constructor() {
                 "已开始串流 $captureWidth × $captureHeight · $description" else "已创建 $captureWidth × $captureHeight 虚拟屏 · $description")
         } catch (error: Exception) {
             withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
-            _virtualScreenState.value = VirtualScreenState(busy = true, error = (error.cause ?: error).message)
+            val message = DisplayFailureMessage.from(error)
+            _virtualScreenState.value = VirtualScreenState(busy = true, error = message)
             if (mode == "desktop") restorePhysicalCapture()
-            SunshineLogManager.log("VIRTUAL_SCREEN_ERR", (error.cause ?: error).message ?: "Create failed")
-            FullscreenDisplay.Result(false, "虚拟屏未创建：${(error.cause ?: error).message}")
+            SunshineLogManager.log("VIRTUAL_SCREEN_ERR", message)
+            FullscreenDisplay.Result(false, "虚拟屏未创建：$message")
         } finally {
             preparingLocalDex = false
             _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
