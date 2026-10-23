@@ -10,7 +10,6 @@ import com.alkaidlab.sunshine.service.AppCatalog
 import com.alkaidlab.sunshine.service.StreamingSettings
 import com.alkaidlab.sunshine.service.SunshineLogManager
 import com.alkaidlab.sunshine.service.SunshineRuntimeManager
-import com.google.gson.Gson
 import fi.iki.elonen.NanoHTTPD
 import java.io.File
 import java.util.UUID
@@ -22,10 +21,31 @@ class SunshineApiServer(
 
     private val gson = com.google.gson.GsonBuilder().serializeNulls().create()
     private val configLock = Any()
+    private val stateLock = Any()
     private val filesDir: File = context.filesDir
     private val configFile: File get() = File(filesDir, "sunshine.conf")
     private val appsFile: File get() = File(filesDir, "apps.json")
     private val stateFile: File get() = File(filesDir, "sunshine_state.json")
+
+    // Atomic snapshot read, serialized with stateLock: AtomicFile.openRead() treats an in-flight
+    // write as an abandoned transaction and deletes/renames over the base file the writer is
+    // writing to, silently losing the update — so reads must never race writes (synchronized is
+    // reentrant, so call sites that already hold stateLock are unaffected).
+    private fun readStateSnapshot(): String = synchronized(stateLock) {
+        android.util.AtomicFile(stateFile).openRead().bufferedReader().use { it.readText() }
+    }
+
+    private fun writeStateSnapshot(text: String) {
+        val atomic = android.util.AtomicFile(stateFile)
+        val output = atomic.startWrite()
+        try {
+            output.write(text.toByteArray(Charsets.UTF_8))
+            atomic.finishWrite(output)
+        } catch (e: Exception) {
+            atomic.failWrite(output)
+            throw e
+        }
+    }
 
     init {
         ensureInitialFiles()
@@ -147,7 +167,9 @@ class SunshineApiServer(
             }
         } catch (e: Exception) {
             SunshineLogManager.log("API_ERR", "Error handling $uri: ${e.message}")
-            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json", "{\"status\":\"false\",\"error\":\"${e.message}\"}")
+            // gson.toJson escapes quotes/backslashes; the raw template above could emit invalid JSON.
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "application/json",
+                gson.toJson(mapOf("status" to "false", "error" to e.message)))
         }
     }
 
@@ -301,7 +323,7 @@ class SunshineApiServer(
     }
 
     private fun handleGetClients(): Response {
-        val text = stateFile.readText()
+        val text = readStateSnapshot()
         val rootMap = gson.fromJson(text, Map::class.java)
         val root = (rootMap["root"] as? Map<*, *>) ?: emptyMap<String, Any>()
         val rawDevices = (root["named_devices"] as? List<*>) ?: emptyList<Any>()
@@ -317,11 +339,13 @@ class SunshineApiServer(
         return jsonResponse(ClientsResponse("true", clients))
     }
 
-    private fun handleRenameClient(session: IHTTPSession): Response {
+    // Read-modify-write of the pairing state is serialized: two concurrent HTTP requests
+    // (e.g. rename racing unpair) must not lose an update, same as the config file's configLock.
+    private fun handleRenameClient(session: IHTTPSession): Response = synchronized(stateLock) {
         val body = parseBody(session)
         val req = gson.fromJson(body, RenameClientRequest::class.java)
 
-        val text = stateFile.readText()
+        val text = readStateSnapshot()
         val map = gson.fromJson(text, MutableMap::class.java) as MutableMap<String, Any>
         val root = (map["root"] as? MutableMap<String, Any>) ?: mutableMapOf()
         val devices = (root["named_devices"] as? List<*>)?.map { it as MutableMap<String, Any> }?.toMutableList() ?: mutableListOf()
@@ -329,36 +353,36 @@ class SunshineApiServer(
         devices.find { it["uuid"] == req.uuid }?.set("name", req.name)
         root["named_devices"] = devices
         map["root"] = root
-        stateFile.writeText(gson.toJson(map))
+        writeStateSnapshot(gson.toJson(map))
 
-        return jsonResponse(SimpleStatusResponse("true", "Client renamed"))
+        jsonResponse(SimpleStatusResponse("true", "Client renamed"))
     }
 
-    private fun handleUnpairClient(session: IHTTPSession): Response {
+    private fun handleUnpairClient(session: IHTTPSession): Response = synchronized(stateLock) {
         val body = parseBody(session)
         val req = gson.fromJson(body, UnpairClientRequest::class.java)
 
-        val text = stateFile.readText()
+        val text = readStateSnapshot()
         val map = gson.fromJson(text, MutableMap::class.java) as MutableMap<String, Any>
         val root = (map["root"] as? MutableMap<String, Any>) ?: mutableMapOf()
         val devices = (root["named_devices"] as? List<*>)?.mapNotNull { it as? Map<String, Any> }?.filterNot { it["uuid"] == req.uuid } ?: emptyList()
 
         root["named_devices"] = devices
         map["root"] = root
-        stateFile.writeText(gson.toJson(map))
+        writeStateSnapshot(gson.toJson(map))
 
-        return jsonResponse(SimpleStatusResponse("true", "Client unpaired"))
+        jsonResponse(SimpleStatusResponse("true", "Client unpaired"))
     }
 
-    private fun handleUnpairAll(): Response {
-        val text = stateFile.readText()
+    private fun handleUnpairAll(): Response = synchronized(stateLock) {
+        val text = readStateSnapshot()
         val map = gson.fromJson(text, MutableMap::class.java) as MutableMap<String, Any>
         val root = (map["root"] as? MutableMap<String, Any>) ?: mutableMapOf()
         root["named_devices"] = emptyList<Any>()
         map["root"] = root
-        stateFile.writeText(gson.toJson(map))
+        writeStateSnapshot(gson.toJson(map))
 
-        return jsonResponse(SimpleStatusResponse("true", "All clients unpaired"))
+        jsonResponse(SimpleStatusResponse("true", "All clients unpaired"))
     }
 
     private fun handleSubmitPin(session: IHTTPSession): Response {
