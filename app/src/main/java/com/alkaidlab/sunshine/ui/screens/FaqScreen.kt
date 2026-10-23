@@ -73,6 +73,7 @@ fun FaqScreen(onBack: () -> Unit = {}) {
             HelpText("Android 11 及以上：手机连接 Wi-Fi，开启开发者选项、USB 调试与无线调试。在 Shizuku 点击配对，进入系统“无线调试 → 使用配对码配对设备”，保持配对窗口打开，在 Shizuku 通知中输入该配对码，完成后回到 Shizuku 点击启动。")
             HelpText("Android 10 及以下通常需要电脑通过 USB 启动：开启 USB 调试、连接电脑并允许调试授权，然后按 Shizuku 当前版本显示的启动命令操作。本项目要求 Android 10 及以上。")
             HelpText("确认 Shizuku 显示服务运行后，回到 Sunshine 主页申请 Shizuku 权限，并在授权弹窗中允许；也可在 Shizuku 的授权应用管理中检查 Sunshine 是否已允许。Shizuku 正在运行不代表 Sunshine 已获得授权。")
+            HelpText("授权后，Sunshine 会在输入／显示服务启动前自动准备当前 Shizuku／Stellar 管理器与自身的后台运行：精确识别正在提供服务的管理器，解除其 Android 后台限制并添加电池优化豁免。无需先连接 Moonlight；安装多个管理器时只处理当前一个，未知管理器保留原设置。首次原生 DeX 仍需接受三星的系统确认。")
             HelpText("免 Root 模式重启手机后要重新启动 Shizuku，配对通常不用重做。删除配对记录、撤销调试授权或恢复设置后，可能需要重新配对。")
         } }
         item { FaqTopic("开发者选项：通用设置", expanded == "general", { expanded = if (expanded == "general") null else "general" }) {
