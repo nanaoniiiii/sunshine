@@ -17,8 +17,8 @@ android {
         minSdk = 29
         targetSdk = 34
         // Calendar name: vYYYY.MM.DD.N; the independent code increases with each release.
-        versionCode = 20261040
-        versionName = "v2026.10.23.3"
+        versionCode = 20261041
+        versionName = "v2026.10.24.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -51,6 +51,28 @@ android {
         }
         debug {
             isMinifyEnabled = false
+        }
+    }
+
+    testOptions {
+        unitTests {
+            // 让 Robolectric 单测能读到 manifest / resources / assets
+            isIncludeAndroidResources = true
+            // JDK 17+ 跑 Robolectric 4.17 必需：开放 JDK 内部模块访问（robolectric.org/getting-started 官方要求）
+            all {
+                it.systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+                it.jvmArgs(
+                    "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                    "--add-opens=java.base/java.util=ALL-UNNAMED",
+                    "--add-opens=java.base/java.io=ALL-UNNAMED",
+                    "--add-opens=java.base/java.net=ALL-UNNAMED",
+                    "--add-opens=java.base/java.security=ALL-UNNAMED",
+                    "--add-opens=java.base/java.text=ALL-UNNAMED",
+                    "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+                )
+            }
         }
     }
 
@@ -90,27 +112,27 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Robolectric：在 JVM 上跑 Android 框架 API 相关的单测（如 EncoderCapabilities 的 MediaCodecList 枚举）
+    testImplementation("org.robolectric:robolectric:4.17")
     // Core & Kotlin
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-service:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
     // Jetpack Compose
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // HTTP Client (connecting to Sunshine REST API)
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    // okhttp 4.12.1 blocklists the compromised CA certificates from CVE-2026-111943.
+    implementation("com.squareup.okhttp3:okhttp:4.12.1")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.1")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.squareup.retrofit2:converter-gson:2.9.0")
     implementation("com.google.code.gson:gson:2.10.1")
