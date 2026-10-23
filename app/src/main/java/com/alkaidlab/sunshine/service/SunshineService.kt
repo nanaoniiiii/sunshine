@@ -318,51 +318,6 @@ class SunshineService : Service() {
         return dest
     }
 
-    private fun getWifiIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces().toList()
-            val wlan = interfaces.find { it.name.contains("wlan", ignoreCase = true) }
-            val prioritized = if (wlan != null) listOf(wlan) + interfaces.filter { it != wlan } else interfaces
-            for (iface in prioritized) {
-                if (iface.isUp && !iface.isLoopback) {
-                    val addrs = iface.inetAddresses
-                    while (addrs.hasMoreElements()) {
-                        val addr = addrs.nextElement()
-                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
-                            return addr.hostAddress ?: "127.0.0.1"
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return "127.0.0.1"
-    }
-
-    private fun getWifiIpv6Address(): String? {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces().toList()
-            val wlan = interfaces.find { it.name.contains("wlan", ignoreCase = true) }
-            val prioritized = if (wlan != null) listOf(wlan) + interfaces.filter { it != wlan } else interfaces
-            for (iface in prioritized) {
-                if (iface.isUp && !iface.isLoopback) {
-                    val addrs = iface.inetAddresses
-                    while (addrs.hasMoreElements()) {
-                        val addr = addrs.nextElement()
-                        if (addr is java.net.Inet6Address &&
-                            !addr.isLoopbackAddress &&
-                            !addr.isLinkLocalAddress &&
-                            !addr.isSiteLocalAddress &&
-                            !addr.isMulticastAddress) {
-                            val host = addr.hostAddress ?: continue
-                            return host.split("%")[0]
-                        }
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return null
-    }
-
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
