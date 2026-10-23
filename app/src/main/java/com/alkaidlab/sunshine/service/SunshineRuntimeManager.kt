@@ -223,8 +223,8 @@ class SunshineRuntimeManager private constructor() {
     @Volatile var encoderHevc: String = "auto"
         private set
 
-    private val _pinRequested = MutableStateFlow<String?>(null)
-    val pinRequested: StateFlow<String?> = _pinRequested.asStateFlow()
+    private val pinPairing = PinPairingController(submitToEngine = { pin -> engineClient?.submitPin(pin) == true })
+    val pinRequested: StateFlow<String?> = pinPairing.pinRequested
 
     private val _activeSessionsFlow = MutableStateFlow<List<RuntimeSession>>(emptyList())
     val activeSessionsFlow: StateFlow<List<RuntimeSession>> = _activeSessionsFlow.asStateFlow()
@@ -742,31 +742,11 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    fun submitPin(pin: String): Boolean {
-        val cleanPin = pin.trim()
-        if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
-            SunshineLogManager.log("PIN_ERR", "Invalid PIN format: $cleanPin")
-            return false
-        }
-        return try {
-            if (engineClient?.submitPin(cleanPin) != true) return false
-            _pinRequested.value = null
-            SunshineLogManager.log("PIN", "Native submitPin completed for $cleanPin")
-            true
-        } catch (e: Throwable) {
-            SunshineLogManager.log("PIN_ERR", "Failed native submitPin: ${e.message}")
-            false
-        }
-    }
+    fun submitPin(pin: String): Boolean = pinPairing.submitPin(pin)
 
-    fun onPinRequested() {
-        SunshineLogManager.log("PIN", "Moonlight client requested PIN pairing")
-        _pinRequested.value = "PIN_REQUIRED"
-    }
+    fun onPinRequested() = pinPairing.onPinRequested()
 
-    fun dismissPinRequest() {
-        _pinRequested.value = null
-    }
+    fun dismissPinRequest() = pinPairing.dismissPinRequest()
 
     @Synchronized
     fun onStreamStarted(width: Int, height: Int, fps: Int, packetDuration: Int, surface: Surface,
@@ -923,7 +903,7 @@ class SunshineRuntimeManager private constructor() {
     fun onEngineDisconnected() {
         appSessionGuard?.clear()
         activeSessions.toList().forEach { onStreamStopped(it.videoThreadId) }
-        _pinRequested.value = null
+        pinPairing.clear()
         audioPacketFloats = 0
         audioBuffer = PcmAudioBuffer(audioBufferMs * 96)
     }
