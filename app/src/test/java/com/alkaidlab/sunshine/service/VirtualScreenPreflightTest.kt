@@ -1,5 +1,8 @@
 package com.alkaidlab.sunshine.service
 
+import android.content.Context
+import android.test.mock.MockContext
+
 import com.alkaidlab.sunshine.data.NativeVideoSession
 import com.alkaidlab.sunshine.data.RuntimeSession
 import org.junit.Assert.*
@@ -8,7 +11,8 @@ import org.junit.Test
 /**
  * [VirtualScreenPreflight] 纯逻辑单测（derive 的配置推导 + resolve 的守卫链）。
  * derive 不触 Android 运行时；resolve 的 Host 用假实现，conf 读取路径不进
- * （守卫提前返回），故可在纯 JVM 下运行。
+ * （守卫提前返回），故可在纯 JVM 下运行。投影守卫测试用 MockContext 绕过
+ * context 为空的守卫（纯 JVM 可实例化，其方法不会被调用）。
  */
 class VirtualScreenPreflightTest {
 
@@ -42,6 +46,7 @@ class VirtualScreenPreflightTest {
         var active: Boolean = false,
         var fullscreenBusy: Boolean = false,
         var sessions: List<RuntimeSession> = emptyList(),
+        var context: Context? = null,
         var hasProjection: Boolean = true,
         var dispatcherRunning: Boolean = true,
     ) : VirtualScreenPreflight.Host {
@@ -49,7 +54,7 @@ class VirtualScreenPreflightTest {
         override fun virtualScreenActive() = active
         override fun fullscreenBusy() = fullscreenBusy
         override fun activeSessions() = sessions
-        override fun hostContext() = null // 守卫测试不走到 conf 读取
+        override fun hostContext() = context
         override fun hasMediaProjection() = hasProjection
         override fun frameDispatcherRunning() = dispatcherRunning
         override fun maxFps() = 120
@@ -89,8 +94,11 @@ class VirtualScreenPreflightTest {
     }
 
     @Test fun missingProjectionOrDispatcherReturnsRecordingHint() {
-        assertEquals("先允许屏幕录制并建立串流连接", early(FakeHost(sessions = listOf(session()), hasProjection = false)).message)
-        assertEquals("先允许屏幕录制并建立串流连接", early(FakeHost(sessions = listOf(session()), dispatcherRunning = false)).message)
+        // 投影守卫在"服务未启动"(context 为 null)之后，需给非空 Context 才能走到该守卫。
+        // MockContext 纯 JVM 可实例化；resolve 在投影守卫处提前返回，不调用其任何方法。
+        val ctx = MockContext()
+        assertEquals("先允许屏幕录制并建立串流连接", early(FakeHost(sessions = listOf(session()), context = ctx, hasProjection = false)).message)
+        assertEquals("先允许屏幕录制并建立串流连接", early(FakeHost(sessions = listOf(session()), context = ctx, dispatcherRunning = false)).message)
     }
 
     @Test fun deriveDefaultsToScreenOffModeAndSessionGeometry() {
