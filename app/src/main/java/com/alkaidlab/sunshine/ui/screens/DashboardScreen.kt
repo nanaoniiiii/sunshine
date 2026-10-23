@@ -87,13 +87,13 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                             Text(virtualScreen.error.orEmpty(), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                         if (virtualScreen.error?.contains("Shizuku 显示服务未能启动") == true)
                             TextButton(onClick = {
-                                val launch = android.content.Intent(android.content.Intent.ACTION_MAIN)
-                                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
-                                    .setComponent(android.content.ComponentName("moe.shizuku.privileged.api", "moe.shizuku.manager.MainActivity"))
-                                try { context.startActivity(launch) } catch (_: Exception) {
+                                val manager = com.alkaidlab.sunshine.service.ShizukuServiceBootstrap.managerPackage
+                                    ?: "moe.shizuku.privileged.api"
+                                val launch = context.packageManager.getLaunchIntentForPackage(manager)
+                                try { checkNotNull(launch); context.startActivity(launch) } catch (_: Exception) {
                                     android.widget.Toast.makeText(context, "请打开正在提供授权的 Shizuku／Stellar 管理器", android.widget.Toast.LENGTH_LONG).show()
                                 }
-                            }) { Text("打开 Shizuku 管理器后重试") }
+                            }) { Text("打开授权管理器后重试") }
                     } else PrimaryButton(onClick = onOpenPairing, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
                         Icon(Icons.Default.AddLink, null, modifier = Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp)); Text("配对新设备")
@@ -187,7 +187,7 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
         item { SectionCard("设备准备", Icons.Default.VerifiedUser) {
             PermissionRow("屏幕录制", "捕获并传输设备画面", capture, onRequestMediaProjection)
             Divider(color = CardBorder)
-            PermissionRow("远程控制", "连接 Shizuku 后支持触控与按键", shizuku, onRequestShizuku)
+            PermissionRow("远程控制", "Shizuku 授权后自动准备输入与虚拟屏后台服务", shizuku, onRequestShizuku)
             Divider(color = CardBorder)
             PermissionRow("后台运行", "允许 Sunshine 忽略电池优化", battery, onRequestBatteryOptimization)
             Divider(color = CardBorder)
