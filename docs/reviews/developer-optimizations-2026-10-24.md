@@ -1,8 +1,10 @@
-# 开发分支优化审查与筛选
+# 开发分支优化逐项审查与采纳记录
 
 审查基线为 `62513886a4f7d5d175ba2719d14438c93b4c61ff`。初始快照覆盖 `auto/**` 分支的 31 个开放 PR、3 个已关闭且被替代的旧 PR、74 个尚未进入基线的非合并提交；合并前发现新增 #39，并完成增量审查。最终范围为截至 #39 的 32 个开放 PR、3 个旧 PR、76 个非合并提交。以提交历史追溯来源，以当前 PR 的净改动判断是否值得合并。
 
 标准是实际收益、已有实现的保持和合并必要性。此次完整合并 8 个经修正的 PR，另部分采纳 #36；其余 23 个开放 PR 已检查，但本轮不合入。3 个旧版本不重复合并。完整采纳者保留原分支提交历史，#36 只采纳必要修复，其原子替换方案仍留在原 PR。
+
+本文作为仓库中的长期审查记录，逐项列出 PR 原提案、作用、采用范围和修改原因；PR 链接用于追溯讨论，合并提交用于追溯最终实现。这里的开放／关闭数量对应审查快照，不表示阅读时的实时 PR 状态。后续作者更新需要重新审查，不能把本次结论直接套用到新提交。#1–#4 已在基线中，不计入本轮 32 个开放 PR。
 
 ## 实测收益及边界
 
@@ -28,46 +30,112 @@ ART 音频局部耗时降低约 52%，日志分配降低约 38%。音频并未�
 - Robolectric 仅作为测试依赖，用无生产启动流程的 Application。移除未预置编解码器、可能零断言通过的示例，改为日志并发和真实 API 路由回归。JDK 17 配置按官方要求添加模块开放；仅对测试用 Bouncy Castle 多版本 JAR 跳过无必要的 Jetifier 转换，避免 Java 25 多版本字节码导致测试构建失败。
 - `SourceCadenceTracker` 的候选帧率表只在约一秒的采样窗口边界使用，原 PR 的“每帧分配”表述已改正。
 
-## 逐项决定
+## 已合并的 8 个 PR：原提案、作用与最终采用部分
 
-下表链接对应审查时的 PR，判定针对本轮快照；后续作者更新需重新审查。
+下面将包含多种改动的 PR 拆开列出。“合并”表示保留其提交来源并在审查后修正，不表示原提案的每一行或每项收益表述都原样保留。
 
-| PR | 判断 | 决定 |
+| PR／部分 | 原 PR 提交的内容 | 作用与审查结果 | 最终采用部分 |
+| --- | --- | --- | --- |
+| [#5](https://github.com/nanaoniiiii/sunshine/pull/5)：PCM 缓冲 | `PcmAudioBuffer` 的逐样本取模循环改为每次读或写遇环绕时最多两段 `System.arraycopy`。 | 减少每个样本的循环和取模；ART 局部写入＋读取耗时降低约 52%，读取结果数组的分配量不变。 | 采用批量复制，追加立体声环绕、溢出和参考队列等价测试，保持已有缓冲语义。 |
+| #5：帧率候选表 | `SourceCadenceTracker` 将候选帧率数组移为可复用的静态数组。 | 避免采样窗口结束时重复建立数组；该路径约每秒运行一次，不是每帧分配。 | 采用数组复用，修正原提案的收益说明。 |
+| #5：诊断 JSON | `SunshineEngineClient` 查询视频会话时复用私有 `Gson` 实例。 | 减少重复创建解析器，查询内容与数据结构不变。 | 采用实例复用；未单独证明完整诊断请求或串流性能提升。 |
+| [#6](https://github.com/nanaoniiiii/sunshine/pull/6)：死代码 | 删除 `SunshineService.getWifiIpAddress`、`getWifiIpv6Address` 两个无调用私有方法。 | 减少过时地址探测实现，降低维护和误用成本。 | 采用删除；实际使用的 `refreshNetworkAddresses` 保留。不声称提升 FPS 或缩小 R8 后 APK。 |
+| [#7](https://github.com/nanaoniiiii/sunshine/pull/7)：未使用依赖 | 移除 `lifecycle-service:2.7.0`、`ui-tooling-preview`、`navigation-compose:2.7.7`。 | 源代码没有使用这三项直接依赖，清理构建配置。 | 采用移除；保留实际使用的 Lifecycle、Compose 和图标库。 |
+| #7：HTTP 客户端 | `okhttp`、`logging-interceptor` 从 `4.12.0` 升到 `4.12.1`。 | 核对发布源码后确认增加失信证书链阻断，属于有明确内容的补丁升级。 | 采用这两项升级；Kotlin／Compose 工具链和现有服务器证书不变。 |
+| [#10](https://github.com/nanaoniiiii/sunshine/pull/10)：日志缓冲 | `CopyOnWriteArrayList` 改为加锁的 `ArrayDeque`。 | 减少追加／淘汰时的整数组复制；ART 日志局部耗时降低约 11%、分配降低约 38%。原提案仍有锁外发布旧快照的窗口。 | 采用 deque，并将缓冲修改、清空和 StateFlow 发布放入同一把锁，补充并发回归。历史快照复制仍为 O(n)。 |
+| [#11](https://github.com/nanaoniiiii/sunshine/pull/11)：PIN 配对 | 提取 `PinPairingController`，集中配对请求状态、校验、提交及清除。 | 单一职责状态更易验证；审查同时确认日志可能回显 PIN。 | 采用控制器，保留原校验／提交语义；成功、格式错误、引擎异常路径全部脱敏。异常仅记类型，避免消息回显 PIN，补充回归测试。 |
+| [#17](https://github.com/nanaoniiiii/sunshine/pull/17)：测试基建 | 增加 `Robolectric:4.17`、Android 资源加载和 JDK 17 模块开放。 | 支持在 JVM 中验证 Android 框架交互，便于测试日志、API、锁屏状态等路径。 | 采用测试基建，使用不运行生产启动流程的 Application；补充 Maven 测试依赖仓库和测试用 Bouncy Castle Jetifier 排除项。Robolectric 不进入生产运行依赖。 |
+| #17：示例测试 | 增加 `EncoderCapabilitiesTest`，枚举编码器并检查缓存身份。 | 未预置编码器时枚举断言可能一次也不执行；缓存身份检查不能证明实际编码能力。 | 移除这组示例，改为日志并发及实际 API 路由回归，不把框架模拟当作真机编解码器验收。 |
+| [#22](https://github.com/nanaoniiiii/sunshine/pull/22)：滚轮事件 | 删除 `InputBroker.scroll` 中一个构造后从未注入、直接回收的 `MotionEvent`。 | 去掉无效的事件构建／回收；真正带滚轮轴数据的事件仍注入。对象池可能复用，不能断言每次必然减少一次堆分配。 | 采用删除；接收端鼠标在 DeX 设置中的实际滚动已验证。 |
+| [#39](https://github.com/nanaoniiiii/sunshine/pull/39)：设置死代码 | 删除无生产调用的 `SettingsDraft.reconcile` 及其三项测试。 | 生产路径已使用 `SettingsAutosave.rebase`，删除重复且失效的维护对象。 | 采用删除，保留实际自动保存逻辑及八项相关测试。不宣称运行时加速；方法删除和测试删除分布在该 PR 的两项非合并提交中。 |
+
+### 合并来源与审查修正提交
+
+| PR／阶段 | 主线提交 | 内容 |
 | --- | --- | --- |
-| [#5](https://github.com/nanaoniiiii/sunshine/pull/5) | PCM 两段批量复制有可重复局部收益；Gson 可复用。帧率表仅每秒少量分配。 | 合入，修正收益描述并补充立体声队列等价测试。 |
-| [#6](https://github.com/nanaoniiiii/sunshine/pull/6) | 两个私有 IP 检测方法已无调用，保留它们容易误用过期逻辑。 | 合入清理，不声称提高运行速度或缩小 R8 后 APK。 |
-| [#7](https://github.com/nanaoniiiii/sunshine/pull/7) | 三项依赖无源代码使用；OkHttp 4.12.1 实际源码增加失信证书链阻断。 | 合入，保留 Kotlin／Compose 工具链及服务器证书。 |
-| [#8](https://github.com/nanaoniiiii/sunshine/pull/8) | 配置解析主要是搬移；未统一其他配置解析入口，没有运行收益。 | 暂缓，本轮不为减少单文件行数引入新类。 |
-| [#9](https://github.com/nanaoniiiii/sunshine/pull/9) | host 已是 volatile，节流字段已有独立同步；改为会话锁会增加与启停路径的竞争。反射小函数只去重。 | 不合入这一锁范围变更。 |
-| [#10](https://github.com/nanaoniiiii/sunshine/pull/10) | 去除 COW 追加／淘汰的整数组复制，分配实测下降。原提案仍有锁外发布乱序窗口。 | 修正发布顺序后合入。 |
-| [#11](https://github.com/nanaoniiiii/sunshine/pull/11) | 小型、单一职责 PIN 状态封装可测试；日志确实回显 PIN。 | 合入，追加异常消息脱敏和回归测试。 |
-| [#12](https://github.com/nanaoniiiii/sunshine/pull/12) | 几何同步搬到持有多项状态 getter 的类，算法和工作量不变。 | 暂缓。 |
-| [#13](https://github.com/nanaoniiiii/sunshine/pull/13) | 对端探测搬移与解析测试有维护价值，没有减少网络探测或计算量。 | 暂缓，另行维护性重构时评估。 |
-| [#14](https://github.com/nanaoniiiii/sunshine/pull/14) | 遥测线程算法不变，新增大量 Host getter／setter，状态仍在原管理器。 | 暂缓，不作为性能优化合入。 |
-| [#15](https://github.com/nanaoniiiii/sunshine/pull/15) | 显示后端增加 Host 转接，shell 调用与等待时间均不变。 | 暂缓，保留刚验证的显示恢复路径。 |
-| [#16](https://github.com/nanaoniiiii/sunshine/pull/16) | 按差异覆盖证书／私钥会改变既有信任状态，分两次截断写入也不是一项事务。 | 不合入，证书轮换应独立设计迁移和失败恢复。 |
-| [#17](https://github.com/nanaoniiiii/sunshine/pull/17) | 测试框架有助于验证 Android API；原编解码器示例可能因空列表而不做断言。 | 仅采用修正后的测试基建与有效回归，不进入生产依赖。 |
-| [#18](https://github.com/nanaoniiiii/sunshine/pull/18) | 批量版本升级没有逐项证明当前问题的收益，扩大兼容性验证面。 | 暂缓，不与小范围优化混合。 |
-| [#19](https://github.com/nanaoniiiii/sunshine/pull/19) | AGP／Gradle 升级不是当前优化必需项，未证明产品运行收益。 | 暂缓。 |
-| [#20](https://github.com/nanaoniiiii/sunshine/pull/20) | Kotlin 2 与 Compose 编译器迁移扩大构建及 UI 回归面。 | 暂缓，继续使用已验证的 Kotlin 1.9.22。 |
-| [#22](https://github.com/nanaoniiiii/sunshine/pull/22) | 删除一个从未注入的滚轮 MotionEvent 构建／回收过程，真正的带轴事件保留。 | 合入；不把对象池复用夸成每次必然少一次堆分配。 |
-| [#24](https://github.com/nanaoniiiii/sunshine/pull/24) | 退出与面板控制搬到 Host 包装，未提供运行收益。 | 暂缓。 |
-| [#25](https://github.com/nanaoniiiii/sunshine/pull/25) | 前置条件拆成多层数据／Host；测试缝并不能替代首次授权与系统录屏实测。 | 暂缓。 |
-| [#26](https://github.com/nanaoniiiii/sunshine/pull/26) | DeX 等待循环和 180 秒确认时限均未改变。 | 暂缓，不改已验证的确认编排。 |
-| [#27](https://github.com/nanaoniiiii/sunshine/pull/27) | 快照 `009850ac` 的 block-body 函数缺少 return，实际编译失败。 | 不合入。 |
-| [#29](https://github.com/nanaoniiiii/sunshine/pull/29) | 地址分类规则未优化，并引入 Host／Accumulator／新返回类型。 | 暂缓；只通过 #6 删除原本无用的旧方法。 |
-| [#30](https://github.com/nanaoniiiii/sunshine/pull/30) | 闲置恢复算法不变，新增 Host 与日志转接。 | 暂缓。 |
-| [#31](https://github.com/nanaoniiiii/sunshine/pull/31) | 普通退出改用 closeQuietly，吞掉关闭错误，可能错误报告成功。 | 不合入这一行为回退。 |
-| [#32](https://github.com/nanaoniiiii/sunshine/pull/32) | 物理采集恢复搬移，增加多项可变状态委托，没有运行收益。 | 暂缓。 |
-| [#33](https://github.com/nanaoniiiii/sunshine/pull/33) | 相比旧版保留了 DisplayFailureMessage，但仍只是错误恢复的搬移。 | 暂缓，现有错误语义保留。 |
-| [#34](https://github.com/nanaoniiiii/sunshine/pull/34) | 全屏会话编排加 Host 转接，系统交互与等待没有减少。 | 暂缓。 |
-| [#35](https://github.com/nanaoniiiii/sunshine/pull/35) | 与 #5 重复实现音频批量复制。 | 不重复合并，收益由 #5 覆盖。 |
-| [#36](https://github.com/nanaoniiiii/sunshine/pull/36) | HTTP 状态写入串行化、错误 JSON 转义有明确正确性收益；锁内读取请求体会阻塞其他查询。 | 部分采纳并缩小锁范围；原子替换暂不采纳。 |
-| [#37](https://github.com/nanaoniiiii/sunshine/pull/37) | 固定 Locale.ROOT 会改变部分语言的数字显示，不是性能优化。 | 暂缓，无当前需求则保留系统地区格式。 |
-| [#38](https://github.com/nanaoniiiii/sunshine/pull/38) | 快照 `057ce288` 仅换图标依赖，实际出现 Dashboard、Gamepad、ScreenShare 等大量 unresolved reference。 | 不合入，保留 extended；同一 import 包名不能证明来自 core。 |
-| [#39](https://github.com/nanaoniiiii/sunshine/pull/39) | 增量确认 reconcile 只被自身测试引用；生产路径使用 SettingsAutosave.rebase，已有真实自动保存测试覆盖编辑与轮询。 | 合入纯清理，并删除三个只测试死代码的用例；不宣称有运行时加速。 |
+| #5 | [`6ca7341`](https://github.com/nanaoniiiii/sunshine/commit/6ca7341) | 保留音频、帧率表和 Gson 优化的原提交来源。 |
+| #6 | [`42df9d4`](https://github.com/nanaoniiiii/sunshine/commit/42df9d4) | 删除无调用的 IP 检测方法。 |
+| #7 | [`58195e0`](https://github.com/nanaoniiiii/sunshine/commit/58195e0) | 依赖清理与 OkHttp 补丁升级。 |
+| #10 | [`52152d0`](https://github.com/nanaoniiiii/sunshine/commit/52152d0) | 日志缓冲替换。 |
+| #11 | [`6a70594`](https://github.com/nanaoniiiii/sunshine/commit/6a70594) | PIN 状态控制器。 |
+| #17 | [`9aa51b2`](https://github.com/nanaoniiiii/sunshine/commit/9aa51b2) | Android 框架测试基建。 |
+| #22 | [`7d0bfff`](https://github.com/nanaoniiiii/sunshine/commit/7d0bfff) | 无效滚轮事件清理。 |
+| #39 | [`807032b`](https://github.com/nanaoniiiii/sunshine/commit/807032b) | 无调用设置方法和测试清理。 |
+| 审查修正及部分 #36 | [`fbc6b14`](https://github.com/nanaoniiiii/sunshine/commit/fbc6b14396f6be06cda6cc12a2cb19f86e0cad5e) | 日志发布顺序、PIN 异常脱敏、有效回归、测试构建兼容，以及配对 API 的必要修复。 |
 
-已关闭的 #21／#23／#28 分别被 #31／#32／#33 替代，不重复引入过期版本。
+## 部分采纳的 PR #36
+
+[#36](https://github.com/nanaoniiiii/sunshine/pull/36) 的审查头为 `6b6d70a3cb4be93821f6128f213bb3b60f9a66d2`。只在 `fbc6b14` 中采纳下面的必要部分，没有合并整个 PR 分支。
+
+| 原 PR 提交的部分 | 作用与问题 | 最终采用部分 |
+| --- | --- | --- |
+| 为配对状态读改写增加 `stateLock` | 同一 HTTP 服务内，并发重命名、取消单个配对和取消全部配对可能覆盖彼此更新；但原方案在锁内读取请求体，慢客户端会阻塞其他查询。 | 采用该服务内的状态读改写串行化及读取快照；请求体读取／解析移到锁外，缩小临界区。实机不完整请求体保持未完成时，客户端列表仍约 0.015 秒返回。 |
+| 通过 Gson 生成错误 JSON | 异常文本直接拼接可能产生无效 JSON。 | 采用 JSON 转义；故意无效请求返回的 HTTP 500 响应可正常解析。不将它描述为所有错误状态码都已重新设计。 |
+| 用 `AtomicFile` 原子替换状态文件 | 试图改善单次文件写入中断的恢复；原生引擎也写同一文件，Java 局部锁无法协调跨进程事务。 | 不采用，保留既有 `readText`／`writeText` 文件契约。跨进程协调与崩溃一致性需单独设计；Windows Robolectric 的 rename 差异不是 Android 文件系统故障证明。 |
+
+## 本轮未合入的 23 个 PR
+
+“暂缓”表示本次没有足够收益或必要性来承担相应改动和回归范围，不表示重构永远没有维护价值。明确失败的编译结论仅对应表中的快照；作者修正后的提交需另行验证。
+
+| PR | 原 PR 提交的部分 | 作用／风险与未采纳原因 | 本轮决定 |
+| --- | --- | --- | --- |
+| [#8](https://github.com/nanaoniiiii/sunshine/pull/8) | 提取 `SunshineConfParser` 并增加解析测试。 | 可以隔离配置解析；但未统一其他解析入口，也未减少工作量，主要是代码搬移。 | 暂缓，未采用。 |
+| [#9](https://github.com/nanaoniiiii/sunshine/pull/9) | 将输入回调的 `@Synchronized` 改为共享会话锁，并提取任务 `displayId` 反射辅助函数。 | `host` 已是 volatile，节流字段已有独立同步；共享会话锁增加与启停路径竞争。反射提取仅去重。 | 两部分均未采用。 |
+| [#12](https://github.com/nanaoniiiii/sunshine/pull/12) | 提取 `CaptureCanvasSync` 管理尺寸和画布同步。 | 算法不变，新增多项状态 getter 和 Host 耦合，没有证明运行收益。 | 暂缓，未采用。 |
+| [#13](https://github.com/nanaoniiiii/sunshine/pull/13) | 提取 `NetworkPeerProbe`，集中对端 IP、`/proc` 解码和 ping，并增加解析测试。 | 有维护价值；未减少实际网络探测或计算量。 | 暂缓，可在独立维护性重构中再评估。 |
+| [#14](https://github.com/nanaoniiiii/sunshine/pull/14) | 将遥测线程迁到 `StreamTelemetry`，通过 Host 读写运行状态。 | 算法不变，状态仍在原管理器，增加大量 getter／setter。 | 暂缓，未采用。 |
+| [#15](https://github.com/nanaoniiiii/sunshine/pull/15) | 提取 `FullscreenDisplayController` 和显示后端工厂。 | 增加 Host 转接，shell 调用和等待时间不变。 | 暂缓，保留已验证的显示恢复实现。 |
+| [#16](https://github.com/nanaoniiiii/sunshine/pull/16) | 按文件差异更新内置证书与私钥资源。 | 会改变既有服务器信任状态；证书与密钥分两次截断写入，不是成对原子迁移。 | 不采用；证书轮换需独立迁移及失败恢复设计。 |
+| [#18](https://github.com/nanaoniiiii/sunshine/pull/18) | 批量升级 AndroidX、Compose、协程、Retrofit、Gson、JmDNS，版本见下表。 | 没有逐项证明对当前问题的收益，扩大 UI、网络和设备发现的兼容性验证范围。 | 本轮全部暂缓，不与局部优化混合。 |
+| [#19](https://github.com/nanaoniiiii/sunshine/pull/19) | AGP `8.2.2 → 8.7.3`，Gradle `8.5 → 8.10.2`。 | 属于工具链迁移，非本次局部优化必需，未证明产品运行收益。 | 暂缓，保留原工具链。 |
+| [#20](https://github.com/nanaoniiiii/sunshine/pull/20) | Kotlin `1.9.22 → 2.0.21`，接入新的 Compose 编译器 Gradle 插件。 | 扩大构建与 UI 回归范围。 | 暂缓，保留 Kotlin 1.9.22／Compose 编译器 1.5.8。 |
+| [#24](https://github.com/nanaoniiiii/sunshine/pull/24) | 将退出和面板控制提取为 `VirtualScreenLifecycle`。 | 增加 Host 包装，未减少系统操作或运行工作量。 | 暂缓，未采用。 |
+| [#25](https://github.com/nanaoniiiii/sunshine/pull/25) | 提取 `VirtualScreenPreflight`、前置条件数据和测试。 | 条件检查更易隔离，但引入多层数据／Host；这些测试不证明新设备授权及系统录屏可用。 | 暂缓，未采用。 |
+| [#26](https://github.com/nanaoniiiii/sunshine/pull/26) | 提取 `LocalDexWaiter`，集中 DeX 等待、提示和会话存活判断。 | 等待循环及 180 秒确认时限未变。 | 暂缓，保留已验证的确认编排。 |
+| [#27](https://github.com/nanaoniiiii/sunshine/pull/27) | 提取 `VirtualScreenProvisioner`，搬移桌面创建和采集绑定。 | 审查头 `009850ac6021d0d780cec59e32a2981634b63b00` 的 block-body 函数缺少 return，实际编译失败。 | 不采用该快照。 |
+| [#29](https://github.com/nanaoniiiii/sunshine/pull/29) | 提取 `NetworkAddressResolver`，引入 Host／Accumulator／Snapshot，并删除旧地址方法。 | 地址分类规则不变，增加多层转接；死代码删除已由 #6 覆盖。 | 未采用；不把 #6 的重复清理计为部分采纳 #29。 |
+| [#30](https://github.com/nanaoniiiii/sunshine/pull/30) | 提取 `FullscreenIdleRestorer`。 | 闲置恢复算法不变，新增 Host 和日志转接。 | 暂缓，未采用。 |
+| [#31](https://github.com/nanaoniiiii/sunshine/pull/31) | 提取 `VirtualScreenClientHolder`，替代旧 #21。 | 普通退出也使用 `closeQuietly`，可能吞掉关闭失败并错误报告成功。 | 不采用这一行为回退。 |
+| [#32](https://github.com/nanaoniiiii/sunshine/pull/32) | 提取 `VirtualCaptureRestorer`，替代旧 #23。 | 搬移物理采集恢复，增加多项可变状态委托，未证明运行收益。 | 暂缓，未采用。 |
+| [#33](https://github.com/nanaoniiiii/sunshine/pull/33) | 提取 `VirtualScreenFailureRecovery`，替代旧 #28。 | 相比旧版保留了 `DisplayFailureMessage`，但主要仍为错误恢复代码搬移。 | 暂缓，保留现有错误语义。 |
+| [#34](https://github.com/nanaoniiiii/sunshine/pull/34) | 提取 `FullscreenSessionRunner` 和编排测试。 | 增加 Host 转接，系统交互和等待没有减少。 | 暂缓，未采用。 |
+| [#35](https://github.com/nanaoniiiii/sunshine/pull/35) | PCM 环形缓冲改用批量复制。 | 与 #5 重复，实现收益已覆盖。 | 不重复合并，采用部分归于 #5。 |
+| [#37](https://github.com/nanaoniiiii/sunshine/pull/37) | 更新页和 Dashboard 的数字格式固定使用 `Locale.ROOT`。 | 影响部分语言的本地数字显示，不是性能优化，也无当前产品需求。 | 暂缓，保留系统地区格式。 |
+| [#38](https://github.com/nanaoniiiii/sunshine/pull/38) | 将 `material-icons-extended` 换为 `material-icons-core`。 | 审查头 `057ce288a8a0ba550407aa9bb135cd065b33309f` 实际出现 Dashboard、Gamepad、ScreenShare 等 unresolved reference；相同 import 包名不证明图标属于 core。 | 不采用该快照，保留 extended。 |
+
+### PR #18 提议的依赖版本
+
+以下升级本轮均未采用；#7 的 OkHttp 补丁升级单独审查并已采用。
+
+| 依赖 | 基线／最终保留版本 | #18 提议版本 |
+| --- | --- | --- |
+| AndroidX Core KTX | 1.12.0 | 1.13.1 |
+| Lifecycle runtime-ktx／viewmodel-compose／runtime-compose | 2.7.0 | 2.8.7 |
+| kotlinx-coroutines-android | 1.7.3 | 1.8.1 |
+| Compose BOM | 2024.02.00 | 2024.06.00 |
+| activity-compose | 1.8.2 | 1.9.3 |
+| Retrofit／converter-gson | 2.9.0 | 2.11.0 |
+| Gson | 2.10.1 | 2.13.2 |
+| JmDNS | 3.5.8 | 3.6.4 |
+
+## 已关闭、被替代的 3 个旧 PR
+
+| 旧 PR | 提交的部分 | 替代版本与采用情况 |
+| --- | --- | --- |
+| [#21](https://github.com/nanaoniiiii/sunshine/pull/21) | 旧版 `VirtualScreenClientHolder`。 | 被 #31 替代；新旧两个版本本轮均未采用。 |
+| [#23](https://github.com/nanaoniiiii/sunshine/pull/23) | 旧版 `VirtualCaptureRestorer`。 | 被 #32 替代；新旧两个版本本轮均未采用。 |
+| [#28](https://github.com/nanaoniiiii/sunshine/pull/28) | 旧版 `VirtualScreenFailureRecovery`。 | 被 #33 替代；新旧两个版本本轮均未采用，不重复引入过期版本。 |
+
+## 验收期间追加的两项修复
+
+下面两项来自本轮实机发现，不计为另一位开发者 PR 的原提案；均已进入最终正式版 `v2026.10.24.3`。
+
+| 修复与提交 | 原问题 | 采用的实现与作用 | 验证 |
+| --- | --- | --- | --- |
+| [受信任设备状态检查 `d7ee7af`](https://github.com/nanaoniiiii/sunshine/commit/d7ee7af) | 手机已受信任、Sunshine 可操作，但 Keyguard 仍 showing；旧逻辑使用 `isKeyguardLocked`，误阻止虚拟屏／DeX。 | 增加 `DisplayUnlockGuard`，相关显示操作每次检查 `isDeviceLocked`，正确区分认证锁定与仍显示的受信任锁屏 UI；保留已有原生 DeX 复用规则。 | 3 项回归覆盖受信任状态、真正需要认证及后续重新锁定。 |
+| [收起受信任锁屏层 `beeacf6`](https://github.com/nanaoniiiii/sunshine/commit/beeacf669fcf7fd344ae20d65467c0bbe9f83feb) | 退出 Sunshine 桌面虽保留虚拟屏和息屏，但可能露出 Smart Lock 锁屏 UI，未真正回到手机主页。 | 增加 `TrustedKeyguardDismissal`，主机及桌面 Activity 恢复／重新获得焦点时，仅在无需身份验证且 Keyguard 仍 showing 时调用系统 `requestDismissKeyguard`；抑制重复请求，不修改锁屏设置。 | 4 项框架回归；最终真机退出后为手机“主屏幕”、Keyguard showing=false，虚拟屏和息屏串流保留。 |
+
+两项修复新增 7 项测试，使最终套件由优化候选的 218 项增至 225 项。三种显示模式、实际编码尺寸、退出目标、面板电源及断流恢复的逐项结果见[最终实机记录](../validation/reviewed-optimizations-2026-10-24.md)。本轮没有连接实体手柄，不把系统方向键注入计为实体手柄或 Moonlight 手柄的新一轮验收。
 
 ## 验证与实现保持
 

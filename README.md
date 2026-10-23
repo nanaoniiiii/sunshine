@@ -11,7 +11,7 @@
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
 
-**[v2026.10.24.3：受信任锁屏与桌面退出修复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.24.3)**：修正手机已受信任时仍误报需要解锁、阻止虚拟屏／DeX 启动的问题；通过系统接口收起无需身份验证的锁屏层，使退出 Sunshine 桌面回到手机主页，并保留虚拟屏、全屏与息屏串流。筛选合入音频缓冲、日志、配对接口和依赖清理改动。225 项应用测试通过，S20+ 的三种显示模式与退出恢复完成实测。详见[优化筛选与局部收益](docs/reviews/developer-optimizations-2026-10-24.md)和[实机验收范围](docs/validation/reviewed-optimizations-2026-10-24.md)。
+**[v2026.10.24.3：受信任锁屏与桌面退出修复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.24.3)**：修正手机已受信任时仍误报需要解锁、阻止虚拟屏／DeX 启动的问题；通过系统接口收起无需身份验证的锁屏层，使退出 Sunshine 桌面回到手机主页，并保留虚拟屏、全屏与息屏串流。筛选合入音频缓冲、日志、配对接口和依赖清理改动。225 项应用测试通过，S20+ 的三种显示模式与退出恢复完成实测。详见[各 PR 提案、作用与采纳范围](docs/reviews/developer-optimizations-2026-10-24.md)和[实机验收范围](docs/validation/reviewed-optimizations-2026-10-24.md)。
 
 **[v2026.10.23.2：主机桌面与全局手柄适配](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.23.2)**：Sunshine 桌面采用横向应用栏、右侧图标与四周颜色延伸、跟随焦点的大标题和图标任务卡片。全局适配器随 Sunshine 服务启动，支持手机直连与 Moonlight 接收端手柄，提供系统导航、鼠标和游戏原生三种模式、LT／RT 即时圆环、实验室自定义绑定和实时测试页。补丁更正主屏电源菜单的系统调用。详见[使用说明](docs/controller-adapter.md)与[实机验证范围](docs/validation/controller-desktop-2026-10-23.md)。
 
@@ -96,6 +96,7 @@ macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`�
 
 ## 工程记录
 
+- [开发分支优化逐项审查与采纳记录：各 PR 的提案、作用、采用部分及未合入原因](docs/reviews/developer-optimizations-2026-10-24.md)
 - [v2026.10.15.3：DeX 实验入口与第二屏刷新率请求](docs/validation/v2026.10.15.3.md)
 - [v2026.10.15.2：新图标、主屏息屏与独立第二屏](docs/validation/v2026.10.15.2.md)
 - [v2026.10.14.3：官方 Sunshine 引擎、自动保存与输入提交](docs/validation/v2026.10.14.3.md)
