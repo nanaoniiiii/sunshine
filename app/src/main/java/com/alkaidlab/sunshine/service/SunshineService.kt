@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.combine
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
 import java.io.File
-import java.io.FileOutputStream
 import java.net.InetAddress
 import java.net.NetworkInterface
 
@@ -306,14 +305,25 @@ class SunshineService : Service() {
         }
     }
 
+    /**
+     * Copies an asset into [filesDir], refreshing the copy whenever the bundled
+     * asset differs from what's on disk. Previously the copy only happened when
+     * the destination was missing, so a rotated CA (new cacert.pem/cakey.pem in
+     * an updated APK) never took effect for existing installs — the stale CA
+     * was kept forever and pairing kept working against it.
+     *
+     * Overwriting on mismatch is safe: the native engine only (re)generates
+     * these files when they are missing (http::init in native/android/host.cpp),
+     * and this copy always runs before the engine starts, so an on-disk file
+     * that differs from the asset can only have come from a previous asset
+     * version — never from a runtime regeneration.
+     */
     private fun copyAssetToFile(assetName: String, fileName: String): File {
         val dest = File(filesDir, fileName)
-        if (!dest.exists()) {
-            assets.open(assetName).use { input ->
-                FileOutputStream(dest).use { output ->
-                    input.copyTo(output)
-                }
-            }
+        val assetBytes = assets.open(assetName).use { it.readBytes() }
+        if (!dest.exists() || !assetBytes.contentEquals(dest.readBytes())) {
+            dest.writeBytes(assetBytes)
+            SunshineLogManager.log("INIT", "$fileName refreshed from bundled asset")
         }
         return dest
     }
