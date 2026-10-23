@@ -29,13 +29,13 @@ internal class PinPairingController(
     fun submitPin(pin: String): Boolean {
         val cleanPin = pin.trim()
         if (cleanPin.length != 4 || !cleanPin.all { it.isDigit() }) {
-            logger("PIN_ERR", "Invalid PIN format: $cleanPin")
+            logger("PIN_ERR", "Invalid PIN format")
             return false
         }
         return try {
             if (!submitToEngine(cleanPin)) return false
             _pinRequested.value = null
-            logger("PIN", "Native submitPin completed for $cleanPin")
+            logger("PIN", "Native submitPin completed")
             true
         } catch (e: Throwable) {
             logger("PIN_ERR", "Failed native submitPin: ${e.message}")
@@ -52,4 +52,5 @@ internal class PinPairingController(
         _pinRequested.value = null
     }
 }
+
 
