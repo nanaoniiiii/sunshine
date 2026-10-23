@@ -69,6 +69,14 @@ class SunshineRuntimeManager private constructor() {
     private var captureDisplayManager: DisplayManager? = null
     private val _fullscreenBusy = MutableStateFlow(false)
     private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    private val fullscreenIdleRestorerHost = object : FullscreenIdleRestorer.Host {
+        override fun hostContext(): Context? = context
+        override fun hasActiveSessions(): Boolean = activeSessions.isNotEmpty()
+        override fun fullscreenBusy(): MutableStateFlow<Boolean> = _fullscreenBusy
+        override fun fullscreenBackend(): FullscreenDisplay.Backend =
+            this@SunshineRuntimeManager.fullscreenBackend()
+    }
+    private val fullscreenIdleRestorer = FullscreenIdleRestorer(fullscreenScope, fullscreenIdleRestorerHost)
     val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
     private val captureDisplayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
@@ -709,7 +717,7 @@ class SunshineRuntimeManager private constructor() {
             _fullscreenBusy.value = false
             if (activeSessions.isEmpty()) {
                 if (_virtualScreenState.value.active) exitVirtualScreen()
-                restoreFullscreenIfIdle()
+                fullscreenIdleRestorer.restoreFullscreenIfIdle()
             }
         }
     }
@@ -903,7 +911,7 @@ class SunshineRuntimeManager private constructor() {
             if (_virtualScreenState.value.active) fullscreenScope.launch(Dispatchers.Main) { exitVirtualScreen() }
             stopTelemetryLoop()
             streamStartTime = 0L
-            restoreFullscreenIfIdle()
+            fullscreenIdleRestorer.restoreFullscreenIfIdle()
             // Preserve projection/display/recorder, but stop draining audio while idle.
         }
         if (activeSessions.none { it.audioEnabled }) pauseAudioCapture()
@@ -1021,27 +1029,6 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    private fun restoreFullscreenIfIdle() {
-        val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: return
-        if (!prefs.contains("original")) return
-        fullscreenScope.launch {
-            if (activeSessions.isNotEmpty() || !PrivilegedShell.available() || !_fullscreenBusy.compareAndSet(false, true)) return@launch
-            try {
-                if (activeSessions.isNotEmpty()) return@launch
-                val raw = prefs.getString("original", null) ?: return@launch
-                val data = org.json.JSONObject(raw)
-                val size = if (data.getInt("width") > 0 && data.getInt("height") > 0)
-                    FullscreenDisplay.Size(data.getInt("width"), data.getInt("height")) else null
-                val before = FullscreenDisplay.Snapshot(size, 0, autoRotate = data.getBoolean("autoRotate"),
-                    userRotation = data.getInt("userRotation"), fixedRotation = data.getBoolean("fixedRotation"))
-                if (FullscreenDisplay.restore(before, fullscreenBackend())) {
-                    prefs.edit().remove("original").commit()
-                    SunshineLogManager.log("FULLSCREEN", "Restored original display after all clients exited")
-                }
-            } catch (e: Exception) { SunshineLogManager.log("FULLSCREEN_ERR", "Display restore failed: ${e.message}") }
-            finally { _fullscreenBusy.value = false }
-        }
-    }
 
     suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result = withContext(Dispatchers.IO + NonCancellable) {
         if (!_fullscreenBusy.compareAndSet(false, true))
@@ -1060,7 +1047,7 @@ class SunshineRuntimeManager private constructor() {
             val result = FullscreenDisplay.apply(FullscreenDisplay.Size(selected.width, selected.height), backend, ::isCurrent)
             SunshineLogManager.log("FULLSCREEN", "Session $sessionId: ${result.message}")
             result
-        } finally { _fullscreenBusy.value = false; if (activeSessions.isEmpty()) restoreFullscreenIfIdle() }
+        } finally { _fullscreenBusy.value = false; if (activeSessions.isEmpty()) fullscreenIdleRestorer.restoreFullscreenIfIdle() }
     }
 
     fun getPerfSnapshot(): PerfResponse {
@@ -1292,7 +1279,7 @@ class SunshineRuntimeManager private constructor() {
 
     @Synchronized
     fun initShizukuInput() {
-        restoreFullscreenIfIdle()
+        fullscreenIdleRestorer.restoreFullscreenIfIdle()
         try {
             val hasShizuku = try {
                 Shizuku.pingBinder() && Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
