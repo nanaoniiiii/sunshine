@@ -222,7 +222,6 @@ class ControllerUserService(context: Context) : IControllerService.Stub() {
                 if (displayId != 0) return false // Do not open a hidden primary-screen shade from a secondary display.
                 status.javaClass.getMethod("expandNotificationsPanel").invoke(status)
             }
-            "power" -> status.javaClass.getMethod("showGlobalActions").invoke(status)
             else -> return false
         }
         true
