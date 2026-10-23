@@ -1,8 +1,8 @@
 # 优化候选版升级与实机验证
 
-候选为 `v2026.10.24.1` / `20261041`，功能源码提交为 `fbc6b14396f6be06cda6cc12a2cb19f86e0cad5e`。设备为三星 S20+ `SM-G9860` / Android 13，当前主用户；接收端为 Windows Moonlight。此记录补充[开发分支审查](../reviews/developer-optimizations-2026-10-24.md)中的发布 APK 验证，不用函数级微基准代替完整应用检查。
+初次候选为 `v2026.10.24.1` / `20261041`，功能源码提交为 `fbc6b14396f6be06cda6cc12a2cb19f86e0cad5e`。继续检查发现锁屏状态判断误拦，修正版为 `v2026.10.24.2` / `20261042`。设备为三星 S20+ `SM-G9860` / Android 13，当前主用户；接收端为 Windows Moonlight。两个版本的事实分别记录，此记录补充[开发分支审查](../reviews/developer-optimizations-2026-10-24.md)中的发布 APK 验证，不用函数级微基准代替完整应用检查。
 
-## 升级、授权与配对
+## v2026.10.24.1 升级、授权与配对
 
 此前安装命令曾被自动审批拒绝。用户明确要求“开始验证”后，正常重试 `adb install --user 0 -r` 成功，未清数据、卸载或重新配对。安装后包管理器确认版本为 `20261041`；设备上实际安装的 base APK SHA-256 为 `ee8a2c9ce15762e026e9675a68dab69c5e2fa2709015dee1b8a261013b116c67`，与已验证的 arm64 候选一致。
 
@@ -31,12 +31,22 @@
 
 ## 锁屏与桌面创建边界
 
-本轮建立了真实锁屏前提：调用前系统 `Keyguard showing=true`，随后请求三星原生 DeX。接口约 `0.485 s` 返回 `status=false`，明确提示“请先解锁主机，再确认三星 DeX 启动；无需重置 Sunshine 授权”。电脑画面同时显示这条提示，后续虚拟屏状态为未创建、非 busy，输入服务仍就绪。这补齐了上一正式版验证中未建立锁屏条件的前置检查。
+此前依据 `Keyguard showing=true` 将样本记为真实锁屏，这一判断不成立，现予更正。旧候选的 DeX 请求确实在约 `0.485 s` 返回 `status=false` 并显示解锁提示，且没有卡住服务；但 `showing` 本身不能证明用户应用需要身份验证才能访问，因此不能将该结果记为安全锁屏前置检查通过。
 
-已请求用户正常解锁手机，等待继续候选版的原生 DeX 创建、普通 Sunshine 虚拟桌面、默认主屏息屏和接收端输入测试。锁屏下的鼠标滚轮尝试未观察到页面滚动，不计为通过。当前没有连接实体手柄，不把旧版手柄操作验收转记为候选版实测。
+用户指出手机一直显示 Sunshine。随即检查实际截图与系统信任状态：Sunshine 首页处于前台，`mKeyguardOccluded=true`、`trusted=1`、`deviceLocked=0`，同时 `Keyguard showing=true`。普通触屏点击和滚动可以正常打开 Sunshine 设置。这揭示了原有 `isKeyguardLocked` 检查把受信任、可直接进入应用的状态误判为需要解锁。
 
-桌面与息屏三条路径在 `v2026.10.23.3` 的[全新安装验证](fresh-install-permissions-2026-10-23.md)中实际通过，本轮没有修改其实现；这仍不能替代候选 APK 的对应创建检查。候选尚未作为新正式安装包发布，官网继续提供上一正式版。
+这一差别与 [Android 官方 KeyguardManager 说明](https://developer.android.com/reference/android/app/KeyguardManager#isDeviceLocked())一致：`isKeyguardLocked` 包括被 Activity 遮挡、受信任或只需滑动即可解除的锁屏 UI；`isDeviceLocked` 则检查当前用户的应用是否因需要身份验证而不可访问。
 
-本轮已结束自建 Moonlight 测试进程并移除专用 ADB 转发。收尾时客户端数为 0，未遗留虚拟屏／DeX，输入适配器仍就绪；配置恢复原 `screen_off / sunshine`，除版本号外与升级前一致，全局强制桌面值为原 `1`、USB 保持亮屏值为原 `0`、主屏 override 保持 `1080×2400`。手机保留已安装的候选版。
+首轮已结束自建 Moonlight 测试进程并移除专用 ADB 转发。首轮收尾时客户端数为 0，未遗留虚拟屏／DeX，输入适配器仍就绪；配置恢复原 `screen_off / sunshine`，除版本号外与升级前一致，全局强制桌面值为原 `1`、USB 保持亮屏值为原 `0`、主屏 override 保持 `1080×2400`。
+
+## v2026.10.24.2 修正与后续检查
+
+将虚拟屏创建、主屏息屏、独立桌面面板控制、退出 Sunshine 桌面和本地 DeX 准备中的认证前置条件集中为 `requireDisplayUserUnlocked`，查询 `KeyguardManager.isDeviceLocked`。已经运行的原生 DeX 保留原来的复用规则；没有关闭系统锁屏、改变安全设置或注入认证凭据。
+
+新增三个 Robolectric 回归：受信任但 Keyguard 仍 showing 时可以继续；真正需要认证时以原操作提示拒绝；后续重新锁定时每次操作都会重新检查。最终 `testReleaseUnitTest lintRelease assembleRelease` 通过，共 `221` 项测试、0 失败、0 错误。三个 APK 的包名／版本／ABI／原生库与签名通过校验。
+
+修正版已覆盖安装到主用户并成功打开，包管理器确认 `v2026.10.24.2 / 20261042`，仍能在同一 `deviceLocked=0 / Keyguard showing=true` 状态下触屏操作设置。实机设置确认：“虚拟屏”栏目中的“第二屏桌面模式”关闭时隐藏桌面选择，打开后出现默认 Sunshine 与设备自带 DeX 两个选项，布局和文字完整。
+
+自动审批拒绝了随后准备连接及启动电脑 Moonlight 的命令，仅返回 `blocked by policy`，未改写重试启动串流。已请求用户完成电脑连接，等待继续修正版的 DeX 创建、普通虚拟桌面、默认息屏和接收端输入检查。旧候选的实际串流读数不转记为修正版结果。候选尚未公开发布；之前正式版的[三种显示模式验证](fresh-install-permissions-2026-10-23.md)也不代替修正版创建验收。
 
 设备截图、原始日志、配对列表和配置快照仅保留在本地忽略目录 `work/review-validation/`。

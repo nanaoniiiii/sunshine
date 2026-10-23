@@ -1,6 +1,5 @@
 package com.alkaidlab.sunshine.service
 
-import android.app.KeyguardManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -71,8 +70,8 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         require(mode == "desktop")
         check(surface.isValid)
         val nativeSamsung = systemDesktop && Build.MANUFACTURER.equals("samsung", true)
-        check((nativeSamsung && NativeDexMirror.activeDisplay(shell) != null) ||
-            !(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机，再创建虚拟屏" }
+        if (!(nativeSamsung && NativeDexMirror.activeDisplay(shell) != null))
+            requireDisplayUserUnlocked(shell, "请先解锁主机，再创建虚拟屏")
         // A prepared local receiver must survive the switch from primary capture to its DeX mirror.
         val preparedLocal = localDex
         val preparedStandalone = standaloneDex
@@ -190,7 +189,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     }
 
     @Synchronized override fun blankMainScreen(owner: IBinder): Boolean {
-        check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
+        requireDisplayUserUnlocked(shell, "请先解锁主机")
         closeDisplay()
         try {
             mode = "screen_off"
@@ -211,7 +210,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     @Synchronized override fun setMainPanelOff(off: Boolean): Boolean {
         check(mode == "desktop" && (display != null || nativeDexMirror != null)) { "请先创建独立第二屏" }
         check(owner?.isBinderAlive == true) { "串流宿主已退出" }
-        if (off) check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
+        if (off) requireDisplayUserUnlocked(shell, "请先解锁主机")
         val primaryDex = nativeDexMirror?.takeIf { it.source.displayId == Display.DEFAULT_DISPLAY }
         if (off && primaryDex != null && !(shell.getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive) {
             val power = shell.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -389,7 +388,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
 
     private fun leaveDesktop(id: Int): Boolean {
         if (nativeDexMirror != null || guardedDisplayId != id) return false
-        check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) { "请先解锁主机" }
+        requireDisplayUserUnlocked(shell, "请先解锁主机")
         val retained = display ?: return false
         guardedDisplayId = -1
         handler.removeCallbacks(homeWatch)
@@ -613,9 +612,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         // Discovery/consent cannot be completed behind a secure keyguard.
         // An already-running native DeX remains capturable while the phone locks.
         if (Build.MANUFACTURER.equals("samsung", true) && NativeDexMirror.activeDisplay(shell) == null)
-            check(!(shell.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isKeyguardLocked) {
-                "请先解锁主机，再确认三星 DeX 启动；无需重置 Sunshine 授权"
-            }
+            requireDisplayUserUnlocked(shell, "请先解锁主机，再确认三星 DeX 启动；无需重置 Sunshine 授权")
         attachOwner(owner)
         disableAndroidDesktop()
         if (!Build.MANUFACTURER.equals("samsung", true) || NativeDexMirror.activeDisplay(shell) != null ||
