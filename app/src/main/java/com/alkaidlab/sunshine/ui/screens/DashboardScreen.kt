@@ -17,6 +17,7 @@ import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.ui.components.*
 import com.alkaidlab.sunshine.ui.theme.*
 import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -145,10 +146,10 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                         val target = diagnostics?.frames?.targets?.firstOrNull { it.threadId == session.videoThreadId }
                         val native = diagnostics?.video?.firstOrNull { it.threadId == session.videoThreadId }
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("送帧 ${target?.let { "%.1f".format(it.measuredFps) } ?: "—"} FPS", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-                            Text("GPU送帧 ${target?.gpuHandoffMs?.let { "%.2f".format(it) } ?: "—"} ms", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("送帧 ${target?.let { String.format(Locale.ROOT, "%.1f", it.measuredFps) } ?: "—"} FPS", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("GPU送帧 ${target?.gpuHandoffMs?.let { String.format(Locale.ROOT, "%.2f", it) } ?: "—"} ms", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                             Text("RTT ${native?.controlRttMs?.toString() ?: "—"} ms", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
-                            Text("请求 ${native?.requestedBitrateKbps?.takeIf { it > 0 }?.let { "%.1f".format(it / 1000.0) } ?: "—"} Mbps", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text("请求 ${native?.requestedBitrateKbps?.takeIf { it > 0 }?.let { String.format(Locale.ROOT, "%.1f", it / 1000.0) } ?: "—"} Mbps", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                         }
                         session.appName?.let { Text(it, color = TextSecondary, style = MaterialTheme.typography.bodySmall) }
 
@@ -161,24 +162,24 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                 if (moreMetrics) diagnostics?.let { d ->
                     Text("各路 RTT 来自各自的串流控制通道，不包含画面捕获、编码和显示耗时。",
                         color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                    Text("ICMP 探测 RTT：" + (perf.networkLatencyMs?.let { "%.1f ms".format(it) }
+                    Text("ICMP 探测 RTT：" + (perf.networkLatencyMs?.let { String.format(Locale.ROOT, "%.1f", it) + " ms" }
                         ?: if (perf.networkProbeIp == null) "未取得可用的客户端地址或回应" else "未取得新回应，样本已过期"),
                         color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     d.frames.targets.forEachIndexed { index, target ->
-                        Text("第 ${index + 1} 路 · ${target.width} × ${target.height} · 实际送帧 ${"%.1f".format(target.measuredFps)} FPS · 上限 ${target.effectiveFps} FPS",
+                        Text("第 ${index + 1} 路 · ${target.width} × ${target.height} · 实际送帧 ${String.format(Locale.ROOT, "%.1f", target.measuredFps)} FPS · 上限 ${target.effectiveFps} FPS",
                             color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     }
-                    Text("各路送帧合计 ${"%.1f".format(d.frames.targets.sumOf { it.measuredFps })} 帧/秒",
+                    Text("各路送帧合计 ${String.format(Locale.ROOT, "%.1f", d.frames.targets.sumOf { it.measuredFps })} 帧/秒",
                         color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                    Text("GPU P95 ${"%.2f".format(d.frames.handoffP95Ms)} ms · 合并帧 ${d.frames.coalescedFrames}",
+                    Text("GPU P95 ${String.format(Locale.ROOT, "%.2f", d.frames.handoffP95Ms)} ms · 合并帧 ${d.frames.coalescedFrames}",
                         color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                    Text("音频排队 ${"%.1f".format(d.audio.queuedMs)} ms · 总发送 ${"%.1f".format(d.perf.bitrateKbps / 1000.0)} Mbps",
+                    Text("音频排队 ${String.format(Locale.ROOT, "%.1f", d.audio.queuedMs)} ms · 总发送 ${String.format(Locale.ROOT, "%.1f", d.perf.bitrateKbps / 1000.0)} Mbps",
                         color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     d.video.forEach { v ->
                         Text(v.encoder, style = MaterialTheme.typography.bodyMedium)
                         Text("发送队列 ${v.queueFrames} 帧 · 丢弃 ${v.queueDroppedFrames} 帧 · FEC ${v.fecPercentage}%",
                             color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
-                        Text("编码→输出 P95 ${v.submitToOutputP95Ms?.let { "%.1f".format(it) } ?: "—"} ms · 发送 P95 ${v.frameSendP95Ms?.let { "%.1f".format(it) } ?: "—"} ms",
+                        Text("编码→输出 P95 ${v.submitToOutputP95Ms?.let { String.format(Locale.ROOT, "%.1f", it) } ?: "—"} ms · 发送 P95 ${v.frameSendP95Ms?.let { String.format(Locale.ROOT, "%.1f", it) } ?: "—"} ms",
                             color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
