@@ -1023,25 +1023,27 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result = withContext(Dispatchers.IO + NonCancellable) {
-        if (!_fullscreenBusy.compareAndSet(false, true))
-            return@withContext FullscreenDisplay.Result(false, "正在切换全屏，请稍候")
-        try {
-            val native = engineClient?.videoSessions()?.firstOrNull { it.sessionId == sessionId }
-                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
-            val selected = activeSessions.firstOrNull { it.videoThreadId == native.threadId }
-                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
-            if (!PrivilegedShell.available()) return@withContext FullscreenDisplay.Result(false, "修改本机分辨率需要 Shizuku 远程控制权限")
-            if (!frameDispatcher.isRunning || virtualDisplay == null)
-                return@withContext FullscreenDisplay.Result(false, "屏幕采集尚未就绪，请稍后重试")
-            fun isCurrent(): Boolean = activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime } &&
+    private val fullscreenSessionRunnerHost = object : FullscreenSessionRunner.Host {
+        override fun tryAcquireFullscreenBusy(): Boolean = _fullscreenBusy.compareAndSet(false, true)
+        override fun releaseFullscreenBusy() { _fullscreenBusy.value = false }
+        override fun findNativeThreadId(sessionId: Long): Long? =
+            engineClient?.videoSessions()?.firstOrNull { it.sessionId == sessionId }?.threadId
+        override fun findActiveSession(threadId: Long): RuntimeSession? =
+            activeSessions.firstOrNull { it.videoThreadId == threadId }
+        override fun privilegedShellAvailable(): Boolean = PrivilegedShell.available()
+        override fun captureReady(): Boolean = frameDispatcher.isRunning && virtualDisplay != null
+        override fun fullscreenBackend(rememberOriginal: Boolean): FullscreenDisplay.Backend =
+            this@SunshineRuntimeManager.fullscreenBackend(rememberOriginal)
+        override fun isSessionCurrent(selected: RuntimeSession, sessionId: Long): Boolean =
+            activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime } &&
                 engineClient?.videoSessions()?.any { it.sessionId == sessionId } == true
-            val backend = fullscreenBackend(rememberOriginal = true)
-            val result = FullscreenDisplay.apply(FullscreenDisplay.Size(selected.width, selected.height), backend, ::isCurrent)
-            SunshineLogManager.log("FULLSCREEN", "Session $sessionId: ${result.message}")
-            result
-        } finally { _fullscreenBusy.value = false; if (activeSessions.isEmpty()) restoreFullscreenIfIdle() }
+        override fun restoreFullscreenIfIdle() = this@SunshineRuntimeManager.restoreFullscreenIfIdle()
+        override fun hasActiveSessions(): Boolean = activeSessions.isNotEmpty()
     }
+    private val fullscreenSessionRunner = FullscreenSessionRunner(fullscreenSessionRunnerHost)
+
+    suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result =
+        fullscreenSessionRunner.run(sessionId)
 
     fun getPerfSnapshot(): PerfResponse {
         return if (_isStreaming.value) {
