@@ -28,7 +28,6 @@ import javax.jmdns.ServiceInfo
 import java.io.File
 import java.io.FileOutputStream
 import java.net.InetAddress
-import java.net.NetworkInterface
 
 class SunshineService : Service() {
 
@@ -57,74 +56,20 @@ class SunshineService : Service() {
         var currentIpv6: String? = null
             private set
 
-        data class NetworkSnapshot(
-            val lanIp: String,
-            val vpnIp: String?,
-            val ipv6: String?
-        )
-
-        fun refreshNetworkAddresses(): NetworkSnapshot {
-            var detectedLan: String? = null
-            var detectedVpn: String? = null
-            var detectedIpv6: String? = null
-
-            try {
-                val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: emptyList()
-
-                for (iface in interfaces) {
-                    if (!iface.isUp || iface.isLoopback) continue
-                    val name = iface.name.lowercase()
-                    val isVpnIface = name.startsWith("tun") || name.startsWith("tailscale") ||
-                            name.startsWith("wg") || name.startsWith("utun") || name.startsWith("ppp")
-
-                    val addrs = iface.inetAddresses
-                    while (addrs.hasMoreElements()) {
-                        val addr = addrs.nextElement()
-                        if (addr.isLoopbackAddress) continue
-
-                        if (addr is java.net.Inet4Address) {
-                            val ip = addr.hostAddress ?: continue
-                            val isCgnat = isTailscaleCgnat(ip)
-                            if (isVpnIface || isCgnat) {
-                                if (detectedVpn == null) detectedVpn = ip
-                            } else {
-                                if (name.contains("wlan")) {
-                                    detectedLan = ip
-                                } else if (detectedLan == null) {
-                                    detectedLan = ip
-                                }
-                            }
-                        } else if (addr is java.net.Inet6Address) {
-                            if (!addr.isLinkLocalAddress && !addr.isSiteLocalAddress && !addr.isMulticastAddress) {
-                                val host = (addr.hostAddress ?: "").split("%")[0]
-                                if (host.isNotBlank()) {
-                                    if (detectedIpv6 == null || host.startsWith("2") || host.startsWith("3")) {
-                                        detectedIpv6 = host
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                SunshineLogManager.log("NET_ERR", "Error detecting network: ${e.message}")
+        private val addressResolver = NetworkAddressResolver(object : NetworkAddressResolver.Host {
+            override fun logNetworkError(message: String?) {
+                SunshineLogManager.log("NET_ERR", "Error detecting network: $message")
             }
 
-            val finalLan = detectedLan ?: "127.0.0.1"
-            currentIp = finalLan
-            currentVpnIp = detectedVpn
-            currentIpv6 = detectedIpv6
-            return NetworkSnapshot(finalLan, detectedVpn, detectedIpv6)
-        }
-
-        private fun isTailscaleCgnat(ip: String): Boolean {
-            val parts = ip.split(".")
-            if (parts.size == 4 && parts[0] == "100") {
-                val second = parts[1].toIntOrNull() ?: return false
-                return second in 64..127
+            override fun updateCurrentAddresses(lan: String, vpn: String?, ipv6: String?) {
+                currentIp = lan
+                currentVpnIp = vpn
+                currentIpv6 = ipv6
             }
-            return false
-        }
+        })
+
+        fun refreshNetworkAddresses(): NetworkAddressResolver.NetworkSnapshot =
+            addressResolver.refreshNetworkAddresses()
 
         fun start(context: Context, resultData: Intent? = null) {
             val intent = Intent(context, SunshineService::class.java).apply {
@@ -209,7 +154,7 @@ class SunshineService : Service() {
         return START_STICKY
     }
 
-    private fun buildStatusString(net: NetworkSnapshot): String {
+    private fun buildStatusString(net: NetworkAddressResolver.NetworkSnapshot): String {
         val sb = StringBuilder("服务运行中: ").append(net.lanIp)
         if (net.vpnIp != null) sb.append(" | VPN: ").append(net.vpnIp)
         if (net.ipv6 != null) sb.append(" | IPv6")
