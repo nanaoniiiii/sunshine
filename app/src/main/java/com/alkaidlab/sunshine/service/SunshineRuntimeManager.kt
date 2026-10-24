@@ -23,6 +23,7 @@ import com.alkaidlab.sunshine.data.AudioDiagnostics
 import com.alkaidlab.sunshine.data.DiagnosticsResponse
 import com.alkaidlab.sunshine.data.PerfResponse
 import com.alkaidlab.sunshine.data.RuntimeSession
+import com.alkaidlab.sunshine.data.NativeVideoSession
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,7 +37,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
-class SunshineRuntimeManager private constructor() {
+class SunshineRuntimeManager private constructor() : StreamTelemetry.Host {
 
     companion object {
         @Volatile
@@ -245,10 +246,7 @@ class SunshineRuntimeManager private constructor() {
     private val _streamingSettings = MutableStateFlow(StreamingSettings())
     val streamingSettings: StateFlow<StreamingSettings> = _streamingSettings.asStateFlow()
 
-    private var telemetryThread: Thread? = null
-    @Volatile private var telemetryEpoch = 0L
-    private var prevTxBytes: Long = -1L
-    private var prevTxTimeMs: Long = 0L
+    private val streamTelemetry = StreamTelemetry(this)
 
     // Shizuku Input injection reflection
     private var remoteWake: RemoteInputWakeManager? = null
@@ -339,109 +337,42 @@ class SunshineRuntimeManager private constructor() {
     }
 
     private fun startTelemetryLoop() {
-        if (telemetryThread?.isAlive == true) return
-        prevTxBytes = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
-        prevTxTimeMs = SystemClock.elapsedRealtime()
-
-        val epoch = ++telemetryEpoch
-        telemetryThread = Thread({
-            val timeRegex = Regex("time=([0-9.]+)")
-            while (_isStreaming.value && telemetryEpoch == epoch && !Thread.currentThread().isInterrupted) {
-                try {
-                    Thread.sleep(1000)
-                    if (!_isStreaming.value || telemetryEpoch != epoch) break
-
-                    // 1. Sample real-time FPS & GPU->Hardware Encoder surface latency
-                    val (measuredFps, measuredEncodeMs) = frameDispatcher.sampleTelemetry()
-                    lastFps = measuredFps
-                    lastEncodeTimeMs = measuredEncodeMs
-
-                    // 2. Sample real-time process network TX bitrate via TrafficStats
-                    val nowTx = android.net.TrafficStats.getUidTxBytes(android.os.Process.myUid())
-                    val nowMs = SystemClock.elapsedRealtime()
-                    if (prevTxBytes >= 0 && nowTx >= prevTxBytes && nowMs > prevTxTimeMs) {
-                        val deltaBytes = nowTx - prevTxBytes
-                        val elapsedSec = (nowMs - prevTxTimeMs) / 1000.0
-                        val kbps = ((deltaBytes * 8.0) / elapsedSec / 1000.0).toInt()
-                        lastBitrate = kbps
-                    }
-                    prevTxBytes = nowTx
-                    prevTxTimeMs = nowMs
-
-                    // 3. Auto-detect connected peer IPs from /proc/net/tcp & /proc/net/tcp6
-                    val peerIps = detectConnectedPeerIps()
-                    if (peerIps.isNotEmpty()) {
-                        lastDiscoveredClient = peerIps.last()
-                    }
-
-                    // ICMP is a peer probe, not a video transport/encode latency measurement.
-                    val probeIp = activeSessions.lastOrNull()?.clientIp?.takeIf { it != "127.0.0.1" }
-                        ?: peerIps.lastOrNull()
-                    if (probeIp != null && probeIp != "127.0.0.1") {
-                        val rtt = measurePingRttMs(probeIp, timeRegex)
-                        if (rtt != null && rtt > 0.0) {
-                            lastNetworkLatencyMs = rtt
-                            lastNetworkProbeIp = probeIp
-                            lastNetworkSampleMs = SystemClock.elapsedRealtime()
-                        }
-                    }
-
-                    if (telemetryEpoch != epoch || Thread.currentThread().isInterrupted) break
-                    val nativeVideo = engineClient?.videoSessions().orEmpty().associateBy { it.threadId }
-                    synchronized(this@SunshineRuntimeManager) {
-                        if (activeSessions.isNotEmpty()) {
-                            var changed = false
-                            val updated = activeSessions.mapIndexed { idx, s ->
-                                val resolvedIp = if (s.clientIp == "127.0.0.1" && peerIps.isNotEmpty()) {
-                                    peerIps.getOrElse(idx) { peerIps.last() }
-                                } else s.clientIp
-                                val resolvedName = if (s.clientName.startsWith("Moonlight Client") && s.clientUuid.isNullOrBlank() && resolvedIp != "127.0.0.1") {
-                                    "Moonlight ($resolvedIp)"
-                                } else s.clientName
-                                val video = nativeVideo[s.videoThreadId]
-                                if (s.clientIp != resolvedIp || s.clientName != resolvedName ||
-                                    (video != null && (s.sessionId != video.sessionId || s.bitrate != video.appliedBitrateKbps || s.codec != video.codec))) {
-                                    changed = true
-                                    s.copy(clientName = resolvedName, clientIp = resolvedIp,
-                                        sessionId = video?.sessionId ?: s.sessionId,
-                                        bitrate = video?.appliedBitrateKbps ?: s.bitrate,
-                                        codec = video?.codec ?: s.codec)
-                                } else s
-                            }
-                            if (changed) {
-                                activeSessions.clear()
-                                activeSessions.addAll(updated)
-                                _activeSessionsFlow.value = activeSessions.toList()
-                            }
-                        }
-                    }
-
-                    // 6. Keep physical display orientation updated if auto_rotate is enabled
-                    if (autoRotateEnabled) {
-                        com.alkaidlab.sunshine.engine.InputBroker.updateDisplayDimensions()
-                    }
-
-                    // 7. Emit fresh PerfResponse to StateFlow
-                    _perfFlow.value = getPerfSnapshot()
-                } catch (_: InterruptedException) {
-                    break
-                } catch (_: Throwable) {}
-            }
-        }, "Sunshine-Telemetry").apply {
-            isDaemon = true
-            start()
-        }
+        streamTelemetry.start()
     }
 
     private fun stopTelemetryLoop() {
-        ++telemetryEpoch
-        try {
-            telemetryThread?.interrupt()
-        } catch (_: Throwable) {}
-        telemetryThread = null
+        streamTelemetry.stop()
     }
 
-    private fun detectConnectedPeerIps(): List<String> {
+    // ---- StreamTelemetry.Host 实现：遥测循环所需的状态与能力，全部委托给既有字段/函数 ----
+    internal override fun isStreamingActive(): Boolean = _isStreaming.value
+    internal override fun frameDispatcher(): SunshineFrameDispatcher = frameDispatcher
+    internal override fun setLastFps(v: Double) { lastFps = v }
+    internal override fun setLastEncodeTimeMs(v: Double) { lastEncodeTimeMs = v }
+    internal override fun setLastBitrate(v: Int) { lastBitrate = v }
+    internal override fun setLastDiscoveredClient(ip: String) { lastDiscoveredClient = ip }
+    internal override fun setLastNetworkLatencyMs(rtt: Double) { lastNetworkLatencyMs = rtt }
+    internal override fun setLastNetworkProbeIp(ip: String) { lastNetworkProbeIp = ip }
+    internal override fun setLastNetworkSampleMs(ms: Long) { lastNetworkSampleMs = ms }
+    internal override fun activeSessions(): CopyOnWriteArrayList<RuntimeSession> = activeSessions
+    internal override fun nativeVideoSessions(): Map<Long, NativeVideoSession> =
+        engineClient?.videoSessions().orEmpty().associateBy { it.threadId }
+    internal override fun withSessionLock(block: () -> Unit) {
+        synchronized(this@SunshineRuntimeManager) { block() }
+    }
+    internal override fun publishSessions(sessions: List<RuntimeSession>) {
+        activeSessions.clear()
+        activeSessions.addAll(sessions)
+        _activeSessionsFlow.value = activeSessions.toList()
+    }
+    internal override fun publishPerf() {
+        _perfFlow.value = getPerfSnapshot()
+    }
+    internal override fun updateDisplayDimensionsIfAutoRotate() {
+        if (autoRotateEnabled) com.alkaidlab.sunshine.engine.InputBroker.updateDisplayDimensions()
+    }
+
+    internal override fun detectConnectedPeerIps(): List<String> {
         val result = linkedSetOf<String>()
         val sunshinePortsHex = setOf("BB70", "BB75", "BB8A", "BB7E") // 47984, 47989, 48010, 47998
         listOf("/proc/net/tcp6", "/proc/net/tcp").forEach { path ->
@@ -482,7 +413,7 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    private fun measurePingRttMs(ip: String, timeRegex: Regex): Double? {
+    internal override fun measurePingRttMs(ip: String, timeRegex: Regex): Double? {
         var proc: java.lang.Process? = null
         return try {
             proc = ProcessBuilder("ping", "-c", "1", "-W", "1", ip).redirectErrorStream(true).start()
