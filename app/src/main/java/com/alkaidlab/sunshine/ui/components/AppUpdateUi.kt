@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.alkaidlab.sunshine.BuildConfig
 import com.alkaidlab.sunshine.update.AppUpdater
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun AppUpdateCard() {
@@ -68,7 +69,7 @@ fun AppUpdateDialog() {
                 } else LinearProgressIndicator(Modifier.fillMaxWidth())
             }
             state.release?.let { release ->
-                val size = if (release.size > 0) " · ${"%.1f".format(release.size / 1048576.0)} MB" else ""
+                val size = if (release.size > 0) " · ${String.format(Locale.ROOT, "%.1f", release.size / 1048576.0)} MB" else ""
                 Text("${release.name}$size${if (release.prerelease) " · 预览版" else ""}", style = MaterialTheme.typography.bodySmall)
                 if (release.notes.isNotBlank()) Text(release.notes)
             }
