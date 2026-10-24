@@ -63,6 +63,16 @@ class SunshineRuntimeManager private constructor() {
     fun setEngineReady(ready: Boolean) { _engineReady.value = ready }
     val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
     private var virtualScreenClient: VirtualScreenClient? = null
+    private val failureRecoveryHost = object : VirtualScreenFailureRecovery.Host {
+        override suspend fun closeVirtualClientBestEffort() {
+            withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
+        }
+        override fun setCreateErrorState(message: String) {
+            _virtualScreenState.value = VirtualScreenState(busy = true, error = message)
+        }
+        override fun restorePhysicalCapture() = this@SunshineRuntimeManager.restorePhysicalCapture()
+    }
+    private val failureRecovery = VirtualScreenFailureRecovery(failureRecoveryHost)
     @Volatile private var preparingLocalDex = false
     val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     val virtualSourceFrameLimit: Int get() = frameDispatcher.virtualSourceFrameLimit
@@ -607,12 +617,7 @@ class SunshineRuntimeManager private constructor() {
             FullscreenDisplay.Result(true, if (snapshot.optBoolean("system_dex_mirror"))
                 "已开始串流 $captureWidth × $captureHeight · $description" else "已创建 $captureWidth × $captureHeight 虚拟屏 · $description")
         } catch (error: Exception) {
-            withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
-            val message = DisplayFailureMessage.from(error)
-            _virtualScreenState.value = VirtualScreenState(busy = true, error = message)
-            if (mode == "desktop") restorePhysicalCapture()
-            SunshineLogManager.log("VIRTUAL_SCREEN_ERR", message)
-            FullscreenDisplay.Result(false, "虚拟屏未创建：$message")
+            return@withContext failureRecovery.handleCreateFailure(error, mode)
         } finally {
             preparingLocalDex = false
             _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
