@@ -64,6 +64,18 @@ class SunshineRuntimeManager private constructor() {
     val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
     private var virtualScreenClient: VirtualScreenClient? = null
     @Volatile private var preparingLocalDex = false
+
+    // 路线图 #6：三星本机 DeX 就绪等待编排（原 createVirtualScreen 内联循环）
+    private val localDexWaiterHost = object : LocalDexWaiter.Host {
+        override fun isStreamSessionConnected(session: RuntimeSession): Boolean =
+            activeSessions.any { it.videoThreadId == session.videoThreadId }
+        override fun virtualScreenDetail(): String = _virtualScreenState.value.detail
+        override fun updateVirtualScreenDetail(detail: String) {
+            _virtualScreenState.value = _virtualScreenState.value.copy(detail = detail)
+        }
+        override fun setPreparingLocalDex(preparing: Boolean) { preparingLocalDex = preparing }
+    }
+    private val localDexWaiter = LocalDexWaiter(localDexWaiterHost)
     val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     val virtualSourceFrameLimit: Int get() = frameDispatcher.virtualSourceFrameLimit
     private var captureDisplayManager: DisplayManager? = null
@@ -549,33 +561,7 @@ class SunshineRuntimeManager private constructor() {
                 return@withContext FullscreenDisplay.Result(true, "已开始主屏息屏串流，继续显示原主屏画面")
             }
             if (samsungDex) {
-                val pending = withContext(Dispatchers.IO) { client.prepareLocalDex() }
-                if (pending) {
-                    preparingLocalDex = true
-                    val route = org.json.JSONObject(client.snapshot()).optString("dex_route_detail")
-                    _virtualScreenState.value = _virtualScreenState.value.copy(detail = route.ifBlank { "请在三星 DeX 列表选择 Sunshine Local DeX，并确认立即开始" })
-                    var ready = false
-                    // This includes human interaction with Samsung's device list,
-                    // consent and first-use pages. A one-minute deadline can tear
-                    // down the receiver while the user is still confirming it.
-                    val confirmationDeadline = android.os.SystemClock.uptimeMillis() + 180_000
-                    while (android.os.SystemClock.uptimeMillis() < confirmationDeadline) {
-                        check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "连接已结束" }
-                        val status = withContext(Dispatchers.IO) { org.json.JSONObject(client.snapshot()) }
-                        val stage = status.optString("local_dex_stage")
-                        val hint = when {
-                            stage.contains("main_channel") || stage.contains("connection_allowed") -> "请确认三星系统弹出的立即开始；正在建立本机 DeX"
-                            stage.startsWith("wfd_") -> "三星 DeX 已连接，正在等待系统桌面显示"
-                            else -> route.ifBlank { "请在三星 DeX 列表选择 Sunshine Local DeX，再确认立即开始" }
-                        }
-                        if (_virtualScreenState.value.detail != hint) _virtualScreenState.value = _virtualScreenState.value.copy(detail = hint)
-                        check(status.optString("local_dex_error").isEmpty()) { "本机 DeX：${status.optString("local_dex_error")}" }
-                        if (status.optBoolean("local_dex_ready")) { ready = true; break }
-                        kotlinx.coroutines.delay(250)
-                    }
-                    check(ready) { "三星 DeX 等待超时：${_virtualScreenState.value.detail}" }
-                    preparingLocalDex = false
-                }
+                localDexWaiter.awaitLocalDexIfPending(client, session)
             }
             // Resize the real external DeX workspace before allocating the capture
             // surface. Primary/tablet DeX keeps its existing main-screen dimensions.
