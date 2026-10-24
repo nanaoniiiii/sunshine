@@ -63,6 +63,18 @@ class SunshineRuntimeManager private constructor() {
     fun setEngineReady(ready: Boolean) { _engineReady.value = ready }
     val virtualScreenState: StateFlow<VirtualScreenState> = _virtualScreenState.asStateFlow()
     private var virtualScreenClient: VirtualScreenClient? = null
+    private val virtualScreenProvisionerHost = object : VirtualScreenProvisioner.Host {
+        override fun releaseVirtualDisplay() { virtualDisplay?.release(); virtualDisplay = null }
+        override fun resizeCaptureSync(width: Int, height: Int): Surface? = frameDispatcher.resizeCaptureSync(width, height)
+        override fun setVirtualSource(enabled: Boolean, refreshRate: Float) = frameDispatcher.setVirtualSource(enabled, refreshRate)
+        override fun setSourceRotation(rotation: Int) { frameDispatcher.sourceRotation = rotation }
+        override fun configureCanvas(width: Int, height: Int, autoRotate: Boolean, rotationCompat: Boolean) {
+            engineClient?.configureCanvas(width, height, autoRotate, rotationCompat)
+        }
+        override fun setVirtualScreenState(state: VirtualScreenState) { _virtualScreenState.value = state }
+        override fun isSessionActive(videoThreadId: Long) = activeSessions.any { it.videoThreadId == videoThreadId }
+    }
+    private val virtualScreenProvisioner = VirtualScreenProvisioner(virtualScreenProvisionerHost)
     @Volatile private var preparingLocalDex = false
     val sourceDisplayId: Int get() = _virtualScreenState.value.displayId.takeIf { _virtualScreenState.value.active } ?: Display.DEFAULT_DISPLAY
     val virtualSourceFrameLimit: Int get() = frameDispatcher.virtualSourceFrameLimit
@@ -577,35 +589,9 @@ class SunshineRuntimeManager private constructor() {
                     preparingLocalDex = false
                 }
             }
-            // Resize the real external DeX workspace before allocating the capture
-            // surface. Primary/tablet DeX keeps its existing main-screen dimensions.
-            val ready = org.json.JSONObject(withContext(Dispatchers.IO) { client.configureDesktop(width, height, samsungDex) })
-            val captureWidth = if (samsungDex) ready.optInt("native_dex_width").takeIf { it in 1..8192 } ?: width else width
-            val captureHeight = if (samsungDex) ready.optInt("native_dex_height").takeIf { it in 1..8192 } ?: height else height
-            virtualDisplay?.release(); virtualDisplay = null
-            val surface = frameDispatcher.resizeCaptureSync(captureWidth, captureHeight) ?: error("无法切换虚拟屏采集画布")
-            val id = withContext(Dispatchers.IO) { client.create(captureWidth, captureHeight, density, surface, mode, refreshRate, systemDesktop, highRefresh) }
-            val created = org.json.JSONObject(client.snapshot())
-            check(id > 0 || (id == 0 && created.optBoolean("system_dex_mirror") && created.optBoolean("dex_active"))) { "系统没有返回有效的桌面显示 ID" }
-            check(activeSessions.any { it.videoThreadId == session.videoThreadId }) { "创建期间连接已结束" }
-            val snapshot = org.json.JSONObject(client.snapshot())
-            snapshot.optString("local_dex_stage").takeIf { it.startsWith("wfd_status:") }?.let {
-                SunshineLogManager.log("DEX_TRANSPORT", it.removePrefix("wfd_status:"))
-            }
-            val description = snapshot.optString("launcher", "Sunshine 桌面")
-            _virtualScreenState.value = VirtualScreenState(active = true, displayId = id, width = captureWidth, height = captureHeight,
-                mode = mode, launcher = description, requestedRefreshRate = snapshot.optInt("requested_refresh_rate"),
-                actualRefreshRate = snapshot.optDouble("actual_refresh_rate", 0.0).toFloat(),
-                refreshRateRequestSupported = snapshot.optBoolean("refresh_rate_request_supported"),
-                dexRequested = samsungDex, dexActive = snapshot.optBoolean("dex_active"), detail = snapshot.optString("detail"),
-                systemDexMirror = snapshot.optBoolean("system_dex_mirror"), desktopControls = false,
-                retainedDisplayId = snapshot.optInt("retained_display_id", -1))
-            frameDispatcher.setVirtualSource(true, snapshot.optDouble("actual_refresh_rate", 60.0).toFloat())
-            frameDispatcher.sourceRotation = 0
-            engineClient?.configureCanvas(captureWidth, captureHeight, false, false)
-            SunshineLogManager.log("VIRTUAL_SCREEN", "Created display=$id, ${captureWidth}x$captureHeight, mode=$mode, launcher=$description")
-            FullscreenDisplay.Result(true, if (snapshot.optBoolean("system_dex_mirror"))
-                "已开始串流 $captureWidth × $captureHeight · $description" else "已创建 $captureWidth × $captureHeight 虚拟屏 · $description")
+            return@withContext virtualScreenProvisioner.provision(
+                client, width, height, samsungDex, density, mode, refreshRate, systemDesktop, highRefresh,
+                session.videoThreadId)
         } catch (error: Exception) {
             withContext(NonCancellable + Dispatchers.IO) { try { virtualScreenClient?.close() } catch (_: Exception) {} }
             val message = DisplayFailureMessage.from(error)
