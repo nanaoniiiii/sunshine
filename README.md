@@ -1,6 +1,6 @@
 # Sunshine for Android
 
-把 Android 手机或平板作为串流主机，在另一块屏幕上接收画面与声音，并远程操作。支持 Moonlight，也支持基于串流协议开发自定义接收端。
+把 Android 手机或平板作为串流主机，在另一块屏幕上接收画面与声音，并远程操作。支持 Moonlight，也支持基于串流协议开发自定义接收端；远程输入经 Shizuku 实现，免 Root。
 
 [![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](https://github.com/nanaoniiiii/sunshine/releases)
 [![Release](https://img.shields.io/github/v/release/nanaoniiiii/sunshine)](https://github.com/nanaoniiiii/sunshine/releases/latest)
@@ -115,3 +115,5 @@ macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`�
 
 - [Sunshine](https://github.com/LizardByte/Sunshine)：GameStream 服务端。
 - [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd)：轻量级 HTTP 服务。
+- [Shizuku](https://github.com/RikkaApps/Shizuku)：免 Root 远程输入。
+
