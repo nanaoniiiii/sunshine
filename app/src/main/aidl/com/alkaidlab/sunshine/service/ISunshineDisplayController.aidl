@@ -16,6 +16,7 @@ interface ISunshineDisplayController {
     boolean showDesktopControls(ISunshineDesktopCallback callback) = 10;
     String desktopTasks() = 11;
     boolean desktopAction(String action, int taskId) = 12;
-    String configureDesktop(int width, int height, boolean samsungDex, IBinder owner) = 13;
+    String configureDesktop(int width, int height, boolean samsungDex, IBinder owner, boolean fullscreen) = 13;
+    String reconfigureDisplay(int width, int height, in Surface surface, boolean fullscreen) = 14;
     void destroy() = 16777114;
 }

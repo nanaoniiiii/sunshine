@@ -8,7 +8,10 @@ import rikka.shizuku.Shizuku
 class SunshineApp : Application() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_RUNNING_LOW) com.alkaidlab.sunshine.ui.desktop.DesktopArtworkCache.clear()
+        // UI_HIDDEN (20) is a normal app switch, not low memory. Clearing there
+        // evicted every desktop icon whenever a launched app covered HOME.
+        if (level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_CRITICAL || level >= TRIM_MEMORY_BACKGROUND)
+            com.alkaidlab.sunshine.ui.desktop.DesktopArtworkCache.clear()
     }
 
     private val binderReceivedListener = Shizuku.OnBinderReceivedListener {

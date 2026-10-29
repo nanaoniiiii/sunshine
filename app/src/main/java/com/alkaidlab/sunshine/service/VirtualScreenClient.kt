@@ -41,7 +41,7 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         Shizuku.bindUserService(args, connection)
         return try {
             val service = withTimeout(8000) { promise.await() }
-            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 10) { "显示服务版本过旧，请重新绑定" }
+            check(org.json.JSONObject(service.snapshot()).optInt("protocol_version") == 11) { "显示服务版本过旧，请重新绑定" }
             service.attachOwner(owner)
             service
         } catch (error: kotlinx.coroutines.TimeoutCancellationException) {
@@ -59,8 +59,10 @@ class VirtualScreenClient(private val context: Context, private val disconnected
         connect().createDisplay(width, height, density, surface, mode, owner, fps, systemDesktop, highRefresh)
     suspend fun blankMain(): Boolean = connect().blankMainScreen(owner)
     suspend fun prepareLocalDex(): Boolean = connect().prepareLocalDex(owner)
-    suspend fun configureDesktop(width: Int, height: Int, samsungDex: Boolean): String =
-        connect().configureDesktop(width, height, samsungDex, owner)
+    suspend fun configureDesktop(width: Int, height: Int, samsungDex: Boolean, fullscreen: Boolean): String =
+        connect().configureDesktop(width, height, samsungDex, owner, fullscreen)
+    suspend fun reconfigureDisplay(width: Int, height: Int, surface: Surface, fullscreen: Boolean): String =
+        connect().reconfigureDisplay(width, height, surface, fullscreen)
     suspend fun setMainPanelOff(off: Boolean): Boolean = connect().setMainPanelOff(off)
     fun close() { remote?.closeDisplay() }
     fun snapshot(): String = remote?.snapshot().orEmpty()

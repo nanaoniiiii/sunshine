@@ -14,6 +14,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.alkaidlab.sunshine.BuildConfig
+import com.alkaidlab.sunshine.service.StreamDisplayMode
 import com.alkaidlab.sunshine.ui.components.*
 import com.alkaidlab.sunshine.ui.theme.*
 import com.alkaidlab.sunshine.ui.viewmodel.SunshineViewModel
@@ -30,6 +31,7 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
     val config by viewModel.config.collectAsState()
     val sessions by viewModel.runtimeSessions.collectAsState()
     val fullscreenBusy by viewModel.fullscreenBusy.collectAsState()
+    val streamDisplayMode by viewModel.streamDisplayMode.collectAsState()
     val virtualScreen by viewModel.virtualScreenState.collectAsState()
     val perf by viewModel.perf.collectAsState()
     val diagnostics by viewModel.diagnostics.collectAsState()
@@ -116,7 +118,12 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                     style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
         } }
-        item { SectionCard("串流状态", Icons.Default.ShowChart) {
+        item { SectionCard("串流状态", Icons.Default.ShowChart, action = {
+            StreamDisplayModeToggle(streamDisplayMode, !fullscreenBusy && !virtualScreen.busy, viewModel::setStreamDisplayMode)
+        }) {
+            Text(if (streamDisplayMode == StreamDisplayMode.DEFAULT) "默认 · 使用主机当前分辨率"
+                else "全屏 · 跟随 Moonlight 请求的尺寸和比例",
+                color = TextSecondary, style = MaterialTheme.typography.bodySmall)
             if (sessions.isEmpty()) {
                 Text("等待客户端连接", style = MaterialTheme.typography.titleMedium)
                 Text("连接后显示画面规格、送帧率和延迟数据。", color = TextSecondary,
@@ -133,14 +140,6 @@ fun DashboardScreen(viewModel: SunshineViewModel, onRequestMediaProjection: () -
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             Text("${session.width} × ${session.height} · ${session.fps} FPS",
                                 color = TextSecondary, modifier = Modifier.weight(1f))
-                            FilledTonalButton(
-                                onClick = { session.sessionId?.let(viewModel::fullscreenSession) },
-                                enabled = !fullscreenBusy && (!virtualScreen.active || virtualScreen.mode == "screen_off") && !virtualScreen.busy && session.sessionId != null,
-                                modifier = Modifier.heightIn(min = 48.dp)) {
-                                Icon(Icons.Default.Fullscreen, null, modifier = Modifier.size(20.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("全屏")
-                            }
                         }
                         val target = diagnostics?.frames?.targets?.firstOrNull { it.threadId == session.videoThreadId }
                         val native = diagnostics?.video?.firstOrNull { it.threadId == session.videoThreadId }

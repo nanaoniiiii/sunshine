@@ -33,7 +33,7 @@ void stream_started(JNIEnv* env,int width,int height,int fps,int audio_ms,jobjec
 void stream_stopped(JNIEnv* env);
 bool stream_paused();
 bool stream_resized(JNIEnv* env,int width,int height,jobject surface);
-void configure_canvas(int width,int height,bool follow,int fps);
+void configure_canvas(int width,int height,bool follow,int fps,bool source);
 std::shared_ptr<void> retain_channel(void* channel);
 void video_packet_released(int64_t thread_id,int64_t presentation_us);
 void video_frame_progress(int64_t thread_id,int64_t presentation_us,bool released);

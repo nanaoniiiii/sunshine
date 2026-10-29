@@ -206,7 +206,7 @@ class SunshineService : Service() {
                 }
             }
         }
-        return START_STICKY
+        return if (ServiceStartupSettings.read(this).keepAlive) START_STICKY else START_NOT_STICKY
     }
 
     private fun buildStatusString(net: NetworkSnapshot): String {

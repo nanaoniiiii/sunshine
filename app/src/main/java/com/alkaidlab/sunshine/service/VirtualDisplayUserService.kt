@@ -34,6 +34,8 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     private var standaloneDex: SamsungStandaloneDex? = null
     private var dexRouteDetail = ""
     private var dexSize: DexResolutionOverride? = null
+    private var dexDefaultSize: FullscreenDisplay.Size? = null
+    private var desktopDensity = 240
     private val desktopComponent = ComponentName("com.alkaidlab.sunshine", "com.alkaidlab.sunshine.ui.VirtualDesktopActivity")
     private var guardedDisplayId = -1
     private var homeComponents = emptySet<String>()
@@ -76,6 +78,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         val preparedLocal = localDex
         val preparedStandalone = standaloneDex
         val preparedSize = dexSize
+        val preparedDefaultSize = dexDefaultSize
         val preparedSettings = settingsChanged
         localDex = null
         standaloneDex = null
@@ -84,10 +87,11 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         val preparedDetail = dexRouteDetail
         try { closeDisplay() } finally {
             localDex = preparedLocal; standaloneDex = preparedStandalone; dexSize = preparedSize
-            settingsChanged = preparedSettings; dexRouteDetail = preparedDetail
+            settingsChanged = preparedSettings; dexRouteDetail = preparedDetail; dexDefaultSize = preparedDefaultSize
         }
         try {
             this.mode = mode
+            desktopDensity = density
             disableAndroidDesktop()
             details.clear()
             if (nativeSamsung && dexRouteDetail.isNotBlank()) details.add(dexRouteDetail)
@@ -110,7 +114,8 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
                 if (nativeDisplay != null) {
                     // Fail rather than silently scaling a fixed-size desktop or substituting
                     // a plain virtual display after a native DeX size request was rejected.
-                    if (nativeDisplay.displayId > 0) applyDexSize(nativeDisplay, width, height)
+                    if (nativeDisplay.displayId > 0 && displaySize(nativeDisplay) != FullscreenDisplay.Size(width, height))
+                        applyDexSize(nativeDisplay, width, height)
                     try {
                         nativeDexMirror = NativeDexMirror.create(nativeDisplay, width, height, surface)
                         attachOwner(owner)
@@ -262,20 +267,22 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         putSetting("force_desktop_mode_on_external_displays", "0")
     }
 
-    @Synchronized override fun configureDesktop(width: Int, height: Int, samsungDex: Boolean, owner: IBinder): String {
+    @Synchronized override fun configureDesktop(width: Int, height: Int, samsungDex: Boolean, owner: IBinder, fullscreen: Boolean): String {
         require(width in 240..8192 && height in 240..8192)
         attachOwner(owner)
         disableAndroidDesktop()
         val source = if (samsungDex) NativeDexMirror.activeDisplay(shell) else null
-        if (source != null && source.displayId > 0) applyDexSize(source, width, height)
+        if (source != null && source.displayId > 0 && fullscreen) applyDexSize(source, width, height)
         return snapshot()
     }
 
     private fun applyDexSize(source: Display, width: Int, height: Int) {
         if (dexSize != null) {
-            check(displaySize(source) == FullscreenDisplay.Size(width, height)) { "DeX 桌面尺寸已改变，请退出第二屏后重新创建" }
-            return
+            if (displaySize(source) == FullscreenDisplay.Size(width, height)) return
+            dexSize?.close()
+            dexSize = null
         }
+        if (dexDefaultSize == null) dexDefaultSize = displaySize(source)
         val manager = shell.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
         val id = source.displayId
         val unique = Display::class.java.getMethod("getUniqueId").invoke(source)
@@ -310,6 +317,33 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         val metrics = android.util.DisplayMetrics()
         source.getRealMetrics(metrics)
         return FullscreenDisplay.Size(metrics.widthPixels, metrics.heightPixels)
+    }
+
+    @Synchronized override fun reconfigureDisplay(width: Int, height: Int, surface: Surface, fullscreen: Boolean): String {
+        require(width in 240..8192 && height in 240..8192 && surface.isValid)
+        check(mode == "desktop" && owner?.isBinderAlive == true) { "独立桌面未连接" }
+        val mirror = nativeDexMirror
+        if (mirror != null) {
+            val source = mirror.source
+            if (source.displayId > 0) {
+                if (fullscreen) applyDexSize(source, width, height)
+                else { dexSize?.close(); dexSize = null }
+                repeat(25) {
+                    if (displaySize(source) == FullscreenDisplay.Size(width, height)) return@repeat
+                    Thread.sleep(40)
+                }
+                check(displaySize(source) == FullscreenDisplay.Size(width, height)) { "系统未应用桌面分辨率" }
+            }
+            val next = NativeDexMirror.create(source, width, height, surface)
+            nativeDexMirror = next
+            mirror.close()
+        } else {
+            val current = checkNotNull(display) { "虚拟屏未创建" }
+            current.surface = null
+            current.resize(width, height, desktopDensity)
+            current.surface = surface
+        }
+        return snapshot()
     }
 
     /** Keep the owned display's HOME task alive, without changing the phone's HOME preference. */
@@ -361,7 +395,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         if (dexRequested && !dexActive) details.add(if (samsung) "当前没有可采集的原生 DeX，已使用 Sunshine 兼容桌面"
             else "此主机不是三星设备，已使用普通第二屏桌面")
         launcher = if (dexActive) "Sunshine 桌面（三星 DeX）" else "Sunshine 桌面"
-        return startDesktopPage(id, "apps")
+        return startDesktopPage(id, "resume")
     }
 
     private fun startDesktopPage(id: Int, page: String): Boolean {
@@ -413,7 +447,11 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     }
 
     private fun start(component: ComponentName, id: Int, freeform: Boolean, home: Boolean = false, page: String = "apps"): Boolean = try {
-        val args = mutableListOf("am", "start", "--display", id.toString(), "--windowingMode", if (freeform) "5" else "1", "-f", if (home) "0x18000000" else "0x10200000",
+        // A secondary HOME return must reuse its task. MULTIPLE_TASK recreated
+        // the activity on every HOME request, losing focus and rebuilding icons.
+        val desktop = component == desktopComponent
+        val args = mutableListOf("am", "start", "--display", id.toString(), "--windowingMode", if (freeform) "5" else "1", "-f",
+            if (desktop) "0x30000000" else if (home) "0x18000000" else "0x10200000",
             "-a", Intent.ACTION_MAIN, "-c", if (home) Intent.CATEGORY_SECONDARY_HOME else Intent.CATEGORY_LAUNCHER)
         if (home) args.addAll(listOf("--activityType", "2"))
         if (component.className == "com.alkaidlab.sunshine.ui.VirtualDesktopActivity") args.addAll(listOf("--es", "desktop_page", page,
@@ -483,7 +521,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
             "leave" -> leaveDesktop(id)
             "back" -> injectKey(KeyEvent.KEYCODE_BACK, true, 0) && injectKey(KeyEvent.KEYCODE_BACK, false, 0)
             "home" -> if (nativeDexMirror != null) injectKey(KeyEvent.KEYCODE_HOME, true, 0) && injectKey(KeyEvent.KEYCODE_HOME, false, 0)
-                else startDesktopPage(id, "apps")
+                else startDesktopPage(id, "resume")
             "apps" -> startDesktopPage(id, "apps")
             "tasks" -> if (nativeDexMirror != null) injectKey(KeyEvent.KEYCODE_APP_SWITCH, true, 0) && injectKey(KeyEvent.KEYCODE_APP_SWITCH, false, 0)
                 else startDesktopPage(id, "tasks")
@@ -542,6 +580,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         if (panelOff) try { setPanelPower(2); panelOff = false } catch (e: Exception) { restoreError = e }
         try { nativeDexMirror?.close() } catch (e: Exception) { restoreError = e } finally { nativeDexMirror = null }
         try { dexSize?.close(); dexSize = null } catch (e: Exception) { restoreError = e }
+        dexDefaultSize = null
         try { localDex?.close() } catch (e: Exception) { restoreError = e } finally { localDex = null }
         try { standaloneDex?.close() } catch (e: Exception) { restoreError = e } finally { standaloneDex = null }
         try { virtualWake?.release() } catch (_: Exception) {}; virtualWake = null
@@ -581,7 +620,7 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
     @Synchronized override fun injectKey(keyCode: Int, down: Boolean, modifiers: Int): Boolean {
         // Only our owned ordinary display uses the temporary Sunshine HOME.
         if (guardedDisplayId > 0 && inputDisplayId() == guardedDisplayId && keyCode == KeyEvent.KEYCODE_HOME)
-            return if (down) true else startDesktopPage(guardedDisplayId, "apps")
+            return if (down) true else startDesktopPage(guardedDisplayId, "resume")
         val now = SystemClock.uptimeMillis()
         return send(KeyEvent(now, now, if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
             keyCode, 0, modifiers, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD))
@@ -592,13 +631,15 @@ class VirtualDisplayUserService(context: Context) : ISunshineDisplayController.S
         @Suppress("DEPRECATION")
         nativeDisplay?.getRealMetrics(nativeMetrics)
         return JSONObject().put("display_id", inputDisplayId() ?: -1)
-        .put("protocol_version", 10).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
+        .put("protocol_version", 11).put("build_code", com.alkaidlab.sunshine.BuildConfig.VERSION_CODE)
         .put("local_dex_pending", (localDex != null || standaloneDex != null) && nativeDexMirror == null)
         .put("local_dex_ready", (localDex != null || standaloneDex != null) && nativeDisplay != null)
         .put("dex_route_detail", dexRouteDetail).put("desktop_controls", false)
         .put("secondary_home", if (guardedDisplayId > 0) desktopComponent.flattenToString() else "")
         .put("retained_display_id", display?.display?.displayId ?: -1)
         .put("native_dex_width", nativeMetrics.widthPixels).put("native_dex_height", nativeMetrics.heightPixels)
+        .put("default_dex_width", dexDefaultSize?.width ?: nativeMetrics.widthPixels)
+        .put("default_dex_height", dexDefaultSize?.height ?: nativeMetrics.heightPixels)
         .put("local_dex_stage", localDex?.stage ?: "idle").put("local_dex_error", localDex?.failure?.message ?: "")
         .put("launcher", launcher).put("mode", mode).put("panel_off", panelOff)
         .put("requested_refresh_rate", requestedRefreshRate).put("actual_refresh_rate", (nativeDexMirror?.source ?: display?.display)?.refreshRate ?: 0f)

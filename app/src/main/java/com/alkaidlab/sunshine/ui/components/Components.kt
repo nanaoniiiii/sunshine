@@ -40,14 +40,16 @@ fun PageHeader(title: String, subtitle: String, action: @Composable () -> Unit =
 
 @Composable
 fun SectionCard(title: String? = null, icon: ImageVector? = null,
-    modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    modifier: Modifier = Modifier, action: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit) {
     Surface(modifier.fillMaxWidth(), shape = MaterialTheme.shapes.medium,
         color = CardBg, border = BorderStroke(1.dp, CardBorder)) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (title != null) Row(verticalAlignment = Alignment.CenterVertically,
+            if (title != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (icon != null) Icon(icon, null, tint = PrimaryCyan, modifier = Modifier.size(20.dp))
-                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f).semantics { heading() })
+                action?.invoke()
             }
             content()
         }

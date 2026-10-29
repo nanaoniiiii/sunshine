@@ -148,6 +148,26 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
 
     val runtimeSessions: StateFlow<List<RuntimeSession>> = runtime.activeSessionsFlow
     val fullscreenBusy = runtime.fullscreenBusy
+    val streamDisplayMode = runtime.streamDisplayMode
+    private val _serviceStartup = MutableStateFlow(com.alkaidlab.sunshine.service.ServiceStartupSettings.read(application))
+    val serviceStartup = _serviceStartup.asStateFlow()
+    fun setServiceStartup(startOnBoot: Boolean? = null, keepAlive: Boolean? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val previous = _serviceStartup.value
+            val next = previous.copy(startOnBoot = startOnBoot ?: previous.startOnBoot, keepAlive = keepAlive ?: previous.keepAlive)
+            if (next.save(getApplication())) {
+                _serviceStartup.value = next
+                // Deliver a fresh start command so Android records the new sticky
+                // policy immediately, without stopping capture or active sessions.
+                if (SunshineService.isRunning || next.startOnBoot) try {
+                    SunshineService.start(getApplication())
+                } catch (_: RuntimeException) { _statusMessage.value = "设置已保存，请从首页开启 Sunshine 服务" }
+            } else _statusMessage.value = "启动设置保存失败，请重试"
+        }
+    }
+    fun setStreamDisplayMode(mode: com.alkaidlab.sunshine.service.StreamDisplayMode) {
+        viewModelScope.launch { _statusMessage.value = runtime.setStreamDisplayMode(mode).message }
+    }
     val virtualScreenState = runtime.virtualScreenState
     fun toggleVirtualScreen() {
         viewModelScope.launch {

@@ -24,7 +24,7 @@ public final class NativeServer {
     public static native void submitPin(String pin);
     public static native void cleanup();
     public static native void configureVideo(int minimum, int maximum, int maxFps);
-    public static native void configureCanvas(int width, int height, boolean followOrientation, int sourceFps);
+    public static native void configureCanvas(int width, int height, boolean followOrientation, int sourceFps, boolean sourceCanvas);
     public static native void configureEncoders(String avc, String hevc, String[] avcNames, String[] hevcNames);
     public static native String videoSnapshot();
     public static native boolean controlVideo(long sessionId, int operation, int value);

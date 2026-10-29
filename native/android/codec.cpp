@@ -17,12 +17,14 @@ using namespace sunshine_android;
 FreshVideoQueue<video::packet_t> packets(record_queue);
 int source_width=0,source_height=0,source_fps=0;
 bool follow_orientation=true;
+bool source_canvas=false;
 int fps_for(int requested) {
     std::lock_guard lock(sunshine_android::video_mutex);
     return sunshine_android::video_policy.fps(requested,source_fps);
 }
 std::pair<int,int> canvas_for(int width,int height) {
     std::lock_guard lock(video_mutex);
+    if(source_canvas)return stream_canvas(width,height,source_width,source_height,true);
     return oriented_canvas(width,height,source_width,source_height,follow_orientation);
 }
 std::string java_string(JNIEnv* env,jstring s) {
@@ -43,9 +45,9 @@ void record_video_send_buffer(int bytes) {
     sunshine_android::video_send_buffer_bytes=bytes;
     for(auto& [id,s]:sunshine_android::video_sessions)s->socket_send_buffer_bytes=bytes;
 }
-void configure_canvas(int width,int height,bool follow,int fps) {
+void configure_canvas(int width,int height,bool follow,int fps,bool source) {
     std::lock_guard lock(sunshine_android::video_mutex);
-    source_width=width;source_height=height;follow_orientation=follow;source_fps=fps>0?std::clamp(fps,1,240):0;
+    source_width=width;source_height=height;follow_orientation=follow;source_fps=fps>0?std::clamp(fps,1,240):0;source_canvas=source;
 }
 std::string video_snapshot(){return sunshine_android::video_snapshot();}
 bool video_control(int64_t id,int op,int value){return sunshine_android::control_video(id,op,value);}

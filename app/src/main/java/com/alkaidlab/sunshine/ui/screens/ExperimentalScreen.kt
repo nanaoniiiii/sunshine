@@ -19,6 +19,7 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
     val draft by viewModel.settingsDraft.collectAsState()
     val state by viewModel.virtualScreenState.collectAsState()
     val saveError by viewModel.settingsSaveError.collectAsState()
+    val startup by viewModel.serviceStartup.collectAsState()
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PagePadding, verticalArrangement = Arrangement.spacedBy(20.dp)) {
         item {
             TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) {
@@ -29,6 +30,18 @@ fun ExperimentalScreen(viewModel: SunshineViewModel, onBack: () -> Unit = {}) {
         if (saveError != null) item { SectionCard("设置未保存", Icons.Default.ErrorOutline) {
             Text(saveError.orEmpty(), color = AccentRed)
             TextButton(onClick = viewModel::retrySettingsSave) { Text("重试") }
+        } }
+        item { SectionCard("启动与保活", Icons.Default.PowerSettingsNew) {
+            SettingSwitch("开机自动启动服务", "设备开机解锁后自动启动 Sunshine；应用更新后也恢复服务", startup.startOnBoot) {
+                viewModel.setServiceStartup(startOnBoot = it)
+            }
+            SettingSwitch("服务常驻与异常恢复", "保留前台通知，服务被系统回收后请求自动重建；主动停止服务时不会自行重开", startup.keepAlive) {
+                viewModel.setServiceStartup(keepAlive = it)
+            }
+            Text("这些设置会保留到下次开机。普通应用无法成为系统服务；强行停止、撤销权限或厂商后台限制仍可能阻止启动。",
+                style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
+            Text("服务启动后，Shizuku 可用时自动恢复控制；设备重启后可能需要重新启动 Shizuku，并在 Sunshine 中确认屏幕录制。",
+                style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
         } }
         item { ControllerSettings { testingController = true } }
         item { SectionCard("三星 DeX", Icons.Default.DesktopWindows) {

@@ -121,6 +121,18 @@ class SunshineApiServer(
             when {
                 uri == "/api/config" && method == Method.GET -> handleGetConfig()
                 uri == "/api/config" && method == Method.POST -> handleSaveConfig(session)
+                uri == "/api/stream-display-mode" && method == Method.GET ->
+                    jsonResponse(mapOf("mode" to SunshineRuntimeManager.getInstance().streamDisplayMode.value.value))
+                uri == "/api/stream-display-mode" && method == Method.POST -> {
+                    val value = com.alkaidlab.sunshine.service.ConfigRequest.parse(parseBody(session))["mode"]
+                    val mode = com.alkaidlab.sunshine.service.StreamDisplayMode.parse(value)
+                    if (mode == null) newFixedLengthResponse(Response.Status.BAD_REQUEST, "application/json",
+                        gson.toJson(SimpleStatusResponse("false", error = "mode must be default or fullscreen")))
+                    else {
+                        val result = kotlinx.coroutines.runBlocking { SunshineRuntimeManager.getInstance().setStreamDisplayMode(mode) }
+                        jsonResponse(SimpleStatusResponse(result.applied.toString(), result.message))
+                    }
+                }
                 uri == "/api/apps" && method == Method.GET -> handleGetApps()
                 uri == "/api/apps" && method == Method.POST -> handleSaveApp(session)
                 uri.startsWith("/api/apps/") && method == Method.DELETE -> handleDeleteApp(uri.removePrefix("/api/apps/"))

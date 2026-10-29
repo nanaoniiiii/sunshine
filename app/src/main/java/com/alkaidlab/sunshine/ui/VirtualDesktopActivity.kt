@@ -9,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -25,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,6 +60,9 @@ import com.alkaidlab.sunshine.service.SunshineRuntimeManager
 import com.alkaidlab.sunshine.ui.desktop.DesktopArtwork
 import com.alkaidlab.sunshine.ui.desktop.DesktopArtworkCache
 import com.alkaidlab.sunshine.ui.desktop.DesktopBackground
+import com.alkaidlab.sunshine.ui.desktop.DesktopAppCatalogCache
+import com.alkaidlab.sunshine.ui.desktop.DesktopSessionCache
+import com.alkaidlab.sunshine.ui.desktop.DesktopPosition
 import com.alkaidlab.sunshine.ui.desktop.desktopFocus
 import com.alkaidlab.sunshine.ui.theme.SunshineTheme
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +80,7 @@ class VirtualDesktopActivity : ComponentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); desktopWindowFocused = hasFocus; if (hasFocus) trustedKeyguard.onForeground(this) }
     private var page by mutableStateOf("apps")
     private var navigationRevision by mutableIntStateOf(0)
+    private var resumePosition = true
     private fun onRequestedDisplay(intent: Intent): Boolean {
         val expected = intent.getIntExtra("desktop_display_id", -1)
         @Suppress("DEPRECATION") val actual = windowManager.defaultDisplay.displayId
@@ -86,7 +90,11 @@ class VirtualDesktopActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (!onRequestedDisplay(intent)) return
-        setIntent(intent); page = intent.getStringExtra("desktop_page") ?: "apps"; navigationRevision++
+        setIntent(intent)
+        val requested = intent.getStringExtra("desktop_page") ?: "resume"
+        resumePosition = requested == "resume"
+        if (!resumePosition) page = requested
+        navigationRevision++
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -96,8 +104,16 @@ class VirtualDesktopActivity : ComponentActivity() {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
-        page = intent.getStringExtra("desktop_page") ?: "apps"
+        @Suppress("DEPRECATION") val display = windowManager.defaultDisplay.displayId
+        val requested = intent.getStringExtra("desktop_page") ?: "resume"
+        page = savedInstanceState?.getString("desktop_page")
+            ?: if (requested == "resume") DesktopSessionCache.read(display).page else requested
         setContent { SunshineTheme(darkTheme = true) { Desktop() } }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("desktop_page", page)
+        super.onSaveInstanceState(outState)
     }
 
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -107,17 +123,20 @@ class VirtualDesktopActivity : ComponentActivity() {
         val adapter by ControllerAdapter.status.collectAsState()
         var joinedSession by remember { mutableStateOf(false) }
         val scope = rememberCoroutineScope()
+        @Suppress("DEPRECATION") val displayId = windowManager.defaultDisplay.displayId
+        val position = remember { DesktopSessionCache.read(displayId) }
         val inputModeManager = LocalInputModeManager.current
         val snacks = remember { SnackbarHostState() }
-        var apps by remember { mutableStateOf<List<ResolveInfo>>(emptyList()) }
+        var apps by remember { mutableStateOf(DesktopAppCatalogCache.peek()) }
         var tasks by remember { mutableStateOf<List<Pair<Int, ComponentName>>>(emptyList()) }
-        var query by remember { mutableStateOf("") }
-        var search by remember { mutableStateOf(false) }
+        var query by rememberSaveable { mutableStateOf(position.query) }
+        var search by rememberSaveable { mutableStateOf(position.search) }
         var refresh by remember { mutableIntStateOf(0) }
-        var selected by remember { mutableIntStateOf(0) }
-        var loading by remember { mutableStateOf(true) }
+        var selected by rememberSaveable { mutableIntStateOf(position.selected) }
+        var selectedKey by rememberSaveable { mutableStateOf(position.selectedKey) }
+        var loading by remember { mutableStateOf(apps.isEmpty()) }
         var clock by remember { mutableStateOf("") }
-        val rail = androidx.compose.foundation.lazy.rememberLazyListState()
+        val rail = androidx.compose.foundation.lazy.rememberLazyListState(position.railIndex, position.railOffset)
         val focus = remember { mutableMapOf<String, FocusRequester>() }
         val playFocus = remember { FocusRequester() }
         val moreFocus = remember { FocusRequester() }
@@ -143,21 +162,22 @@ class VirtualDesktopActivity : ComponentActivity() {
                 }
             }
         }
-        var topIndex by remember { mutableIntStateOf(0) }
-        var zone by remember { mutableStateOf("rail") }
+        var topIndex by rememberSaveable { mutableIntStateOf(position.topIndex) }
+        var zone by rememberSaveable { mutableStateOf(position.zone) }
+        var actionIndex by rememberSaveable { mutableIntStateOf(position.actionIndex) }
         var frame by remember { mutableStateOf(Rect.Zero) }
         val frameX by animateFloatAsState(frame.left, tween(180), label = "focus x")
         val frameY by animateFloatAsState(frame.top, tween(180), label = "focus y")
         val frameWidth by animateFloatAsState(frame.width, tween(180), label = "focus width")
         val frameHeight by animateFloatAsState(frame.height, tween(180), label = "focus height")
         fun Modifier.tracked(group: String) = desktopFocus(group, { zone = it }, { frame = it })
-        var taskSelected by remember { mutableIntStateOf(0) }
-        var quickSelected by remember { mutableIntStateOf(0) }
+        var taskSelected by rememberSaveable { mutableIntStateOf(position.taskSelected) }
+        var quickSelected by rememberSaveable { mutableIntStateOf(position.quickSelected) }
         val filtered = remember(apps, query) { apps.filter { it.loadLabel(packageManager).toString().contains(query, true) || it.activityInfo.packageName.contains(query, true) } }
         val current = filtered.getOrNull(selected.coerceIn(0, (filtered.size - 1).coerceAtLeast(0)))
         val currentKey = current?.let { "${it.activityInfo.packageName}/${it.activityInfo.name}" }
-        var artwork by remember { mutableStateOf<DesktopArtwork?>(null) }
-        val color by animateColorAsState(artwork?.palette?.color?.let { Color(it) } ?: Color(0xff1b3355), label = "desktop palette")
+        var artwork by remember { mutableStateOf(DesktopArtworkCache.peek(currentKey)) }
+        val color = artwork?.palette?.color?.let { Color(it) } ?: Color(0xff1b3355)
         fun exit() { scope.launch {
             val result = runtime.leaveSunshineDesktop()
             if (result.applied) finish() else snacks.showSnackbar(result.message)
@@ -171,6 +191,7 @@ class VirtualDesktopActivity : ComponentActivity() {
         }
         fun select(index: Int, moveFocus: Boolean = true) {
             selected = index.coerceIn(0, (filtered.size - 1).coerceAtLeast(0))
+            selectedKey = filtered.getOrNull(selected)?.let { "${it.activityInfo.packageName}/${it.activityInfo.name}" }
             if (filtered.isEmpty()) {
                 if (moveFocus) requestFocus { exitFocus }
                 return
@@ -205,6 +226,19 @@ class VirtualDesktopActivity : ComponentActivity() {
                 requestFocus { tasks.getOrNull(taskSelected)?.let { taskFocus[it.first] } }
             }
         }
+        fun restoreFocus() {
+            if (loading || !desktopWindowFocused) return
+            val group = zone
+            requestFocus { when (group) {
+                "tabs" -> topFocus.getOrNull(topIndex)
+                "actions" -> if (actionIndex == 1) moreFocus else playFocus
+                "quick" -> quickFocus.getOrNull(quickSelected)
+                "tasks" -> tasks.getOrNull(taskSelected)?.let { taskFocus[it.first] } ?: topFocus[1]
+                "search" -> searchFieldFocus
+                "footer" -> exitFocus
+                else -> currentKey?.let { focus[it] }
+            } }
+        }
         fun parentMenu(delta: Int) {
             if (zone == "tabs") focusTop(topIndex + delta)
             else if (zone == "actions" && page == "apps") select(selected + delta, false)
@@ -226,45 +260,70 @@ class VirtualDesktopActivity : ComponentActivity() {
         }
         LaunchedEffect(state.active, state.busy) {
             if (state.active) joinedSession = true
-            if (joinedSession && !state.active && !state.busy) finishAndRemoveTask()
+            if (joinedSession && !state.active && !state.busy) { DesktopSessionCache.clear(displayId); finishAndRemoveTask() }
         }
         LaunchedEffect(Unit) { while (true) { clock = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date()); delay(15000) } }
         LaunchedEffect(refresh) {
-            loading = true
+            if (apps.isEmpty()) loading = true
             apps = withContext(Dispatchers.IO) {
-                packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
-                    .filter { it.activityInfo.packageName != packageName && it.activityInfo.enabled && it.activityInfo.exported }
-                    .distinctBy { it.activityInfo.packageName to it.activityInfo.name }.sortedBy { it.loadLabel(packageManager).toString() }
+                DesktopAppCatalogCache.load(this@VirtualDesktopActivity, force = refresh > 0)
             }
+            selectedKey?.let { key -> apps.filter { it.loadLabel(packageManager).toString().contains(query, true) || it.activityInfo.packageName.contains(query, true) }
+                .indexOfFirst { "${it.activityInfo.packageName}/${it.activityInfo.name}" == key }
+                .takeIf { it >= 0 }?.let { selected = it } }
             loading = false
         }
-        LaunchedEffect(query) { selected = 0; rail.scrollToItem(0) }
-        LaunchedEffect(loading, page, desktopWindowFocused) {
-            if (desktopWindowFocused && !loading && page == "apps" && !search && zone != "tabs") { withFrameNanos { }; withFrameNanos { }; requestFocus { currentKey?.let { focus[it] } } }
+        var previousQuery by rememberSaveable { mutableStateOf(query) }
+        LaunchedEffect(query) {
+            if (query != previousQuery) { previousQuery = query; selected = 0; selectedKey = null; rail.scrollToItem(0) }
+        }
+        LaunchedEffect(loading, desktopWindowFocused) {
+            if (desktopWindowFocused && !loading) { withFrameNanos { }; withFrameNanos { }; restoreFocus() }
         }
         LaunchedEffect(navigationRevision) {
             if (navigationRevision > 0) {
-                // HOME / recents can arrive while focus belonged to another
-                // page. Restore a live target instead of retaining its bounds.
-                frame = Rect.Zero
-                zone = "tabs"
-                topIndex = when (page) { "tasks" -> 1; "quick" -> 2; else -> 0 }
-                refresh++
-                requestFocus { topFocus[topIndex] }
+                if (resumePosition) restoreFocus()
+                else {
+                    frame = Rect.Zero
+                    zone = "tabs"
+                    topIndex = when (page) { "tasks" -> 1; "quick" -> 2; else -> 0 }
+                    requestFocus { topFocus[topIndex] }
+                }
             }
         }
         LaunchedEffect(currentKey, refresh) {
             artwork = current?.let { app -> withContext(Dispatchers.Default) { runCatching { DesktopArtworkCache.get(currentKey!!) { app.loadIcon(packageManager) } }.getOrNull() } }
         }
-        LaunchedEffect(page, refresh) {
-            if (page == "tasks") {
+        LaunchedEffect(page, refresh, desktopWindowFocused, navigationRevision) {
+            if (page == "tasks" && desktopWindowFocused) {
                 val result = org.json.JSONArray(runtime.virtualDesktopTasks())
                 tasks = (0 until result.length()).mapNotNull { index -> result.getJSONObject(index).let { item ->
                     ComponentName.unflattenFromString(item.optString("component"))?.let { item.getInt("id") to it }
                 } }
+                if (zone == "tasks") restoreFocus()
             }
         }
-        BackHandler { query = ""; search = false; focusTop(0) }
+        SideEffect {
+            if (state.active && state.displayId == displayId)
+                DesktopSessionCache.save(displayId, DesktopPosition(page, query, search, selected, currentKey, zone, topIndex,
+                    actionIndex, taskSelected, quickSelected, rail.firstVisibleItemIndex, rail.firstVisibleItemScrollOffset))
+        }
+        DisposableEffect(Unit) {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: android.content.Context, intent: Intent) {
+                    intent.data?.schemeSpecificPart?.let(DesktopArtworkCache::invalidate)
+                    DesktopAppCatalogCache.invalidate()
+                    refresh++
+                }
+            }
+            val filter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED); addAction(Intent.ACTION_PACKAGE_REMOVED); addAction(Intent.ACTION_PACKAGE_CHANGED)
+                addDataScheme("package")
+            }
+            androidx.core.content.ContextCompat.registerReceiver(this@VirtualDesktopActivity, receiver, filter, androidx.core.content.ContextCompat.RECEIVER_EXPORTED)
+            onDispose { unregisterReceiver(receiver) }
+        }
+        BackHandler { if (search || query.isNotEmpty()) { query = ""; search = false } else restoreFocus() }
         BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xff040912)).onPreviewKeyEvent { key ->
             if (key.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) false
             else when (key.nativeKeyEvent.keyCode) {
@@ -334,9 +393,9 @@ class VirtualDesktopActivity : ComponentActivity() {
                             val key = "${app.activityInfo.packageName}/${app.activityInfo.name}"
                             val requester = remember(key) { FocusRequester().also { focus[key] = it } }
                             val tile by animateDpAsState(if (selected == index) { if (compact) 120.dp else 164.dp } else { if (compact) 80.dp else 104.dp }, label = "application tile")
-                            var icon by remember(key) { mutableStateOf<DesktopArtwork?>(null) }
+                            var icon by remember(key) { mutableStateOf(DesktopArtworkCache.peek(key)) }
                             LaunchedEffect(key) { icon = withContext(Dispatchers.Default) { runCatching { DesktopArtworkCache.get(key) { app.loadIcon(packageManager) } }.getOrNull() } }
-                            Box(Modifier.size(tile).focusRequester(requester).tracked("rail").onFocusChanged { if (it.isFocused) selected = index }
+                            Box(Modifier.size(tile).focusRequester(requester).tracked("rail").onFocusChanged { if (it.isFocused) { selected = index; selectedKey = key } }
                                 .clip(RoundedCornerShape(18.dp))
                                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClickLabel = "打开 ${app.loadLabel(packageManager)}") { selected = index; launch(ComponentName(app.activityInfo.packageName, app.activityInfo.name)) }, contentAlignment = Alignment.Center) {
                                 icon?.let { Image(it.image, app.loadLabel(packageManager).toString(), Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
@@ -346,15 +405,15 @@ class VirtualDesktopActivity : ComponentActivity() {
                     if (filtered.isEmpty() && !loading) Text(if (query.isBlank()) "未读取到应用，可以刷新或打开系统设置" else "没有匹配的应用", Modifier.padding(horizontal = margin), color = Color.White)
                     Spacer(Modifier.weight(1f))
                     Column(Modifier.padding(horizontal = margin).fillMaxWidth(if (compact) 1f else .75f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("SUNSHINE", fontSize = 12.sp, letterSpacing = 4.sp, color = Color.White.copy(alpha = .84f))
+                        Text("SUNSHINE", fontSize = 12.sp, letterSpacing = 4.sp, color = headerColor.copy(alpha = .84f))
                         Text(heroTitle(), fontSize = if (compact) 30.sp else 42.sp, lineHeight = if (compact) 38.sp else 50.sp,
-                            fontWeight = FontWeight.SemiBold, color = Color.White, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text("你的应用，随时开始", fontSize = if (compact) 14.sp else 17.sp, color = Color.White.copy(alpha = .86f))
+                            fontWeight = FontWeight.SemiBold, color = headerColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text("你的应用，随时开始", fontSize = if (compact) 14.sp else 17.sp, color = headerColor.copy(alpha = .86f))
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             DesktopButton(onClick = { current?.let { launch(ComponentName(it.activityInfo.packageName, it.activityInfo.name)) } }, enabled = current != null,
-                                modifier = Modifier.width(if (compact) 150.dp else 230.dp).height(52.dp).focusRequester(playFocus).tracked("actions"),
+                                modifier = Modifier.width(if (compact) 150.dp else 230.dp).height(52.dp).focusRequester(playFocus).tracked("actions").onFocusChanged { if (it.isFocused) actionIndex = 0 },
                                 containerColor = Color.White, contentColor = Color(0xff111724)) { Text("打开应用", fontSize = 17.sp) }
-                            DesktopButton(onClick = { focusTop(2) }, Modifier.size(64.dp, 52.dp).focusRequester(moreFocus).tracked("actions"), borderColor = Color.White.copy(alpha = .5f)) { Icon(Icons.Default.MoreHoriz, "更多操作", tint = Color.White) }
+                            DesktopButton(onClick = { focusTop(2) }, Modifier.size(64.dp, 52.dp).focusRequester(moreFocus).tracked("actions").onFocusChanged { if (it.isFocused) actionIndex = 1 }, borderColor = Color.White.copy(alpha = .5f)) { Icon(Icons.Default.MoreHoriz, "更多操作", tint = Color.White) }
                         }
                     }
                     Spacer(Modifier.height(if (compact) 18.dp else 30.dp))

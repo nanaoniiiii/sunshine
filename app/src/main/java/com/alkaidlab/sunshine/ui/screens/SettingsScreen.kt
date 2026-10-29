@@ -77,9 +77,8 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
                 } }
                 item { SectionCard("画面与流畅度", Icons.Default.SlowMotionVideo) {
                     number("帧率上限", "FPS · 15–240", "max_stream_fps")
-                    SettingSwitch("自动旋转", "串流画布跟随设备横竖屏切换", current.checked("auto_rotate"), true) { edit("auto_rotate", it.toString()) }
-                    SettingSwitch("固定画布旋转兼容", "手机接收端：关闭自由旋转，用竖屏分辨率连接，再随画面转动手机", current["rotation_compat"] == "true", true) { edit("rotation_compat", it.toString()) }
-                    SettingSwitch("自动缩放", "匹配客户端请求的分辨率", current.checked("auto_scale"), true) { edit("auto_scale", it.toString()) }
+                    Text("分辨率与画面比例在首页“串流状态”右侧选择：默认跟随主机当前尺寸；全屏按 Moonlight 请求调整。选择会长期保存，串流中也可切换。",
+                        style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
                     SettingSwitch("静态画面持续补帧", "关闭可减少静止画面的送帧；遇到停顿时请开启", current.checked("repeat_frames"), true) { edit("repeat_frames", it.toString()) }
                 } }
                 item { SectionCard("虚拟屏", Icons.Default.DesktopWindows) {

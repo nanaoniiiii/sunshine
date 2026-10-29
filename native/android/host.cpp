@@ -274,7 +274,7 @@ extern "C" JNIEXPORT void JNICALL JNI_NAME(setSunshineName)(JNIEnv* e,jclass,jst
 extern "C" JNIEXPORT void JNICALL JNI_NAME(enableH265)(JNIEnv*,jclass){video::active_hevc_mode=2;config::video.hevc_mode=2;}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(submitPin)(JNIEnv* e,jclass,jstring p){nvhttp::pin(android_host::string(e,p));}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureVideo)(JNIEnv*,jclass,jint a,jint b,jint c){android_host::configure_video(a,b,c);}
-extern "C" JNIEXPORT void JNICALL JNI_NAME(configureCanvas)(JNIEnv*,jclass,jint width,jint height,jboolean follow,jint fps){android_host::configure_canvas(width,height,follow,fps);}
+extern "C" JNIEXPORT void JNICALL JNI_NAME(configureCanvas)(JNIEnv*,jclass,jint width,jint height,jboolean follow,jint fps,jboolean source){android_host::configure_canvas(width,height,follow,fps,source);}
 extern "C" JNIEXPORT void JNICALL JNI_NAME(configureEncoders)(JNIEnv* e,jclass,jstring a,jstring b,jobjectArray c,jobjectArray d){android_host::configure_encoders(e,a,b,c,d);}
 extern "C" JNIEXPORT jstring JNICALL JNI_NAME(videoSnapshot)(JNIEnv* e,jclass){return e->NewStringUTF(android_host::video_snapshot().c_str());}
 extern "C" JNIEXPORT jboolean JNICALL JNI_NAME(controlVideo)(JNIEnv*,jclass,jlong id,jint op,jint value){return android_host::video_control(id,op,value);}

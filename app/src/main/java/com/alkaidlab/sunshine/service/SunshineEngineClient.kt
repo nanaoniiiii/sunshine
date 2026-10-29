@@ -125,7 +125,7 @@ class SunshineEngineClient(private val context: Context) {
                         val capture = runtime.getCaptureDimensions(1, 1)
                         val rotation = canvasRotation(runtime, runtime.autoRotateEnabled, runtime.rotationCompatEnabled)
                         remote.configureCanvas(capture[0], capture[1], rotation.follow,
-                            rotation.compatibility, runtime.sourceDisplayId, sourceFrameLimit(runtime))
+                            rotation.compatibility, runtime.sourceDisplayId, sourceFrameLimit(runtime), runtime.streamDisplayMode.value == StreamDisplayMode.DEFAULT)
                         remote.start(host, serverName, certPath, keyPath, statePath, runtime.hevcEnabled)
                         synchronized(runtime) {
                             if (enabled && generation == epoch) runtime.setEngineReady(true)
@@ -226,11 +226,13 @@ class SunshineEngineClient(private val context: Context) {
         val runtime = SunshineRuntimeManager.getInstance()
         val id = runtime.sourceDisplayId
         val rotation = canvasRotation(runtime, follow, compat)
-        try { engine?.configureCanvas(width, height, rotation.follow, rotation.compatibility, id, sourceFrameLimit(runtime)) } catch (_: RemoteException) {}
+        try { engine?.configureCanvas(width, height, rotation.follow, rotation.compatibility, id, sourceFrameLimit(runtime),
+            runtime.streamDisplayMode.value == StreamDisplayMode.DEFAULT) } catch (_: RemoteException) {}
     }
     private fun canvasRotation(runtime: SunshineRuntimeManager, follow: Boolean, compatibility: Boolean): CaptureSourcePolicy.Rotation {
-        val state = runtime.virtualScreenState.value
-        return CaptureSourcePolicy.rotation(runtime.sourceDisplayId, state.active && state.mode == "desktop", follow, compatibility)
+        // The explicit stream mode owns the canvas: default follows actual host
+        // pixels; fullscreen keeps the requested dimensions without swapping.
+        return CaptureSourcePolicy.Rotation(false, false)
     }
     private fun sourceFrameLimit(runtime: SunshineRuntimeManager): Int {
         val state = runtime.virtualScreenState.value

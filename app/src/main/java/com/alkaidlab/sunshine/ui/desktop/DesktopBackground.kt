@@ -28,13 +28,6 @@ fun DesktopBackground(artwork: DesktopArtwork?, color: Color) {
                 val iconSide = side.toPx()
                 val iconLeft = size.width - iconSide - 12.dp.toPx()
                 val iconTop = size.height * .52f - iconSide * .5f
-                val extension = iconSide * (artwork.backgroundScale - 1f) * .5f
-                drawImage(
-                    artwork.backgroundImage,
-                    dstOffset = IntOffset((iconLeft - extension).roundToInt(), (iconTop - extension).roundToInt()),
-                    dstSize = IntSize((iconSide * artwork.backgroundScale).roundToInt(), (iconSide * artwork.backgroundScale).roundToInt()),
-                    filterQuality = FilterQuality.High,
-                )
                 drawImage(
                     artwork.image,
                     dstOffset = IntOffset(iconLeft.roundToInt(), iconTop.roundToInt()),

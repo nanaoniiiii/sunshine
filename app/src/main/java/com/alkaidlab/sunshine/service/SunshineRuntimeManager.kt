@@ -35,6 +35,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class SunshineRuntimeManager private constructor() {
 
@@ -70,6 +73,12 @@ class SunshineRuntimeManager private constructor() {
     private val _fullscreenBusy = MutableStateFlow(false)
     private val fullscreenScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     val fullscreenBusy: StateFlow<Boolean> = _fullscreenBusy.asStateFlow()
+    private val _streamDisplayMode = MutableStateFlow(StreamDisplayMode.DEFAULT)
+    val streamDisplayMode: StateFlow<StreamDisplayMode> = _streamDisplayMode.asStateFlow()
+    private val displayModeMutex = Mutex()
+    private val displayModeChanges = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var fullscreenOwner: Long? = null
+    private var appliedFullscreen: List<Long>? = null
     private val captureDisplayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
         override fun onDisplayRemoved(displayId: Int) {
@@ -105,6 +114,12 @@ class SunshineRuntimeManager private constructor() {
     }
 
     init {
+        fullscreenScope.launch {
+            for (ignored in displayModeChanges) {
+                val result = applyStreamDisplayMode()
+                if (!result.applied) SunshineLogManager.log("DISPLAY_MODE", result.message)
+            }
+        }
         frameDispatcher.setOnSourceCadenceRaisedListener { generation ->
             captureHandler.post {
                 val state = _virtualScreenState.value
@@ -261,6 +276,7 @@ class SunshineRuntimeManager private constructor() {
 
     fun initialize(appContext: Context) {
         this.context = appContext.applicationContext
+        _streamDisplayMode.value = StreamDisplayPreferences(appContext).read()
         if (captureDisplayManager == null) {
             captureDisplayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
             captureDisplayManager?.registerDisplayListener(captureDisplayListener, captureHandler)
@@ -529,8 +545,11 @@ class SunshineRuntimeManager private constructor() {
         val mode = if (props["virtual_screen_mode"] == "desktop") "desktop" else "screen_off"
         val density = props["virtual_screen_density"]?.toIntOrNull()?.coerceIn(120, 640) ?: 240
         val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == session.videoThreadId }
-        val width = native?.requestedWidth?.takeIf { it > 0 } ?: session.width
-        val height = native?.requestedHeight?.takeIf { it > 0 } ?: session.height
+        val requested = FullscreenDisplay.Size(native?.requestedWidth?.takeIf { it > 0 } ?: session.width,
+            native?.requestedHeight?.takeIf { it > 0 } ?: session.height)
+        val size = if (_streamDisplayMode.value == StreamDisplayMode.DEFAULT) primaryDefaultSize() else requested
+        val width = size.width
+        val height = size.height
         val refreshRate = minOf(native?.requestedFps?.takeIf { it > 0 } ?: session.fps, streamingSettings.value.maxFps).coerceIn(15, 240)
         val systemDesktop = props["virtual_screen_desktop"] == "system"
         val samsungDex = systemDesktop && Build.MANUFACTURER.equals("samsung", true)
@@ -579,7 +598,8 @@ class SunshineRuntimeManager private constructor() {
             }
             // Resize the real external DeX workspace before allocating the capture
             // surface. Primary/tablet DeX keeps its existing main-screen dimensions.
-            val ready = org.json.JSONObject(withContext(Dispatchers.IO) { client.configureDesktop(width, height, samsungDex) })
+            val ready = org.json.JSONObject(withContext(Dispatchers.IO) { client.configureDesktop(width, height, samsungDex,
+                _streamDisplayMode.value == StreamDisplayMode.FULLSCREEN) })
             val captureWidth = if (samsungDex) ready.optInt("native_dex_width").takeIf { it in 1..8192 } ?: width else width
             val captureHeight = if (samsungDex) ready.optInt("native_dex_height").takeIf { it in 1..8192 } ?: height else height
             virtualDisplay?.release(); virtualDisplay = null
@@ -647,7 +667,10 @@ class SunshineRuntimeManager private constructor() {
                 else VirtualScreenState(busy = true, error = e.message)
             if (previous.mode == "desktop") try { restorePhysicalCapture() } catch (_: Exception) {}
             FullscreenDisplay.Result(false, "虚拟屏退出时出现问题：${e.message}")
-        } finally { _virtualScreenState.value = _virtualScreenState.value.copy(busy = false) }
+        } finally {
+            _virtualScreenState.value = _virtualScreenState.value.copy(busy = false)
+            if (activeSessions.isNotEmpty()) displayModeChanges.trySend(Unit)
+        }
     }
 
     suspend fun launchVirtualApp(component: String): Boolean = withContext(Dispatchers.IO) {
@@ -802,6 +825,7 @@ class SunshineRuntimeManager private constructor() {
         captureHandler.post {
             attachCurrentStreamSurface(callerThreadId, session.startTime)
             if (activeSessions.none { it.videoThreadId == callerThreadId && it.startTime == session.startTime }) return@post
+            displayModeChanges.trySend(Unit)
 
             // Start Audio capture if requested
             if (shouldSendAudio) {
@@ -889,6 +913,7 @@ class SunshineRuntimeManager private constructor() {
         if (activeSessions.none { it.audioEnabled }) pauseAudioCapture()
         _activeSessionsFlow.value = activeSessions.toList()
         _perfFlow.value = getPerfSnapshot()
+        if (activeSessions.isNotEmpty()) displayModeChanges.trySend(Unit)
     }
 
     @Synchronized
@@ -953,6 +978,8 @@ class SunshineRuntimeManager private constructor() {
         if (prefs.contains("original")) return
         val data = org.json.JSONObject().put("width", before.override?.width ?: 0)
             .put("height", before.override?.height ?: 0).put("userRotation", before.userRotation)
+            .put("rotation", before.rotation)
+            .put("physicalWidth", before.physical.width).put("physicalHeight", before.physical.height)
             .put("autoRotate", before.autoRotate).put("fixedRotation", before.fixedRotation)
         check(prefs.edit().putString("original", data.toString()).commit())
     }
@@ -983,7 +1010,7 @@ class SunshineRuntimeManager private constructor() {
                 PrivilegedShell.run(arrayOf("wm", "size", size?.toString() ?: "reset"), 3000) != null
             override fun awaitDisplay(size: FullscreenDisplay.Size): Boolean {
                 repeat(30) {
-                    val current = displayCaptureSize(0, 0)
+                    val current = primaryDisplaySize()
                     if (current[0] == size.width && current[1] == size.height) return true
                     Thread.sleep(50)
                 }
@@ -1001,6 +1028,60 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
+    private fun primaryDisplaySize(): IntArray {
+        val point = Point()
+        @Suppress("DEPRECATION") captureDisplayManager?.getDisplay(Display.DEFAULT_DISPLAY)?.getRealSize(point)
+        return intArrayOf(point.x, point.y)
+    }
+
+    private fun primaryDefaultSize(): FullscreenDisplay.Size {
+        val raw = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE)?.getString("original", null)
+        if (raw != null) try {
+            val data = org.json.JSONObject(raw)
+            val width = data.optInt("width").takeIf { it > 0 } ?: data.optInt("physicalWidth")
+            val height = data.optInt("height").takeIf { it > 0 } ?: data.optInt("physicalHeight")
+            if (width > 0 && height > 0) return FullscreenDisplay.baseSize(FullscreenDisplay.Size(width, height), data.optInt("rotation", data.optInt("userRotation")))
+        } catch (_: Exception) { }
+        val size = primaryDisplaySize()
+        return FullscreenDisplay.Size(size[0].coerceAtLeast(240), size[1].coerceAtLeast(240))
+    }
+
+    private suspend fun resizeDesktopCapture(size: FullscreenDisplay.Size, fullscreen: Boolean): Boolean = withContext(Dispatchers.Main) {
+        val previous = _virtualScreenState.value
+        if (previous.width == size.width && previous.height == size.height) {
+            engineClient?.configureCanvas(size.width, size.height, false, false)
+            return@withContext true
+        }
+        val surface = frameDispatcher.resizeCaptureSync(size.width, size.height) ?: return@withContext false
+        try {
+            withContext(Dispatchers.IO) { displayClient().reconfigureDisplay(size.width, size.height, surface, fullscreen) }
+            _virtualScreenState.value = previous.copy(width = size.width, height = size.height)
+            engineClient?.configureCanvas(size.width, size.height, false, false)
+            true
+        } catch (e: Exception) {
+            val old = frameDispatcher.resizeCaptureSync(previous.width, previous.height)
+            if (old != null) withContext(Dispatchers.IO) {
+                displayClient().reconfigureDisplay(previous.width, previous.height, old, true)
+            }
+            SunshineLogManager.log("DISPLAY_MODE", "Desktop resize rolled back: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private fun restoreFullscreenDisplay(): Boolean {
+        val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: return true
+        val raw = prefs.getString("original", null) ?: return true
+        val data = org.json.JSONObject(raw)
+        val size = if (data.getInt("width") > 0 && data.getInt("height") > 0)
+            FullscreenDisplay.Size(data.getInt("width"), data.getInt("height")) else null
+        val before = FullscreenDisplay.Snapshot(size, 0, autoRotate = data.getBoolean("autoRotate"),
+            userRotation = data.getInt("userRotation"), fixedRotation = data.getBoolean("fixedRotation"))
+        if (!FullscreenDisplay.restore(before, fullscreenBackend())) return false
+        check(prefs.edit().remove("original").commit())
+        appliedFullscreen = null
+        return true
+    }
+
     private fun restoreFullscreenIfIdle() {
         val prefs = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE) ?: return
         if (!prefs.contains("original")) return
@@ -1008,14 +1089,7 @@ class SunshineRuntimeManager private constructor() {
             if (activeSessions.isNotEmpty() || !PrivilegedShell.available() || !_fullscreenBusy.compareAndSet(false, true)) return@launch
             try {
                 if (activeSessions.isNotEmpty()) return@launch
-                val raw = prefs.getString("original", null) ?: return@launch
-                val data = org.json.JSONObject(raw)
-                val size = if (data.getInt("width") > 0 && data.getInt("height") > 0)
-                    FullscreenDisplay.Size(data.getInt("width"), data.getInt("height")) else null
-                val before = FullscreenDisplay.Snapshot(size, 0, autoRotate = data.getBoolean("autoRotate"),
-                    userRotation = data.getInt("userRotation"), fixedRotation = data.getBoolean("fixedRotation"))
-                if (FullscreenDisplay.restore(before, fullscreenBackend())) {
-                    prefs.edit().remove("original").commit()
+                if (restoreFullscreenDisplay()) {
                     SunshineLogManager.log("FULLSCREEN", "Restored original display after all clients exited")
                 }
             } catch (e: Exception) { SunshineLogManager.log("FULLSCREEN_ERR", "Display restore failed: ${e.message}") }
@@ -1023,24 +1097,106 @@ class SunshineRuntimeManager private constructor() {
         }
     }
 
-    suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result = withContext(Dispatchers.IO + NonCancellable) {
-        if (!_fullscreenBusy.compareAndSet(false, true))
-            return@withContext FullscreenDisplay.Result(false, "正在切换全屏，请稍候")
-        try {
-            val native = engineClient?.videoSessions()?.firstOrNull { it.sessionId == sessionId }
-                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
-            val selected = activeSessions.firstOrNull { it.videoThreadId == native.threadId }
-                ?: return@withContext FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
-            if (!PrivilegedShell.available()) return@withContext FullscreenDisplay.Result(false, "修改本机分辨率需要 Shizuku 远程控制权限")
-            if (!frameDispatcher.isRunning || virtualDisplay == null)
-                return@withContext FullscreenDisplay.Result(false, "屏幕采集尚未就绪，请稍后重试")
-            fun isCurrent(): Boolean = activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime } &&
-                engineClient?.videoSessions()?.any { it.sessionId == sessionId } == true
-            val backend = fullscreenBackend(rememberOriginal = true)
-            val result = FullscreenDisplay.apply(FullscreenDisplay.Size(selected.width, selected.height), backend, ::isCurrent)
-            SunshineLogManager.log("FULLSCREEN", "Session $sessionId: ${result.message}")
-            result
-        } finally { _fullscreenBusy.value = false; if (activeSessions.isEmpty()) restoreFullscreenIfIdle() }
+    suspend fun setStreamDisplayMode(mode: StreamDisplayMode): FullscreenDisplay.Result = withContext(Dispatchers.IO) {
+        val ctx = context ?: return@withContext FullscreenDisplay.Result(false, "主机尚未初始化")
+        synchronized(_streamDisplayMode) {
+            if (!StreamDisplayPreferences(ctx).write(mode)) return@withContext FullscreenDisplay.Result(false, "模式保存失败，请重试")
+            _streamDisplayMode.value = mode
+        }
+        if (mode == StreamDisplayMode.DEFAULT) fullscreenOwner = null
+        applyStreamDisplayMode()
+    }
+
+    private suspend fun applyStreamDisplayMode(): FullscreenDisplay.Result = withContext(Dispatchers.IO + NonCancellable) {
+        displayModeMutex.withLock {
+            // A connection can arrive during display restoration or virtual-screen creation.
+            // Wait for that operation instead of dropping the saved startup choice.
+            while (_fullscreenBusy.value || _virtualScreenState.value.busy) kotlinx.coroutines.delay(50)
+            if (!_fullscreenBusy.compareAndSet(false, true)) {
+                displayModeChanges.trySend(Unit)
+                return@withLock FullscreenDisplay.Result(false, "模式已保存，正在等待显示切换")
+            }
+            try {
+                val mode = _streamDisplayMode.value
+                val selected = activeSessions.firstOrNull { it.videoThreadId == fullscreenOwner }
+                    ?: activeSessions.firstOrNull()
+                if (selected == null) {
+                    if (PrivilegedShell.available()) restoreFullscreenDisplay()
+                    val size = displayCaptureSize(1, 1)
+                    engineClient?.configureCanvas(size[0], size[1], false, false)
+                    return@withLock FullscreenDisplay.Result(true, "已保存${if (mode == StreamDisplayMode.DEFAULT) "默认" else "全屏"}模式，下次连接自动应用")
+                }
+                if (_virtualScreenState.value.active && _virtualScreenState.value.mode == "desktop") {
+                    val state = _virtualScreenState.value
+                    val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == selected.videoThreadId }
+                        ?: return@withLock FullscreenDisplay.Result(false, "模式已保存，等待连接准备完成")
+                    val snapshot = org.json.JSONObject(displayClient().snapshot())
+                    val size = if (mode == StreamDisplayMode.FULLSCREEN) FullscreenDisplay.Size(native.requestedWidth, native.requestedHeight)
+                        else if (state.systemDexMirror && state.displayId > 0)
+                            FullscreenDisplay.Size(snapshot.optInt("default_dex_width", state.width), snapshot.optInt("default_dex_height", state.height))
+                        else primaryDefaultSize()
+                    if (mode == StreamDisplayMode.DEFAULT && !restoreFullscreenDisplay())
+                        return@withLock FullscreenDisplay.Result(false, "默认模式已保存，但主屏显示设置尚未恢复")
+                    if (state.displayId == 0 && mode == StreamDisplayMode.FULLSCREEN) {
+                        val fit = FullscreenDisplay.apply(size, fullscreenBackend(rememberOriginal = true)) { activeSessions.isNotEmpty() }
+                        if (!fit.applied) return@withLock fit
+                    }
+                    check(resizeDesktopCapture(size, mode == StreamDisplayMode.FULLSCREEN)) { "独立桌面采集窗口调整失败" }
+                    return@withLock FullscreenDisplay.Result(true, "已按 ${size.width} × ${size.height} 串流独立桌面")
+                }
+                if (mode == StreamDisplayMode.DEFAULT) {
+                    val hasOverride = context?.getSharedPreferences("fullscreen_display_restore", Context.MODE_PRIVATE)?.contains("original") == true
+                    if (hasOverride && (!PrivilegedShell.available() || !restoreFullscreenDisplay()))
+                        return@withLock FullscreenDisplay.Result(false, "默认模式已保存，恢复主机分辨率需要可用的 Shizuku 授权")
+                    appliedFullscreen = null
+                    check(fullscreenBackendSyncCapture()) { "采集窗口尚未就绪" }
+                    return@withLock FullscreenDisplay.Result(true, "已按主机当前分辨率串流")
+                }
+                val native = engineClient?.videoSessions()?.firstOrNull { it.threadId == selected.videoThreadId }
+                    ?: return@withLock FullscreenDisplay.Result(false, "全屏模式已保存，等待连接准备完成")
+                // Host session width/height are mutable encoder dimensions. Only the
+                // native request retains Moonlight's original size after rotation.
+                val request = FullscreenDisplay.Size(native.requestedWidth, native.requestedHeight)
+                val identity = listOf(selected.videoThreadId, selected.startTime, request.width.toLong(), request.height.toLong())
+                fullscreenOwner = selected.videoThreadId
+                if (appliedFullscreen == identity && displayCaptureSize(1, 1).contentEquals(intArrayOf(request.width, request.height)))
+                    return@withLock FullscreenDisplay.Result(true, "全屏模式已应用")
+                if (!PrivilegedShell.available()) return@withLock FullscreenDisplay.Result(false, "全屏模式已保存；调整主机分辨率需要 Shizuku 授权")
+                if (!frameDispatcher.isRunning || virtualDisplay == null)
+                    return@withLock FullscreenDisplay.Result(false, "全屏模式已保存，等待屏幕采集就绪")
+                val result = FullscreenDisplay.apply(request, fullscreenBackend(rememberOriginal = true)) {
+                    _streamDisplayMode.value == StreamDisplayMode.FULLSCREEN &&
+                        activeSessions.any { it.videoThreadId == selected.videoThreadId && it.startTime == selected.startTime }
+                }
+                if (result.applied) appliedFullscreen = identity
+                SunshineLogManager.log("FULLSCREEN", result.message)
+                result
+            } catch (e: Exception) {
+                FullscreenDisplay.Result(false, "模式已保存，显示切换未完成：${e.message}")
+            } finally {
+                _fullscreenBusy.value = false
+                if (activeSessions.isEmpty()) restoreFullscreenIfIdle()
+            }
+        }
+    }
+
+    private fun fullscreenBackendSyncCapture(): Boolean {
+        val latch = CountDownLatch(1)
+        var synced = false
+        captureHandler.post {
+            try {
+                synced = syncCaptureSize()
+            } finally { latch.countDown() }
+        }
+        return latch.await(6, TimeUnit.SECONDS) && synced
+    }
+
+    suspend fun fullscreenSession(sessionId: Long): FullscreenDisplay.Result {
+        val native = engineClient?.videoSessions()?.firstOrNull { it.sessionId == sessionId }
+            ?: return FullscreenDisplay.Result(false, "该连接已结束，请重新选择")
+        fullscreenOwner = native.threadId
+        appliedFullscreen = null
+        return setStreamDisplayMode(StreamDisplayMode.FULLSCREEN)
     }
 
     fun getPerfSnapshot(): PerfResponse {
@@ -1291,6 +1447,7 @@ class SunshineRuntimeManager private constructor() {
                     it.name == "injectInputEvent" && it.parameterTypes.size == 2
                 }
                 isBoundViaShizuku = inputManager != null && injectInputMethod != null
+                if (activeSessions.isNotEmpty()) displayModeChanges.trySend(Unit)
                 SunshineLogManager.log("SHIZUKU", "InputManager bound via Shizuku successfully (wrapped binder)")
                 return
             }
