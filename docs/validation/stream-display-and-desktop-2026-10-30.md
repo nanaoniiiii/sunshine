@@ -66,3 +66,9 @@ Tab S7+ 的实际第二屏 Display 26 验证：应用栏移动到非首项后，
 | Sunshine-v2026.10.30.1-arm64-v8a.apk | 7341302 | `8218f979bfd4791b7347ff55d52f3e52adef63bcd764b12cae4f628fe5236058` |
 | Sunshine-v2026.10.30.1-armeabi-v7a.apk | 6375686 | `c1626dc99c24a257620696b243f3d64a21fc8acd84fc74f9cdcc548bddacde64` |
 | Sunshine-v2026.10.30.1-universal.apk | 10759402 | `d8b572273250f3502d46a09d4a61fa14fff798ed51042e76149d99e6847e5864` |
+
+## 正式发布与收尾
+
+[GitHub v2026.10.30.1](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.30.1) 已公开，功能目标提交为 `f751483a929fb8b7e9e4b7c0f9c09ad603f0efc0`。[官网同步工作流](https://github.com/nanaoniiiii/sunshine/actions/runs/40936780534) 成功，官网更新清单的版本、说明、三个 APK 大小与摘要均与发布内容一致。三个官网 APK 已从电脑完整下载并逐个通过 SHA-256；本次并行下载约 1.66／1.91／2.19 秒，只作为当前电脑网络样本，不推广为所有手机下载速度。
+
+最终 APK 已在两台设备核对安装文件摘要；最后一次接收端画面也确认了清晰图标、纯色背景及浅色背景上的深色标题。收尾时两台设备均为零串流客户端、无活动虚拟屏，S20+ 恢复原 1080×2400 override，平板恢复原 1752×3893 override。S20+ 保留全屏选择，平板保留默认选择；手机原有设备自带桌面配置已恢复。本轮 ADB 临时诊断文件已删除，Moonlight 主程序与配对保留。
