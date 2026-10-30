@@ -33,4 +33,18 @@
 
 公开包为 `v2026.10.31.2` / versionCode `20261046`。arm64 APK 的 SHA-256 为 `7a83e4f2a32614dac0c32053c21f580a7f0c579fd7ad279939d2d895090b7473`。所有公开附件在发布前完整构建和签名检查，保留在忽略目录 `work/releases/v2026.10.31.2/`。
 
-GitHub、官网副本以及应用内实际升级的最终回执在完成公开发布后补充；不把本地构建或首包成功视为已完成同步。
+源码已推送到 `main`，功能与下载修复的发布提交为 [`cb62ef5`](https://github.com/nanaoniiiii/sunshine/commit/cb62ef5abd6648001fe2a09940c5e7543d722ae2)。[GitHub Release v2026.10.31.2](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.31.2) 已公开，三个 APK 和校验文件均完整上传，GitHub 返回的大小与 digest 和本地一致。
+
+[官网同步工作流 41119998136](https://github.com/nanaoniiiii/sunshine/actions/runs/41119998136) 已成功。公开更新清单已变为 v2026.10.31.2，三个官网 APK 分别完整下载，大小和 SHA-256 均一致：
+
+| ABI | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| arm64-v8a | 7,365,678 | `7a83e4f2a32614dac0c32053c21f580a7f0c579fd7ad279939d2d895090b7473` |
+| armeabi-v7a | 6,400,062 | `0e9172865da75be62425a80b0a7dc7e899be7a6dff6323f0fa96d64ebfa7677f` |
+| universal | 10,783,778 | `96c524221bc27fca2b65a5abbc6a6a40464cdb687254dd28f87364df42035b1b` |
+
+本轮沿用既有发布复制 API，没有更改 Worker 域名绑定、DNS 或网页布局。
+
+## 应用内升级验证状态
+
+平板已部署同版本号的私有测试更新器，用于从 v2026.10.31.1 正常检查、下载并安装公开的 v2026.10.31.2，保留原签名、数据和配对。自动审批拒绝通过 ADB 打开更新窗口的操作，仅返回 `blocked by policy`；因此最后的应用内下载与安装改由使用者手动触发，后台只读记录状态。未把下载核心的 shell 测速当成已完成应用内升级，也未绕过这次启动操作的拒绝。

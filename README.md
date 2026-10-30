@@ -63,7 +63,7 @@
 - **便捷配对与应用管理**：PIN 设备配对、实时连接状态、桌面与应用快捷入口，连接后即可开始使用。
 - **流畅串流与自动恢复**：独立引擎进程、连接自愈、音视频队列优化、帧率与码率控制、远程唤醒，保持操作连贯。
 - **自动保存与实时诊断**：修改设置自动保存，连接诊断、运行日志与应用内常见问题帮助您快速上手。
-- **应用内更新与发布同步**：启动与后台定期优先检查官网，失败时尝试 GitHub；按设备 ABI 下载、校验并直接调用系统安装器。公开 GitHub Release 后，Actions 自动把三个 APK 复制到官网；官网访客请求不再查询 GitHub。详见[官网更新说明](docs/official-updates.md)与[最新完整下载实测](docs/validation/official-download-throughput-2026-10-24.md)。
+- **应用内更新与发布同步**：启动与后台定期优先检查官网，失败时尝试 GitHub；按设备 ABI 分段下载，支持慢速换源、暂停与续传，校验后调用系统安装器。公开 GitHub Release 后，Actions 自动把三个 APK 复制到官网；官网访客请求不再查询 GitHub。详见[官网更新说明](docs/official-updates.md)与[下载和同步验证](docs/validation/update-download-2026-10-31.md)。
 - **开放接收端生态**：可使用 Moonlight，也可围绕串流协议开发自己的接收端。
 
 ## 快速开始（以 Moonlight 为例）
