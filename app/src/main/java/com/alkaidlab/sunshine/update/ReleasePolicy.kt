@@ -25,6 +25,13 @@ internal object ReleasePolicy {
     const val FEED = "https://github.com/$REPO/releases.atom"
     const val WEBSITE = "https://nanaoni.tech/updates/latest.json"
 
+    fun downloadSources(release: ReleaseApk): List<DownloadSource> {
+        require(trustedAsset(release.tag, release.name, release.url)) { "下载地址不是本项目的发布文件" }
+        val official = DownloadSource("https://nanaoni.tech/downloads/${release.tag}/${release.name}", "官网")
+        val github = DownloadSource("https://github.com/$REPO/releases/download/${release.tag}/${release.name}", "GitHub")
+        return if (release.url == official.url) listOf(official, github) else listOf(github, official)
+    }
+
     // The public release feed is independent of the unauthenticated REST quota.
     // It still lists releases rather than source commits, including previews.
     fun feedVersions(xml: String, current: String): List<Pair<String, String>> {

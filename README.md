@@ -11,6 +11,8 @@
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
 
+**[v2026.10.31.2：开机即连与更新下载恢复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.31.2)**：设置新增“开机即连”，在已有授权下，开机首次解锁后自动启动服务并准备录屏，无需打开主页；录屏丢失时按串流请求恢复，其他录屏应用使用期间等待。应用内更新改用最多四路分段下载，支持暂停、断点续传、慢速换源及速度显示，保留 APK 大小、摘要、包名、版本和签名校验。开机与录屏切换的实机范围见[验收记录](docs/validation/instant-connect-2026-10-31.md)，下载与发布流程见[官网更新说明](docs/official-updates.md)。
+
 **[v2026.10.30.1：持久显示模式与桌面返回优化](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.30.1)**：首页“串流状态”右侧加入“默认／全屏”，支持连接前预选、串流中切换并跨重启保存。默认按主机尺寸采集和编码；全屏按 Moonlight 原始请求调整显示与采集。实验室增加开机自启和服务恢复选项。Sunshine 桌面返回时保留焦点与滚动位置，复用图标缓存，背景改为图标外边缘主色，去掉晕染。236 项测试通过，S20+ 和 Tab S7+ 完成对应实测。详见[功能与验收范围](docs/validation/stream-display-and-desktop-2026-10-30.md)。
 
 **[v2026.10.24.3：受信任锁屏与桌面退出修复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.24.3)**：修正手机已受信任时仍误报需要解锁、阻止虚拟屏／DeX 启动的问题；通过系统接口收起无需身份验证的锁屏层，使退出 Sunshine 桌面回到手机主页，并保留虚拟屏、全屏与息屏串流。筛选合入音频缓冲、日志、配对接口和依赖清理改动。225 项应用测试通过，S20+ 的三种显示模式与退出恢复完成实测。详见[各 PR 提案、作用与采纳范围](docs/reviews/developer-optimizations-2026-10-24.md)和[实机验收范围](docs/validation/reviewed-optimizations-2026-10-24.md)。

@@ -66,13 +66,17 @@ fun AppUpdateDialog() {
                     LinearProgressIndicator(progress = state.progress / 100f, modifier = Modifier.fillMaxWidth())
                     Text("${state.progress}%")
                 } else LinearProgressIndicator(Modifier.fillMaxWidth())
+                TextButton(onClick = { AppUpdater.cancelDownload() }) { Text("暂停下载，保留断点") }
             }
             state.release?.let { release ->
                 val size = if (release.size > 0) " · ${"%.1f".format(release.size / 1048576.0)} MB" else ""
                 Text("${release.name}$size${if (release.prerelease) " · 预览版" else ""}", style = MaterialTheme.typography.bodySmall)
                 if (release.notes.isNotBlank()) Text(release.notes)
             }
-            if (state.ready) Text("安装会重启 Sunshine，当前串流将断开。安装完成后重新打开应用。", style = MaterialTheme.typography.bodySmall)
+            if (state.ready) {
+                Text("安装会重启 Sunshine，当前串流将断开。已开启“开机即连”时，更新后服务自动恢复。", style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { AppUpdater.download(force = true) }) { Text("重新下载") }
+            }
         } },
         confirmButton = {
             Button(enabled = !state.checking && !state.downloading && !installing, onClick = {
@@ -85,7 +89,7 @@ fun AppUpdateDialog() {
                     state.release != null -> AppUpdater.download()
                     else -> AppUpdater.checkNow()
                 }
-            }) { Text(when { installing -> "正在校验…"; state.ready -> "安装更新"; state.downloading -> "正在下载…"; state.checking -> "正在检查…"; state.release != null -> "下载更新"; else -> "重新检查" }) }
+            }) { Text(when { installing -> "正在校验…"; state.ready -> "安装更新"; state.downloading -> "正在下载…"; state.checking -> "正在检查…"; state.release != null && state.downloadedBytes > 0 -> "继续下载"; state.release != null -> "下载更新"; else -> "重新检查" }) }
         },
         dismissButton = { TextButton(onClick = { AppUpdater.dismiss() }) { Text("关闭") } })
 }

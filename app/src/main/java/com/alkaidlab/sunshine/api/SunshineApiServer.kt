@@ -121,6 +121,10 @@ class SunshineApiServer(
             when {
                 uri == "/api/config" && method == Method.GET -> handleGetConfig()
                 uri == "/api/config" && method == Method.POST -> handleSaveConfig(session)
+                uri == "/api/update-status" && method == Method.GET -> jsonResponse(mapOf(
+                    "installedVersion" to com.alkaidlab.sunshine.BuildConfig.VERSION_NAME,
+                    "installedCode" to com.alkaidlab.sunshine.BuildConfig.VERSION_CODE,
+                    "state" to com.alkaidlab.sunshine.update.AppUpdater.state.value))
                 uri == "/api/service-startup" && method == Method.GET -> jsonResponse(mapOf(
                     "settings" to com.alkaidlab.sunshine.service.ServiceStartupSettings.read(context),
                     "captureAuthorized" to com.alkaidlab.sunshine.service.BootCaptureBootstrap.authorized(context),

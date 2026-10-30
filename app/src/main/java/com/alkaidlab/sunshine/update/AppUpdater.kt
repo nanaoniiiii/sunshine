@@ -20,6 +20,7 @@ import com.google.gson.Gson
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
@@ -30,6 +31,7 @@ import java.util.concurrent.TimeUnit
 
 internal data class UpdateState(val release: ReleaseApk? = null, val checking: Boolean = false,
     val downloading: Boolean = false, val progress: Int = -1, val ready: Boolean = false,
+    val downloadedBytes: Long = 0,
     val message: String = "自动检查官网发布版本，也可手动检查。")
 
 /** One owner in the UI process; no networking or download polling in the stream engine. */
@@ -42,9 +44,13 @@ internal object AppUpdater {
     private lateinit var app: Context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
+    private val transferLock = Mutex()
     private var downloadMonitor: Job? = null
-    private val client = OkHttpClient.Builder().connectTimeout(12, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS).build()
+    private var directJob: Job? = null
+    private var directDownloader: UpdatePackageDownloader? = null
+    @Volatile private var downloadEpoch = 0L
+    private val client = OkHttpClient.Builder().connectTimeout(4, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(12, TimeUnit.SECONDS).build()
     private val gson = Gson()
     private val mutableState = MutableStateFlow(UpdateState())
     val state = mutableState.asStateFlow()
@@ -60,11 +66,12 @@ internal object AppUpdater {
         val saved = runCatching { gson.fromJson(prefs.getString("release", null), ReleaseApk::class.java) }.getOrNull()
         if (saved != null && ReleasePolicy.trustedAsset(saved.tag, saved.name, saved.url) &&
             ReleaseVersion.parse(saved.tag)!! > (ReleaseVersion.parse(BuildConfig.VERSION_NAME) ?: return)) {
-            mutableState.value = UpdateState(release = saved, message = "发现新版本 ${saved.tag}")
+            mutableState.value = UpdateState(release = saved, downloading = prefs.getBoolean("direct_pending", false),
+                message = "发现新版本 ${saved.tag}")
         } else {
             val oldId = prefs.getLong("download_id", -1)
             if (oldId != -1L) runCatching { downloads.remove(oldId) }
-            prefs.edit().remove("release").remove("download_id").apply()
+            prefs.edit().remove("release").remove("download_id").remove("direct_pending").remove("direct_ready").apply()
             notifications.cancel(NOTIFICATION)
         }
         val scheduler = app.getSystemService(JobScheduler::class.java)
@@ -72,8 +79,19 @@ internal object AppUpdater {
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY).setPeriodic(INTERVAL).setPersisted(true).build()
         if (scheduler.getPendingJob(JOB) == null) scheduler.schedule(job)
         scope.launch {
-            refreshDownload()
-            monitorDownload()
+            if (mutableState.value.release != null && prefs.getString("download_backend", null) == "direct") {
+                if (prefs.getBoolean("direct_pending", false)) {
+                    try { UpdateDownloadService.start(app) }
+                    catch (_: RuntimeException) { fail("下载已暂停，打开更新窗口后可继续下载") }
+                } else if (prefs.getBoolean("direct_ready", false)) {
+                    try {
+                        lock.withLock {
+                            verifyApk(checkNotNull(mutableState.value.release))
+                            mutableState.value = mutableState.value.copy(ready = true, progress = 100, message = "下载完成，安装包校验通过")
+                        }
+                    } catch (_: Exception) { prefs.edit().remove("direct_ready").apply() }
+                }
+            } else { refreshDownload(); monitorDownload() }
             check(false)
         }
     }
@@ -101,31 +119,33 @@ internal object AppUpdater {
     }
 
     private fun fetchLatest(): ReleaseApk? {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(25)
         try {
-            return ReleasePolicy.website(readPublicPage(ReleasePolicy.WEBSITE), BuildConfig.VERSION_NAME, Build.SUPPORTED_ABIS.toList())
+            return ReleasePolicy.website(readPublicPage(ReleasePolicy.WEBSITE, deadline), BuildConfig.VERSION_NAME, Build.SUPPORTED_ABIS.toList())
         } catch (error: Exception) {
             com.alkaidlab.sunshine.service.SunshineLogManager.log("UPDATE", "Website update source unavailable: ${error.javaClass.simpleName}; trying GitHub")
         }
         val request = Request.Builder().url(ReleasePolicy.API).header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28").header("User-Agent", "Sunshine-Android/${BuildConfig.VERSION_NAME}").build()
         try {
-            client.newCall(request).execute().use { response ->
+            client.newCall(request).apply { timeout().deadlineNanoTime(deadline) }.execute().use { response ->
                 if (response.isSuccessful) return ReleasePolicy.latest(response.body?.string() ?: error("GitHub 返回内容为空"), BuildConfig.VERSION_NAME, Build.SUPPORTED_ABIS.toList())
                 check(response.code == 403 || response.code == 429) { "GitHub 返回 HTTP ${response.code}" }
             }
         } catch (e: Exception) {
             com.alkaidlab.sunshine.service.SunshineLogManager.log("UPDATE", "Release API unavailable: ${e.javaClass.simpleName}; trying public release feed")
         }
-        val candidates = ReleasePolicy.feedVersions(readPublicPage(ReleasePolicy.FEED), BuildConfig.VERSION_NAME)
+        val candidates = ReleasePolicy.feedVersions(readPublicPage(ReleasePolicy.FEED, deadline), BuildConfig.VERSION_NAME)
         for ((tag, notes) in candidates.take(5)) {
-            val html = readPublicPage("https://github.com/${ReleasePolicy.REPO}/releases/expanded_assets/$tag")
+            val html = readPublicPage("https://github.com/${ReleasePolicy.REPO}/releases/expanded_assets/$tag", deadline)
             ReleasePolicy.expandedAsset(tag, html, Build.SUPPORTED_ABIS.toList(), notes)?.let { return it }
         }
         return null
     }
 
-    private fun readPublicPage(url: String): String = client.newCall(Request.Builder().url(url)
-        .header("User-Agent", "Sunshine-Android/${BuildConfig.VERSION_NAME}").build()).execute().use { response ->
+    private fun readPublicPage(url: String, deadline: Long): String = client.newCall(Request.Builder().url(url)
+        .header("User-Agent", "Sunshine-Android/${BuildConfig.VERSION_NAME}").build())
+        .apply { timeout().deadlineNanoTime(deadline) }.execute().use { response ->
         check(response.isSuccessful) { "更新服务返回 HTTP ${response.code}" }
         val body = response.body ?: error("更新服务内容为空")
         check(body.contentLength() <= 1048576) { "发布列表过大" }
@@ -140,26 +160,97 @@ internal object AppUpdater {
         return output.toByteArray()
     }
 
-    fun download() { scope.launch { lock.withLock {
+    fun download(force: Boolean = false) { scope.launch { lock.withLock {
         val release = mutableState.value.release ?: return@withLock
         if (mutableState.value.downloading) return@withLock
         try {
             check(ReleasePolicy.trustedAsset(release.tag, release.name, release.url)) { "下载地址不是本项目的发布文件" }
             val oldId = prefs.getLong("download_id", -1)
             if (oldId != -1L) downloads.remove(oldId)
+            downloadMonitor?.cancel(); downloadMonitor = null
             val file = apkFile(release)
+            if (!force && file.isFile && runCatching { verifyApk(release) }.isSuccess) {
+                prefs.edit().putString("download_backend", "direct").putBoolean("direct_pending", false).putBoolean("direct_ready", true).apply()
+                mutableState.value = mutableState.value.copy(downloading = false, ready = true, progress = 100,
+                    message = "下载完成，安装包校验通过")
+                return@withLock
+            }
             if (file.exists()) check(file.delete()) { "无法替换上次下载文件" }
-            val request = DownloadManager.Request(Uri.parse(release.url))
-                .setTitle("Sunshine ${release.tag}").setDescription("下载完成后在 Sunshine 中安装")
-                .setMimeType("application/vnd.android.package-archive")
-                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-                .setAllowedOverMetered(true).setAllowedOverRoaming(false)
-                .setDestinationUri(Uri.fromFile(file))
-            val id = downloads.enqueue(request)
-            prefs.edit().putLong("download_id", id).apply()
-            mutableState.value = mutableState.value.copy(downloading = true, ready = false, progress = 0, message = "正在下载 ${release.tag}…")
-        } catch (e: Exception) { fail("无法开始下载：${e.message}") }
-    }; monitorDownload() } }
+            prefs.edit().remove("download_id").putString("download_backend", "direct")
+                .putBoolean("direct_pending", true).putBoolean("direct_ready", false).commit()
+            mutableState.value = mutableState.value.copy(downloading = true, ready = false,
+                progress = if (mutableState.value.ready) 0 else mutableState.value.progress.coerceAtLeast(0),
+                message = "正在连接下载源，将自动续传…")
+            UpdateDownloadService.start(app)
+        } catch (e: Exception) {
+            prefs.edit().putBoolean("direct_pending", false).apply()
+            fail("无法开始下载：${e.message}")
+        }
+    } } }
+
+    @Synchronized fun runManagedDownload() {
+        if (directJob?.isActive == true || !mutableState.value.downloading) return
+        val release = mutableState.value.release ?: return
+        val epoch = ++downloadEpoch
+        val downloader = UpdatePackageDownloader()
+        directDownloader = downloader
+        directJob = scope.launch {
+            try {
+                val sources = ReleasePolicy.downloadSources(release)
+                transferLock.withLock {
+                    if (epoch != downloadEpoch) return@withLock
+                    val file = apkFile(release)
+                    if (!file.isFile || runCatching { verifyApk(release) }.isFailure) {
+                        downloader.download(DownloadSpec(sources, release.size, release.sha256), file) { progress ->
+                            mutableState.update { current ->
+                                if (epoch != downloadEpoch || !current.downloading) current
+                                else {
+                                    val percentage = if (progress.total > 0) (progress.bytes * 100 / progress.total).toInt().coerceIn(0, 100) else -1
+                                    val amount = "%.1f".format(progress.bytes / 1048576.0) + if (progress.total > 0) "/${"%.1f".format(progress.total / 1048576.0)} MB" else " MB"
+                                    val speed = if (progress.bytesPerSecond >= 1048576) "%.1f MB/s".format(progress.bytesPerSecond / 1048576.0)
+                                        else "%.0f KB/s".format(progress.bytesPerSecond / 1024.0)
+                                    current.copy(progress = percentage, downloadedBytes = progress.bytes,
+                                        message = "$amount · $speed · ${progress.source}")
+                                }
+                            }
+                        }
+                    }
+                }
+                lock.withLock {
+                    if (epoch != downloadEpoch) return@withLock
+                    verifyApk(release)
+                    prefs.edit().putBoolean("direct_pending", false).putBoolean("direct_ready", true).commit()
+                    mutableState.value = mutableState.value.copy(downloading = false, progress = 100, ready = true, message = "下载完成，安装包校验通过")
+                    notifyAvailable(release, true)
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (epoch == downloadEpoch) lock.withLock {
+                    prefs.edit().putBoolean("direct_pending", false).apply()
+                    fail("${error.message ?: "下载暂时中断"}；已保存断点，可继续下载")
+                }
+            } finally {
+                if (epoch == downloadEpoch) { directDownloader = null; directJob = null }
+            }
+        }
+    }
+
+    fun cancelDownload() { scope.launch { lock.withLock {
+        if (!mutableState.value.downloading) return@withLock
+        suspendManagedDownload()
+        val oldId = prefs.getLong("download_id", -1)
+        if (oldId != -1L) runCatching { downloads.remove(oldId) }
+        prefs.edit().remove("download_id").putBoolean("direct_pending", false).apply()
+        mutableState.value = mutableState.value.copy(downloading = false, message = "下载已暂停，已保留断点")
+    } } }
+
+    @Synchronized fun suspendManagedDownload() {
+        ++downloadEpoch
+        directDownloader?.cancel(); directDownloader = null
+        directJob?.cancel(); directJob = null
+        if (mutableState.value.downloading)
+            mutableState.value = mutableState.value.copy(downloading = false, message = "下载已暂停，可继续下载")
+    }
 
     @Synchronized private fun monitorDownload() {
         if (downloadMonitor?.isActive == true || !mutableState.value.downloading) return
@@ -169,6 +260,7 @@ internal object AppUpdater {
     }
 
     suspend fun refreshDownload(completedId: Long? = null) = lock.withLock {
+        if (prefs.getString("download_backend", null) == "direct") return@withLock
         val id = prefs.getLong("download_id", -1)
         if (id == -1L || (completedId != null && completedId != id)) return@withLock
         val release = mutableState.value.release ?: return@withLock

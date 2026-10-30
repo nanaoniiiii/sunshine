@@ -89,6 +89,9 @@
             android:foregroundServiceType="dataSync|mediaProjection"
             android:exported="false" />
 
+        <service android:name=".update.UpdateDownloadService" android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <service android:name=".update.UpdateCheckJobService" android:exported="true"
             android:permission="android.permission.BIND_JOB_SERVICE" />
         <service android:name=".controller.ControllerNavigationService" android:exported="true"
