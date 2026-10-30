@@ -193,9 +193,11 @@ class SunshineRuntimeManager private constructor() {
         val ctx = context ?: return "{\"apps\":[]}"
         com.google.gson.Gson().toJson(AppCatalog.read(java.io.File(ctx.filesDir, "apps.json")))
     } catch (_: Exception) { "{\"apps\":[]}" } }
+    @Volatile var captureRecovery: BootCaptureBootstrap? = null
+
     fun prepareApp(appId: Int): Boolean { return try {
         val ctx = context ?: return false
-        if (mediaProjection == null) {
+        if (mediaProjection == null && captureRecovery?.ensureForStream() != true) {
             SunshineLogManager.log("CAPTURE_REQUIRED", "Launch rejected: open Sunshine and grant fresh screen capture consent")
             return false
         }
@@ -518,6 +520,10 @@ class SunshineRuntimeManager private constructor() {
         this.mediaProjection = projection
         engineClient?.setCaptureAuthorized(projection != null)
         SunshineLogManager.log("MEDIA_PROJ", if (projection != null) "MediaProjection set" else "MediaProjection cleared")
+        if (projection != null && activeSessions.isNotEmpty()) captureHandler.post {
+            activeSessions.toList().forEach { attachCurrentStreamSurface(it.videoThreadId, it.startTime) }
+            activeSessions.firstOrNull { it.audioEnabled }?.let { startAudioCapture() }
+        }
     }
 
     fun getMediaProjection(): MediaProjection? = mediaProjection
@@ -928,8 +934,11 @@ class SunshineRuntimeManager private constructor() {
     fun onProjectionStopped(projection: MediaProjection) {
         Handler(Looper.getMainLooper()).post {
             if (mediaProjection !== projection) return@post
-            releaseCapture()
+            // The framework already stopped this token. Only release resources
+            // owned by the expired session instead of stopping the token again.
+            releaseCapture(stopProjection = false)
             SunshineLogManager.log("MEDIA_PROJ", "Capture revoked; waiting for fresh user consent")
+            captureRecovery?.onCaptureLost()
         }
     }
 
@@ -1384,7 +1393,7 @@ class SunshineRuntimeManager private constructor() {
     }
 
     @Synchronized
-    private fun releaseCapture() {
+    private fun releaseCapture(stopProjection: Boolean = true) {
         try { virtualScreenClient?.release() } catch (_: Exception) {}
         virtualScreenClient = null
         _virtualScreenState.value = VirtualScreenState()
@@ -1400,7 +1409,8 @@ class SunshineRuntimeManager private constructor() {
         isAudioCaptureInitialized = false
         val projection = mediaProjection
         mediaProjection = null
-        try { projection?.stop() } catch (_: Exception) {}
+        engineClient?.setCaptureAuthorized(false)
+        if (stopProjection) try { projection?.stop() } catch (_: Exception) {}
     }
 
     @Synchronized

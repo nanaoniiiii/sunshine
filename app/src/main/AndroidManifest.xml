@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <queries>
@@ -55,6 +56,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- A separate, transparent task obtains a fresh grant without opening HOME.
+             It runs only on Android 10-13 after an explicit persistent AppOps grant. -->
+        <activity android:name=".ui.BootCaptureActivity" android:exported="false"
+            android:excludeFromRecents="true" android:taskAffinity="com.alkaidlab.sunshine.capturebootstrap"
+            android:theme="@style/Theme.SunshineCaptureBootstrap" />
 
         <activity android:name=".ui.StreamTestActivity" android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden" />

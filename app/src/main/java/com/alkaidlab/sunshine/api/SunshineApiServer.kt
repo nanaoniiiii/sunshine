@@ -121,6 +121,13 @@ class SunshineApiServer(
             when {
                 uri == "/api/config" && method == Method.GET -> handleGetConfig()
                 uri == "/api/config" && method == Method.POST -> handleSaveConfig(session)
+                uri == "/api/service-startup" && method == Method.GET -> jsonResponse(mapOf(
+                    "settings" to com.alkaidlab.sunshine.service.ServiceStartupSettings.read(context),
+                    "captureAuthorized" to com.alkaidlab.sunshine.service.BootCaptureBootstrap.authorized(context),
+                    "backgroundLaunchAllowed" to android.provider.Settings.canDrawOverlays(context),
+                    "captureReady" to (SunshineRuntimeManager.getInstance().getMediaProjection() != null),
+                    "engineReady" to SunshineRuntimeManager.getInstance().engineReady.value,
+                    "captureStatus" to com.alkaidlab.sunshine.service.BootCaptureBootstrap.status.value))
                 uri == "/api/stream-display-mode" && method == Method.GET ->
                     jsonResponse(mapOf("mode" to SunshineRuntimeManager.getInstance().streamDisplayMode.value.value))
                 uri == "/api/stream-display-mode" && method == Method.POST -> {

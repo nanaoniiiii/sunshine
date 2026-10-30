@@ -53,6 +53,9 @@ class SunshineEngineClient(private val context: Context) {
             private fun current() = enabled && generation == epoch
             override fun streamStarted(threadId: Long, width: Int, height: Int, fps: Int,
                                        packetDuration: Int, surface: Surface, audio: Boolean, appId: Int, clientId: String, clientAddress: String): IntArray {
+                // Moonlight /resume can bypass prepareApp. Recover before taking
+                // the runtime monitor so the main-thread consent result can run.
+                if (current() && runtime.getMediaProjection() == null) runtime.captureRecovery?.ensureForStream()
                 synchronized(runtime) {
                     if (!current()) { surface.release(); return intArrayOf(width, height) }
                     runtime.onStreamStarted(width, height, fps, packetDuration, surface, audio, threadId, appId, clientId, clientAddress)

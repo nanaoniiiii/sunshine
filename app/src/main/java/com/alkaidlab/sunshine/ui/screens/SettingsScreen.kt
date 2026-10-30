@@ -35,6 +35,10 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
     val draft by viewModel.settingsDraft.collectAsState()
     val saving by viewModel.configSaving.collectAsState()
     val saveError by viewModel.settingsSaveError.collectAsState()
+    val startup by viewModel.serviceStartup.collectAsState()
+    val startupSaving by viewModel.instantConnectSaving.collectAsState()
+    val startupError by viewModel.instantConnectError.collectAsState()
+    val captureStatus by viewModel.captureStartupStatus.collectAsState()
     var advanced by rememberSaveable { mutableStateOf(false) }
     var restart by remember { mutableStateOf(false) }
     val current = draft
@@ -60,6 +64,22 @@ fun SettingsScreen(viewModel: SunshineViewModel, onOpenLogs: () -> Unit = {}, on
         LazyColumn(Modifier.weight(1f), contentPadding = PagePadding,
             verticalArrangement = Arrangement.spacedBy(20.dp)) {
             item { PageHeader("设置", "调整画面、编码器与连接策略") }
+            item { SectionCard("服务与启动", Icons.Default.PowerSettingsNew) {
+                SettingSwitch("开机即连", "开机首次解锁后自动运行服务并准备录屏，无需打开 Sunshine 主页", startup.instantConnect, !startupSaving) {
+                    viewModel.setInstantConnect(it)
+                }
+                if (startupSaving) Text("正在保存并准备后台授权…", color = TextSecondary)
+                if (startupError != null) Text(startupError.orEmpty(), color = AccentRed)
+                if (startup.instantConnect) {
+                    Text(captureStatus, color = PrimaryCyan, style = MaterialTheme.typography.bodyMedium)
+                    Text("录屏失效时按串流请求恢复；其他投屏工具使用期间等待，结束后重新准备。", color = TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+                SettingSwitch("服务常驻与异常恢复", "保留运行通知，服务被系统回收后自动重建；主动停止服务时不自行重开",
+                    startup.keepAlive, !startupSaving && !startup.instantConnect) { viewModel.setServiceStartup(keepAlive = it) }
+                Text("开机即连包含服务常驻。Android 10–13 首次启用需通过 Shizuku 完成一次后台录屏授权；开机录屏无需再次打开管理器。远程操作仍需 Shizuku 服务可用。",
+                    color = TextSecondary, style = MaterialTheme.typography.bodyMedium)
+            } }
             if (saveError != null) item { SectionCard("设置未保存", Icons.Default.ErrorOutline) {
                 Text(saveError.orEmpty(), color = AccentRed, style = MaterialTheme.typography.bodyMedium)
                 TextButton(onClick = { viewModel.retrySettingsSave() }, enabled = !saving) { Text("重试") }

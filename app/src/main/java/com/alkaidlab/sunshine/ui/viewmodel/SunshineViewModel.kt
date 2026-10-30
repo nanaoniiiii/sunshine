@@ -151,10 +151,39 @@ class SunshineViewModel(application: Application) : AndroidViewModel(application
     val streamDisplayMode = runtime.streamDisplayMode
     private val _serviceStartup = MutableStateFlow(com.alkaidlab.sunshine.service.ServiceStartupSettings.read(application))
     val serviceStartup = _serviceStartup.asStateFlow()
+    private val _instantConnectSaving = MutableStateFlow(false)
+    val instantConnectSaving = _instantConnectSaving.asStateFlow()
+    private val _instantConnectError = MutableStateFlow<String?>(null)
+    val instantConnectError = _instantConnectError.asStateFlow()
+    val captureStartupStatus = com.alkaidlab.sunshine.service.BootCaptureBootstrap.status
+
+    fun setInstantConnect(enabled: Boolean) {
+        if (_instantConnectSaving.value) return
+        _instantConnectSaving.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _instantConnectError.value = null
+                if (enabled) com.alkaidlab.sunshine.service.BootCaptureBootstrap.configure(getApplication())
+                val previous = _serviceStartup.value
+                val next = previous.copy(startOnBoot = enabled, keepAlive = if (enabled) true else previous.keepAlive,
+                    instantConnect = enabled)
+                check(next.save(getApplication())) { "启动设置保存失败，请重试" }
+                _serviceStartup.value = next
+                if (enabled || SunshineService.isRunning)
+                    SunshineService.start(getApplication(), automaticCapture = enabled)
+            } catch (error: Exception) {
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                _instantConnectError.value = error.message ?: "设置失败，请重试"
+            } finally { _instantConnectSaving.value = false }
+        }
+    }
+
     fun setServiceStartup(startOnBoot: Boolean? = null, keepAlive: Boolean? = null) {
+        if (_instantConnectSaving.value) return
         viewModelScope.launch(Dispatchers.IO) {
             val previous = _serviceStartup.value
-            val next = previous.copy(startOnBoot = startOnBoot ?: previous.startOnBoot, keepAlive = keepAlive ?: previous.keepAlive)
+            val updated = previous.copy(startOnBoot = startOnBoot ?: previous.startOnBoot, keepAlive = keepAlive ?: previous.keepAlive)
+            val next = if (!updated.startOnBoot || !updated.keepAlive) updated.copy(instantConnect = false) else updated
             if (next.save(getApplication())) {
                 _serviceStartup.value = next
                 // Deliver a fresh start command so Android records the new sticky

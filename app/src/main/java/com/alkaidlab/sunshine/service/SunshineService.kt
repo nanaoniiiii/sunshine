@@ -12,6 +12,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.alkaidlab.sunshine.R
 import com.alkaidlab.sunshine.api.SunshineApiServer
@@ -22,6 +23,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.combine
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceInfo
@@ -37,6 +39,7 @@ class SunshineService : Service() {
         const val ACTION_STOP = "com.alkaidlab.sunshine.ACTION_STOP"
         const val ACTION_EXIT_DESKTOP = "com.alkaidlab.sunshine.ACTION_EXIT_DESKTOP"
         const val EXTRA_RESULT_DATA = "extra_result_data"
+        private const val EXTRA_AUTOMATIC_CAPTURE = "automatic_capture"
 
         private const val CHANNEL_ID = "sunshine_service_channel"
         private const val NOTIFICATION_ID = 1001
@@ -126,10 +129,11 @@ class SunshineService : Service() {
             return false
         }
 
-        fun start(context: Context, resultData: Intent? = null) {
+        fun start(context: Context, resultData: Intent? = null, automaticCapture: Boolean = false) {
             val intent = Intent(context, SunshineService::class.java).apply {
                 action = ACTION_START
                 if (resultData != null) putExtra(EXTRA_RESULT_DATA, resultData)
+                putExtra(EXTRA_AUTOMATIC_CAPTURE, automaticCapture)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -146,15 +150,24 @@ class SunshineService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var apiServer: SunshineApiServer? = null
-    private var jmDnsList = mutableListOf<JmDNS>()
+    private val jmDnsList = mutableListOf<JmDNS>()
     private val streamingPower by lazy { StreamingPowerManager(this) }
     private val engineClient by lazy { SunshineEngineClient(this) }
+    private val bootCapture by lazy { BootCaptureBootstrap(this, serviceScope) }
+    private val startupWake by lazy {
+        getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sunshine:CaptureStartup").apply {
+            setReferenceCounted(false)
+        }
+    }
+
+    private fun releaseStartupWake() { if (startupWake.isHeld) startupWake.release() }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         SunshineRuntimeManager.getInstance().initialize(this)
         SunshineRuntimeManager.getInstance().engineClient = engineClient
+        SunshineRuntimeManager.getInstance().captureRecovery = bootCapture
         val runtime = SunshineRuntimeManager.getInstance()
         serviceScope.launch(Dispatchers.Main.immediate) {
             combine(runtime.isStreaming, runtime.streamingSettings) { active, settings -> active to settings.wifiLowLatency }
@@ -174,6 +187,9 @@ class SunshineService : Service() {
             }
             ACTION_START -> {
                 val resultData = intent?.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                val automatic = resultData == null && (intent == null || intent.getBooleanExtra(EXTRA_AUTOMATIC_CAPTURE, false))
+                if (automatic && ServiceStartupSettings.read(this).instantConnect &&
+                    SunshineRuntimeManager.getInstance().getMediaProjection() == null) startupWake.acquire(90000)
                 // Android 14 requires consent before a mediaProjection foreground service.
                 val foregroundType = if (resultData != null || SunshineRuntimeManager.getInstance().getMediaProjection() != null) {
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
@@ -203,6 +219,9 @@ class SunshineService : Service() {
                 } else {
                     val net = refreshNetworkAddresses()
                     updateNotification(buildStatusString(net))
+                }
+                if (automatic) {
+                    bootCapture.prepare(::releaseStartupWake)
                 }
             }
         }
@@ -239,12 +258,11 @@ class SunshineService : Service() {
                 // 3. Configure Native Sunshine Engine from sunshine.conf
                 SunshineRuntimeManager.getInstance().reloadConfig(this@SunshineService)
                 val serverName = "Sunshine-${Build.MANUFACTURER}-${Build.MODEL}"
-                // 4. Register mDNS advertisement for Moonlight discovery
-                registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6)
-
-                // 5. Bind the disposable native engine; the foreground host remains alive.
+                // Discovery may wait on multicast for seconds at boot. It must
+                // never gate engine startup or capture readiness.
                 ensureActive()
                 engineClient.start(serverName, certFile.absolutePath, keyFile.absolutePath, stateFile.absolutePath)
+                serviceScope.launch { registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6) }
 
             } catch (e: Exception) {
                 SunshineLogManager.log("INIT_ERR", "Error initializing SunshineService: ${e.message}")
@@ -263,7 +281,7 @@ class SunshineService : Service() {
                 "Foundation-Sunshine on Android"
             )
             jmdns.registerService(serviceInfo)
-            jmDnsList.add(jmdns)
+            rememberMdns(jmdns)
             SunshineLogManager.log("MDNS", "Registered mDNS service _nvstream._tcp.local. on IPv4 $ip4:47989 as $serverName")
         } catch (e: Exception) {
             SunshineLogManager.log("MDNS_ERR", "IPv4 mDNS registration failed on $ip4: ${e.message}")
@@ -280,7 +298,7 @@ class SunshineService : Service() {
                     "Foundation-Sunshine on Android (VPN)"
                 )
                 jmdnsVpn.registerService(serviceInfoVpn)
-                jmDnsList.add(jmdnsVpn)
+                rememberMdns(jmdnsVpn)
                 SunshineLogManager.log("MDNS", "Registered mDNS service on VPN $vpnIp:47989 as $serverName-VPN")
             } catch (e: Exception) {
                 SunshineLogManager.log("MDNS_INFO", "VPN mDNS note: ${e.message}")
@@ -298,11 +316,17 @@ class SunshineService : Service() {
                     "Foundation-Sunshine on Android (IPv6)"
                 )
                 jmdns6.registerService(serviceInfo6)
-                jmDnsList.add(jmdns6)
+                rememberMdns(jmdns6)
                 SunshineLogManager.log("MDNS", "Registered mDNS service on IPv6 $ip6:47989 as $serverName-IPv6")
             } catch (e: Exception) {
                 SunshineLogManager.log("MDNS_INFO", "IPv6 mDNS note: ${e.message}")
             }
+        }
+    }
+
+    private fun rememberMdns(instance: JmDNS) {
+        synchronized(jmDnsList) {
+            if (serviceScope.isActive) jmDnsList.add(instance) else instance.close()
         }
     }
 
@@ -359,14 +383,19 @@ class SunshineService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        serviceScope.cancel()
+        releaseStartupWake()
         com.alkaidlab.sunshine.controller.ControllerAdapter.stop()
         engineClient.stop()
         SunshineRuntimeManager.getInstance().engineClient = null
+        SunshineRuntimeManager.getInstance().captureRecovery = null
         SunshineRuntimeManager.getInstance().releaseAll()
 
         try {
-            jmDnsList.forEach { it.close() }
-            jmDnsList.clear()
+            synchronized(jmDnsList) {
+                jmDnsList.forEach { it.close() }
+                jmDnsList.clear()
+            }
         } catch (_: Exception) {}
 
         try {

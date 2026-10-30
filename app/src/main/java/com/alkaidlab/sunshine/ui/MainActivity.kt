@@ -183,7 +183,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestMediaProjection() {
-        if (projectionRequestPending) return
+        if (projectionRequestPending || com.alkaidlab.sunshine.service.BootCaptureBootstrap.pending) return
         projectionRequestPending = true
         lifecycleScope.launch {
             try {
@@ -193,6 +193,14 @@ class MainActivity : ComponentActivity() {
                 withTimeout(12000) { com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().engineReady.first { it } }
                 if (com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().getMediaProjection() != null) {
                     projectionRequestPending = false
+                    return@launch
+                }
+                if (com.alkaidlab.sunshine.service.ServiceStartupSettings.read(this@MainActivity).instantConnect) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.alkaidlab.sunshine.service.SunshineRuntimeManager.getInstance().captureRecovery?.ensureForStream()
+                    }
+                    projectionRequestPending = false
+                    viewModel.checkSystemPermissions()
                     return@launch
                 }
                 val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
