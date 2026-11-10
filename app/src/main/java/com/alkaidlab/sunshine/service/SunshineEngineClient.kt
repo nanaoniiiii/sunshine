@@ -182,7 +182,7 @@ class SunshineEngineClient(private val context: Context) {
             scope.launch {
                 try {
                     if (remote.restartIfIdle(revision)) {
-                        SunshineLogManager.log("RECOVERY", "Restarting idle native engine; host and capture stay alive")
+                        SunshineLogManager.log("RECOVERY", "Restarting idle native engine; host stays alive, capture recovery remains available")
                     }
                 } catch (_: RemoteException) {
                     // Binding death handles reinitialization after the old process releases its ports.

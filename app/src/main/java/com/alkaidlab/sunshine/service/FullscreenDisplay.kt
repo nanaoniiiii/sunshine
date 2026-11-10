@@ -47,12 +47,16 @@ object FullscreenDisplay {
             else -> null
         }
     }
-    fun restore(before: Snapshot, backend: Backend): Boolean = try {
-        val size = backend.setOverride(before.override)
-        val fixed = backend.setFixedRotation(before.fixedRotation)
-        val rotation = backend.setRotation(before.userRotation, before.autoRotate)
-        size && fixed && rotation && backend.syncCapture()
-    } catch (_: Exception) { false }
+    fun restore(before: Snapshot, backend: Backend): Boolean {
+        // Restoration is best effort across independent system settings. One
+        // rejected write must not strand rotation or leave capture on old pixels.
+        fun attempt(write: () -> Boolean): Boolean = try { write() } catch (_: Exception) { false }
+        val size = attempt { backend.setOverride(before.override) }
+        val fixed = attempt { backend.setFixedRotation(before.fixedRotation) }
+        val rotation = attempt { backend.setRotation(before.userRotation, before.autoRotate) }
+        val capture = attempt { backend.syncCapture() }
+        return size && fixed && rotation && capture
+    }
 
     /** Roll back even a shell failure: an OEM may change the display before reporting failure. */
     fun apply(request: Size, backend: Backend, isCurrent: () -> Boolean): Result {

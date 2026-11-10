@@ -4,6 +4,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FullscreenDisplayTest {
+    @Test fun failedSizeRestoreStillRestoresRotationPolicyAndCapture() {
+        val device = Display().apply { fixedRotation = true; angle = 1 }
+        var syncs = 0
+        val faulty = object : FullscreenDisplay.Backend by device {
+            override fun setOverride(size: FullscreenDisplay.Size?): Boolean = error("Display command failed")
+            override fun syncCapture(): Boolean { syncs++; return true }
+        }
+        assertFalse(FullscreenDisplay.restore(FullscreenDisplay.Snapshot(null, 0, autoRotate = true), faulty))
+        assertFalse(device.fixedRotation)
+        assertEquals(0 to true, device.rotations.last())
+        assertEquals(1, syncs)
+    }
+    @Test fun rejectedPolicyStillResynchronizesTheActualCapture() {
+        val device = Display()
+        var syncs = 0
+        val faulty = object : FullscreenDisplay.Backend by device {
+            override fun setFixedRotation(enabled: Boolean) = false
+            override fun syncCapture(): Boolean { syncs++; return true }
+        }
+        assertFalse(FullscreenDisplay.restore(FullscreenDisplay.Snapshot(null, 0), faulty))
+        assertEquals(1, syncs)
+        assertEquals(0 to false, device.rotations.last())
+    }
     @Test fun recognizeAndroid13RotationCommandsFromHelp() {
         val help = "  user-rotation [-d DISPLAY_ID] [free|lock] [rotation]\n" +
             "  fixed-to-user-rotation [-d DISPLAY_ID] [enabled|disabled|default]\n"

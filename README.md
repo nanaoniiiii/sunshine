@@ -11,6 +11,8 @@
 
 作者：[七鬼 · nanaoniiiii](https://github.com/nanaoniiiii)。
 
+**[v2026.11.11.1：显示恢复与触控缓冲优化](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.11.11.1)**：显示恢复逐项执行，避免一项失败跳过旋转恢复或采集窗口同步；触控移动复用指针缓冲，减少 Java 对象分配。249 项非音频单元测试通过，S20+ 完成升级、模式保存和 Android 事件构造检查。音频改动单独保存在待验证分支，未包含在此版本。详细结果与未完成的实机项目见[验收记录](docs/validation/display-input-optimization-2026-11-11.md)。
+
 **[v2026.10.31.2：开机即连与更新下载恢复](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.31.2)**：设置新增“开机即连”，在已有授权下，开机首次解锁后自动启动服务并准备录屏，无需打开主页；录屏丢失时按串流请求恢复，其他录屏应用使用期间等待。应用内更新改用最多四路分段下载，支持暂停、断点续传、慢速换源及速度显示，保留 APK 大小、摘要、包名、版本和签名校验。开机与录屏切换的实机范围见[验收记录](docs/validation/instant-connect-2026-10-31.md)，下载与发布流程见[官网更新说明](docs/official-updates.md)。
 
 **[v2026.10.30.1：持久显示模式与桌面返回优化](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.10.30.1)**：首页“串流状态”右侧加入“默认／全屏”，支持连接前预选、串流中切换并跨重启保存。默认按主机尺寸采集和编码；全屏按 Moonlight 原始请求调整显示与采集。实验室增加开机自启和服务恢复选项。Sunshine 桌面返回时保留焦点与滚动位置，复用图标缓存，背景改为图标外边缘主色，去掉晕染。236 项测试通过，S20+ 和 Tab S7+ 完成对应实测。详见[功能与验收范围](docs/validation/stream-display-and-desktop-2026-10-30.md)。

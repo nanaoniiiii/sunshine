@@ -52,6 +52,7 @@ object InputBroker {
     private var modifiers = 0
     private data class Finger(val androidId: Int, var x: Float, var y: Float, var pressure: Float)
     private val fingers = linkedMapOf<Long, Finger>()
+    private val touchStaging = TouchEventStaging()
 
     @JvmStatic @Synchronized fun setContext(value: Context) {
         val app = value.applicationContext
@@ -110,13 +111,15 @@ object InputBroker {
     }
     private fun emit(action: Int, changed: Long? = null) {
         if (fingers.isEmpty()) return
-        val ids = fingers.keys.toList()
-        val properties = fingers.values.map { f -> MotionEvent.PointerProperties().apply { id = f.androidId; toolType = MotionEvent.TOOL_TYPE_FINGER } }.toTypedArray()
-        val coordinates = fingers.values.map { f -> MotionEvent.PointerCoords().apply { x = f.x; y = f.y; pressure = f.pressure.coerceIn(.01f, 1f); size = .05f } }.toTypedArray()
+        touchStaging.begin()
+        var changedIndex = 0
+        for ((id, finger) in fingers) {
+            if (id == changed) changedIndex = touchStaging.count
+            touchStaging.append(finger.androidId, finger.x, finger.y, finger.pressure)
+        }
         val encoded = action or (if (action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP)
-            ids.indexOf(changed).coerceAtLeast(0) shl MotionEvent.ACTION_POINTER_INDEX_SHIFT else 0)
-        val event = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), encoded, fingers.size, properties, coordinates,
-            0, 0, 1f, 1f, 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, 0)
+            changedIndex shl MotionEvent.ACTION_POINTER_INDEX_SHIFT else 0)
+        val event = touchStaging.obtain(downTime, SystemClock.uptimeMillis(), encoded)
         try { SunshineRuntimeManager.getInstance().injectMotionEvent(event) } finally { event.recycle() }
     }
     @JvmStatic @Synchronized fun nativeTouch(type: Int, id: Long, x: Float, y: Float, pressure: Float, width: Int, height: Int) {
@@ -126,8 +129,9 @@ object InputBroker {
             1 -> {
                 if (id in fingers || fingers.size >= 32) return
                 if (fingers.isEmpty()) downTime = SystemClock.uptimeMillis()
-                val used = fingers.values.map { it.androidId }.toSet()
-                fingers[id] = Finger((0..31).first { it !in used }, px, py, pressure)
+                var occupied = 0
+                for (finger in fingers.values) occupied = occupied or (1 shl finger.androidId)
+                fingers[id] = Finger(Integer.numberOfTrailingZeros(occupied.inv()), px, py, pressure)
                 emit(if (fingers.size == 1) MotionEvent.ACTION_DOWN else MotionEvent.ACTION_POINTER_DOWN, id)
             }
             2 -> { fingers[id]?.let { it.x = px; it.y = py; emit(if (fingers.size == 1) MotionEvent.ACTION_UP else MotionEvent.ACTION_POINTER_UP, id); fingers.remove(id) } }
