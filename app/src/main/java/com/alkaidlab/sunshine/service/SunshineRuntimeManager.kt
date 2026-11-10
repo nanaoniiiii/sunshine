@@ -325,7 +325,7 @@ class SunshineRuntimeManager private constructor() {
                 frameDispatcher.configure(settings)
                 engineClient?.configureVideo(configuredMinBitrate, configuredMaxBitrate, settings.maxFps)
                 if (audioBufferMs != settings.audioBufferMs) {
-                    audioBuffer = PcmAudioBuffer(maxOf(settings.audioBufferMs * 96, audioPacketFloats))
+                    audioBuffer.setCapacity(maxOf(settings.audioBufferMs * 96, audioPacketFloats))
                     audioBufferMs = settings.audioBufferMs
                 }
             }
@@ -928,7 +928,8 @@ class SunshineRuntimeManager private constructor() {
         activeSessions.toList().forEach { onStreamStopped(it.videoThreadId) }
         pinPairing.clear()
         audioPacketFloats = 0
-        audioBuffer = PcmAudioBuffer(audioBufferMs * 96)
+        audioBuffer.clear(resetCounters = true)
+        audioBuffer.setCapacity(audioBufferMs * 96)
     }
 
     fun onProjectionStopped(projection: MediaProjection) {
@@ -1238,7 +1239,7 @@ class SunshineRuntimeManager private constructor() {
     @Volatile private var audioCaptureEpoch = 0L
     @Volatile private var audioPacketFloats = 0
     @Volatile private var audioBufferMs = 40
-    @Volatile private var audioBuffer = PcmAudioBuffer(40 * 96)
+    private val audioBuffer = PcmAudioBuffer(40 * 96)
     private var audioCaptureThread: Thread? = null
 
     fun diagnostics(): DiagnosticsResponse {
@@ -1321,7 +1322,7 @@ class SunshineRuntimeManager private constructor() {
         val samplesPerPacket = (duration * 48000) / 1000
         audioPacketFloats = maxOf(audioPacketFloats, samplesPerPacket * 2)
         if (audioBuffer.capacityFloats < samplesPerPacket * 2) {
-            audioBuffer = PcmAudioBuffer(samplesPerPacket * 2)
+            audioBuffer.setCapacity(samplesPerPacket * 2)
         }
         if (isAudioCaptureInitialized && audioRecord != null) {
             try {
@@ -1383,7 +1384,7 @@ class SunshineRuntimeManager private constructor() {
         if (requested == 0 || !audioCapturing) return floatArrayOf()
         if (requested > audioBuffer.capacityFloats) {
             audioPacketFloats = maxOf(audioPacketFloats, requested)
-            audioBuffer = PcmAudioBuffer(maxOf(audioBufferMs * 96, requested))
+            audioBuffer.setCapacity(maxOf(audioBufferMs * 96, requested))
         }
         // Wait on the producer condition, never on AudioRecord and never in a polling loop.
         val timeoutMs = if (mode == AudioRecord.READ_BLOCKING) (requested / 96 + 10).coerceIn(20, 110).toLong() else 0L

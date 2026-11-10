@@ -5,8 +5,8 @@ import kotlin.concurrent.withLock
 
 /** Bounded stereo PCM ring. Overflow discards oldest complete sample frames. */
 class PcmAudioBuffer(capacityFloats: Int) {
-    private val samples = FloatArray(capacityFloats.coerceAtLeast(2) / 2 * 2)
-    val capacityFloats: Int get() = samples.size
+    private var samples = FloatArray(capacityFloats.coerceAtLeast(2) / 2 * 2)
+    val capacityFloats: Int get() = lock.withLock { samples.size }
     private val lock = ReentrantLock()
     private val dataAvailable = lock.newCondition()
     private var generation = 0L
@@ -56,10 +56,30 @@ class PcmAudioBuffer(capacityFloats: Int) {
         if (generation == epoch && size >= requested) readLocked(requested) else floatArrayOf()
     }
 
-    fun clear() = lock.withLock {
+    /** Keep the newest complete stereo frames and retire waits on the old limit. */
+    fun setCapacity(capacityFloats: Int) = lock.withLock {
+        val capacity = capacityFloats.coerceAtLeast(2) / 2 * 2
+        if (capacity == samples.size) return@withLock
+        val retained = minOf(size, capacity)
+        val removed = size - retained
+        val firstIndex = (head + removed) % samples.size
+        val next = FloatArray(capacity)
+        val contiguous = minOf(retained, samples.size - firstIndex)
+        System.arraycopy(samples, firstIndex, next, 0, contiguous)
+        if (contiguous < retained) System.arraycopy(samples, 0, next, contiguous, retained - contiguous)
+        droppedFloats += removed
+        samples = next
+        head = 0
+        size = retained
+        generation++
+        dataAvailable.signalAll()
+    }
+
+    fun clear(resetCounters: Boolean = false) = lock.withLock {
         head = 0
         size = 0
         generation++
+        if (resetCounters) droppedFloats = 0
         dataAvailable.signalAll()
     }
 
