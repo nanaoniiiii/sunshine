@@ -100,6 +100,7 @@ macOS／Linux 使用 `./gradlew`。APK 位于 `app/build/outputs/apk/release/`�
 
 ## 工程记录
 
+- [与 Sunshine Android 相近的 50 个 GitHub 项目调研](docs/reviews/github-related-projects-2026-11-11.md)
 - [持久显示模式、开机自启与桌面返回优化](docs/validation/stream-display-and-desktop-2026-10-30.md)
 - [开发分支优化逐项审查与采纳记录：各 PR 的提案、作用、采用部分及未合入原因](docs/reviews/developer-optimizations-2026-10-24.md)
 - [v2026.10.15.3：DeX 实验入口与第二屏刷新率请求](docs/validation/v2026.10.15.3.md)
