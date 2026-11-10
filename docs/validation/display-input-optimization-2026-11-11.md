@@ -99,3 +99,13 @@ Release 构建成功；lint 无 Error/Fatal，48 个 Warning。三个 ABI 安装
 | universal | 10784446 | `fac49040ad53353a2ada3d20098889cddb37d04e5373552d9342efde85e994d2` |
 
 设备快照、探针、完整日志、安装包和研究暂存资料位于忽略目录 `work/optimization-20261111/`、`work/releases/v2026.11.11.1/`，不上传设备私有信息。
+
+## GitHub 与官网交付
+
+发布源码提交：[`cb08980`](https://github.com/nanaoniiiii/sunshine/commit/cb089803a164df2a78146720e19263e607c7e809)。[GitHub Release](https://github.com/nanaoniiiii/sunshine/releases/tag/v2026.11.11.1) 已公开，并设为最新版本，包含三个 APK 和 `SHA256SUMS.txt`；附件的 GitHub 摘要与上表一致。
+
+[官网同步运行 42911738598](https://github.com/nanaoniiiii/sunshine/actions/runs/42911738598) 成功，签名发布接口回执确认当前版本为 `v2026.11.11.1`。使用应用实际的更新/下载 User-Agent 读取公开清单均返回 200，版本正确，更新模式为 `push`。
+
+从官网逐个读取三包 HEAD、校验带 If-Range 的首 64 KiB 请求返回 `206` 和正确 Content-Range，再完整下载三包核对字节数和 SHA-256，全部相同。完整下载在电脑当前网络上分别耗时约 1.7 秒（arm64）、1.3 秒（v7a）、1.9 秒（通用）；三个请求并行，此数值仅为本次校验记录，不代表手机或所有网络的下载速度。
+
+结束时 S20+ 服务和录屏均就绪，显示模式已恢复为原 `fullscreen`，没有活动串流或音频采集。两个工作分支的变更均已提交并推送；音频分支未合入主线。
