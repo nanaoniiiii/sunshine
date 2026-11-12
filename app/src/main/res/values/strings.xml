@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Sunshine</string>
-    <string name="app_subtitle">Foundation-Sunshine Android</string>
-    <string name="controller_navigation_description">让手柄按控件层级选择、确认和切换菜单，并显示焦点框与扳机快捷圆环。随 Sunshine 服务启停，不过滤键盘或替换其他无障碍服务。</string>
+    <string name="app_name">SunshineAndroid</string>
+    <string name="app_subtitle">Moonlight Streaming Sunshine Android Port</string>
+    <string name="controller_avigation_description">Connect to remote from the phone, simulate a touchscreen, and toggle between the blue cursor and captured input. Only works on the Sunshine host side; does not bypass keyboard or mouse output to the system. v1/1/1</string>
 </resources>
