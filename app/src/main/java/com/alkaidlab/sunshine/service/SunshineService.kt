@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
@@ -264,6 +265,10 @@ class SunshineService : Service() {
                 engineClient.start(serverName, certFile.absolutePath, keyFile.absolutePath, stateFile.absolutePath)
                 serviceScope.launch { registerMdns(serverName, net.lanIp, net.vpnIp, net.ipv6) }
 
+            } catch (e: CancellationException) {
+                // Never swallow coroutine cancellation: onDestroy() cancels serviceScope,
+                // and a cancelled init must propagate instead of being logged as INIT_ERR.
+                throw e
             } catch (e: Exception) {
                 SunshineLogManager.log("INIT_ERR", "Error initializing SunshineService: ${e.message}")
             }
